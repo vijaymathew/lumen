@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is a v1 target (docs/DESIGN.md §7), so it is exercised from
+        # milestone 1 — an untested macOS build rots fast.
+        os: [ubuntu-24.04, macos-14]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libvips + LibRaw + Lensfun + Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvips-dev libraw-dev liblensfun-dev liblensfun-data-v1 ninja-build
+
+      - name: Install libvips + LibRaw + Lensfun + Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install vips libraw lensfun ninja
+
+      # QRhiWidget requires Qt 6.7+, newer than distro packages, so pull Qt via
+      # aqt. ShaderTools (qsb / qt_add_shaders) is NOT in the base desktop
+      # archive, so request it explicitly via modules.
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.2'
+          modules: 'qtshadertools'
+          cache: true
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build --parallel

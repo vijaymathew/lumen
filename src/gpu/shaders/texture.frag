@@ -1,0 +1,357 @@
+#version 440
+
+layout(location = 0) in vec2 v_texcoord;
+
+layout(location = 0) out vec4 fragColor;
+
+layout(binding = 1) uniform sampler2D tex;
+layout(binding = 2) uniform sampler2D lut;       // 256x1 tone curve
+layout(binding = 3) uniform sampler3D lut3d;     // 32^3 look LUT
+layout(binding = 4) uniform sampler2D selMask;   // selective colour-affinity mask
+layout(binding = 5) uniform sampler2D layerMask; // this layer's mask coverage
+
+layout(std140, binding = 0) uniform buf {
+    mat4 mvp;
+    float exposure;     // EV stops
+    float contrast;     // factor, 1 = neutral
+    float saturation;   // factor, 1 = neutral
+    float lutIntensity; // look blend [0,1]
+    float selEnabled;
+    float selLow;
+    float selHigh;
+    float selFeather;
+    float selExposure;
+    float selContrast;
+    float selSaturation;
+    float selMaskView;
+    float selMaskMode;
+    float selInvert;
+    float layerOpacity; // this layer's blend onto the running result [0,1]
+    float monoEnabled;
+    float monoR;        // B&W mix weights (pre-normalised to sum 1)
+    float monoG;
+    float monoB;
+    float monoBalance;  // split-tone crossover shift [-1,1]
+    float monoHighR;    // highlight tint (pre-normalised to luma 1)
+    float monoHighG;
+    float monoHighB;
+    float wb00;         // white-balance 3x3 (row-major, linear light, pre-exposure)
+    float wb01;
+    float wb02;
+    float wb10;
+    float wb11;
+    float wb12;
+    float wb20;
+    float wb21;
+    float wb22;
+    float gradeEnabled;   // colour grade (Lift/Gamma/Gain = Slope/Offset/Power)
+    float gradeSlope0;
+    float gradeSlope1;
+    float gradeSlope2;
+    float gradeOffset0;
+    float gradeOffset1;
+    float gradeOffset2;
+    float gradePower0;
+    float gradePower1;
+    float gradePower2;
+    float selMaskOpacity; // "show mask" overlay strength [0,1] (= layer opacity)
+    float vibrance;       // saturation-aware boost amount (vibrance/100), 0 = neutral
+    float monoBand0;      // per-color B&W mix: 8 hue bands at 0/45/.../315°, [-1,1]
+    float monoBand1;
+    float monoBand2;
+    float monoBand3;
+    float monoBand4;
+    float monoBand5;
+    float monoBand6;
+    float monoBand7;
+    float monoShadowR;  // split-tone shadow tint (pre-normalised to luma 1)
+    float monoShadowG;
+    float monoShadowB;
+    float grainAmount;  // film grain intensity/100 (0 = off)
+    float grainSize;    // grain cell size in px
+    float highlights;   // tonal-region amounts in [-1,1] (0 = neutral)
+    float shadows;
+    float whites;
+    float blacks;
+    float colorMixEnabled; // per-color HSL: 0/1 gate
+    float mixHue0;      // 8 hue bands × (hue shift / saturation / luminance), [-1,1]
+    float mixHue1;
+    float mixHue2;
+    float mixHue3;
+    float mixHue4;
+    float mixHue5;
+    float mixHue6;
+    float mixHue7;
+    float mixSat0;
+    float mixSat1;
+    float mixSat2;
+    float mixSat3;
+    float mixSat4;
+    float mixSat5;
+    float mixSat6;
+    float mixSat7;
+    float mixLum0;
+    float mixLum1;
+    float mixLum2;
+    float mixLum3;
+    float mixLum4;
+    float mixLum5;
+    float mixLum6;
+    float mixLum7;
+} ubuf;
+
+const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+
+// Tonal-region (highlights/shadows/whites/blacks) brightness shift for luma L in
+// [0,1]. MUST match TuneNode::toneRegionDelta (weights, 0.25/0.75 hump centres +
+// 0.25 width, and the 0.4 amplitude).
+float toneRegionDelta(float L, float hi, float sh, float wh, float bl)
+{
+    float Lc = clamp(L, 0.0, 1.0);
+    float wBlacks = (1.0 - Lc) * (1.0 - Lc) * (1.0 - Lc);
+    float wWhites = Lc * Lc * Lc;
+    float sLo = (Lc - 0.25) / 0.25, sHi = (Lc - 0.75) / 0.25;
+    float wShadows = exp(-sLo * sLo);
+    float wHighlights = exp(-sHi * sHi);
+    const float kToneRegionAmp = 0.4;
+    return kToneRegionAmp * (hi * wHighlights + sh * wShadows + wh * wWhites + bl * wBlacks);
+}
+
+vec3 applyTone(vec3 c, float exposure, float contrast, float saturation, float vibrance,
+               float highlights, float shadows, float whites, float blacks)
+{
+    c *= exp2(exposure / 2.2);
+    c = (c - 0.5) * contrast + 0.5;
+    float l = dot(c, kLuma);
+    c = mix(vec3(l), c, saturation);
+    // Tonal regions: luma-derived shift added to all channels (chroma preserved).
+    if (highlights != 0.0 || shadows != 0.0 || whites != 0.0 || blacks != 0.0)
+        c += toneRegionDelta(dot(c, kLuma), highlights, shadows, whites, blacks);
+    // Vibrance: push low-saturation pixels more, ease off already-saturated ones.
+    // Matches TuneNode::applyVibrance.
+    if (vibrance != 0.0) {
+        float sat = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+        float f = max(0.0, 1.0 + vibrance * (1.0 - sat));
+        float l2 = dot(c, kLuma);
+        c = mix(vec3(l2), c, f);
+    }
+    return c;
+}
+
+// Hue of a colour in degrees [0,360) — matches MonoNode::hue6.
+float monoHue(vec3 c)
+{
+    float mx = max(c.r, max(c.g, c.b));
+    float mn = min(c.r, min(c.g, c.b));
+    float d = mx - mn;
+    if (d < 1e-6)
+        return 0.0;
+    float h;
+    if (mx == c.r)
+        h = mod((c.g - c.b) / d, 6.0);
+    else if (mx == c.g)
+        h = (c.b - c.r) / d + 2.0;
+    else
+        h = (c.r - c.g) / d + 4.0;
+    h *= 60.0;
+    if (h < 0.0)
+        h += 360.0;
+    return h;
+}
+
+// Per-color mix weight at `hue`: linear interpolation between the two adjacent
+// colour anchors at their true hue angles (last segment wraps 330°→360°) —
+// matches MonoNode::bandShift.
+float monoBandShift(float hue)
+{
+    float b[8] = float[8](ubuf.monoBand0, ubuf.monoBand1, ubuf.monoBand2, ubuf.monoBand3,
+                          ubuf.monoBand4, ubuf.monoBand5, ubuf.monoBand6, ubuf.monoBand7);
+    float c[8] = float[8](0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 330.0);
+    for (int i = 0; i < 8; ++i) {
+        float lo = c[i];
+        float hi = (i < 7) ? c[i + 1] : 360.0;
+        if (hue >= lo && hue < hi) {
+            float t = (hue - lo) / (hi - lo);
+            return b[i] * (1.0 - t) + b[(i + 1) & 7] * t;
+        }
+    }
+    return b[0];
+}
+
+// --- Per-color HSL (colour mixer) -------------------------------------------
+// HSV→RGB, matching ColorMixerNode::hsvToRgb exactly. h in [0,360), s/v in [0,1].
+vec3 hsv2rgb(float h, float s, float v)
+{
+    float c = v * s;
+    float hp = h / 60.0;
+    float x = c * (1.0 - abs(mod(hp, 2.0) - 1.0));
+    vec3 rgb;
+    if (hp < 1.0)
+        rgb = vec3(c, x, 0.0);
+    else if (hp < 2.0)
+        rgb = vec3(x, c, 0.0);
+    else if (hp < 3.0)
+        rgb = vec3(0.0, c, x);
+    else if (hp < 4.0)
+        rgb = vec3(0.0, x, c);
+    else if (hp < 5.0)
+        rgb = vec3(x, 0.0, c);
+    else
+        rgb = vec3(c, 0.0, x);
+    return rgb + vec3(v - c);
+}
+
+// Per-color interpolated amount at `hue`: tent interpolation between the two
+// adjacent band anchors (last segment wraps 330°→360°). Matches
+// ColorMixerNode::bandInterp (same centres as the mono band block).
+float mixBandInterp(float b[8], float hue)
+{
+    float cc[8] = float[8](0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 330.0);
+    for (int i = 0; i < 8; ++i) {
+        float lo = cc[i];
+        float hi = (i < 7) ? cc[i + 1] : 360.0;
+        if (hue >= lo && hue < hi) {
+            float t = (hue - lo) / (hi - lo);
+            return b[i] * (1.0 - t) + b[(i + 1) & 7] * t;
+        }
+    }
+    return b[0];
+}
+
+// Per-color HSL. 30.0 = ColorMixerNode::kHueRangeDeg, 1.0 = kLumRange — keep in
+// sync. The whole adjustment is blended in by HSV saturation so greys stay put.
+vec3 applyColorMix(vec3 c)
+{
+    float mx = max(c.r, max(c.g, c.b));
+    float mn = min(c.r, min(c.g, c.b));
+    float s = (mx <= 1e-6) ? 0.0 : (mx - mn) / mx;
+    if (s < 1e-5)
+        return c; // neutral: nothing to mix
+    float v = mx;
+    float h = monoHue(c); // [0,360)
+    float hb[8] = float[8](ubuf.mixHue0, ubuf.mixHue1, ubuf.mixHue2, ubuf.mixHue3,
+                           ubuf.mixHue4, ubuf.mixHue5, ubuf.mixHue6, ubuf.mixHue7);
+    float sb[8] = float[8](ubuf.mixSat0, ubuf.mixSat1, ubuf.mixSat2, ubuf.mixSat3,
+                           ubuf.mixSat4, ubuf.mixSat5, ubuf.mixSat6, ubuf.mixSat7);
+    float lb[8] = float[8](ubuf.mixLum0, ubuf.mixLum1, ubuf.mixLum2, ubuf.mixLum3,
+                           ubuf.mixLum4, ubuf.mixLum5, ubuf.mixLum6, ubuf.mixLum7);
+    float h2 = mod(h + mixBandInterp(hb, h) * 30.0 + 360.0, 360.0);
+    float s2 = clamp(s * (1.0 + mixBandInterp(sb, h)), 0.0, 1.0);
+    float v2 = clamp(v * (1.0 + mixBandInterp(lb, h) * 1.0), 0.0, 1.0);
+    return mix(c, hsv2rgb(h2, s2, v2), s);
+}
+
+// Hash of an integer lattice point → [0,1]. Matches GrainNode's hash2.
+float grainHash(float x, float y)
+{
+    return fract(sin(x * 127.1 + y * 311.7) * 43758.5453123);
+}
+
+// Smooth 2D value noise in [0,1] — matches GrainNode::valueNoise.
+float grainNoise(vec2 p)
+{
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = grainHash(i.x, i.y);
+    float b = grainHash(i.x + 1.0, i.y);
+    float c = grainHash(i.x, i.y + 1.0);
+    float d = grainHash(i.x + 1.0, i.y + 1.0);
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+void main()
+{
+    vec4 c = texture(tex, v_texcoord);
+    vec3 col = c.rgb;
+
+    // Same order and math as the node apply() methods so preview predicts
+    // export. 1. Global tone (TuneNode): white balance, then exposure/contrast/sat.
+    // WB is a 3x3 applied in linear light (row-major in the UBO; mat3() takes
+    // columns) — matches TuneNode::applyWhiteBalance.
+    mat3 wbM = mat3(ubuf.wb00, ubuf.wb10, ubuf.wb20,
+                    ubuf.wb01, ubuf.wb11, ubuf.wb21,
+                    ubuf.wb02, ubuf.wb12, ubuf.wb22);
+    vec3 wbLin = pow(max(col, 0.0), vec3(2.2));
+    wbLin = wbM * wbLin;
+    col = pow(max(wbLin, 0.0), vec3(1.0 / 2.2));
+    col = applyTone(col, ubuf.exposure, ubuf.contrast, ubuf.saturation, ubuf.vibrance,
+                    ubuf.highlights, ubuf.shadows, ubuf.whites, ubuf.blacks);
+    // 1.5 Per-color HSL (colour mixer): after global tone, before the tone curves
+    //     — matches ColorMixerNode's position in the node chain (tune → colormixer
+    //     → curves).
+    if (ubuf.colorMixEnabled > 0.5)
+        col = applyColorMix(col);
+    // 2. Tone curves: each channel maps through its own LUT column (R->.r,
+    //    G->.g, B->.b). Identity when no curve.
+    col = vec3(texture(lut, vec2(col.r, 0.5)).r,
+               texture(lut, vec2(col.g, 0.5)).g,
+               texture(lut, vec2(col.b, 0.5)).b);
+    // 2.5 Colour grade (Lift/Gamma/Gain = Slope/Offset/Power), encoded space —
+    //     matches ColorGradeNode::apply().
+    if (ubuf.gradeEnabled > 0.5) {
+        vec3 slope = vec3(ubuf.gradeSlope0, ubuf.gradeSlope1, ubuf.gradeSlope2);
+        vec3 offset = vec3(ubuf.gradeOffset0, ubuf.gradeOffset1, ubuf.gradeOffset2);
+        vec3 power = vec3(ubuf.gradePower0, ubuf.gradePower1, ubuf.gradePower2);
+        col = pow(max(col * slope + offset, vec3(0.0)), power);
+    }
+    // 3. Look: trilinear 3D LUT, blended with the pre-look colour by intensity.
+    vec3 lutCol = texture(lut3d, clamp(col, 0.0, 1.0)).rgb;
+    col = mix(col, lutCol, ubuf.lutIntensity);
+    // 3.5 Monochrome: weighted desaturation to grey, then optional toning. Same
+    //     math as MonoNode::apply().
+    if (ubuf.monoEnabled > 0.5) {
+        float g = clamp(dot(col, vec3(ubuf.monoR, ubuf.monoG, ubuf.monoB)), 0.0, 1.0);
+        // Per-color mix: brighten/darken by hue, scaled by chroma (neutrals stay).
+        float chroma = max(col.r, max(col.g, col.b)) - min(col.r, min(col.g, col.b));
+        // 3.0 = MonoNode::kBandGain (keep in sync).
+        g = clamp(g * (1.0 + monoBandShift(monoHue(col)) * chroma * 3.0), 0.0, 1.0);
+        // Split toning: blend shadow→highlight tint by luminance (balance shifts
+        // the crossover); tints are luma-1 normalised so brightness is preserved.
+        vec3 sh = vec3(ubuf.monoShadowR, ubuf.monoShadowG, ubuf.monoShadowB);
+        vec3 hi = vec3(ubuf.monoHighR, ubuf.monoHighG, ubuf.monoHighB);
+        float hw = clamp(g + 0.5 * ubuf.monoBalance, 0.0, 1.0);
+        col = g * mix(sh, hi, hw);
+    }
+    // 3.6 Film grain (final Base-layer step): monochrome value-noise keyed to the
+    //     image pixel (gl_FragCoord, full-res offscreen). 0.18 = GrainNode::kStrength,
+    //     11.0 = kSeed — keep in sync with GrainNode.
+    if (ubuf.grainAmount > 0.0) {
+        float gs = max(ubuf.grainSize, 1.0);
+        float n = grainNoise(gl_FragCoord.xy / gs + vec2(11.0));
+        col += (n - 0.5) * ubuf.grainAmount * 0.18;
+    }
+    // 4. Preview-only "show mask" overlay of the active layer's mask. (The old
+    //    in-shader selective adjustment is vestigial — selEnabled stays 0 now
+    //    that selective edits are masked layers; the overlay path remains.)
+    if (ubuf.selEnabled > 0.5 || ubuf.selMaskView > 0.5) {
+        float mask;
+        if (ubuf.selMaskMode < 0.5) {
+            float L = dot(col, kLuma);
+            mask = smoothstep(ubuf.selLow - ubuf.selFeather, ubuf.selLow, L)
+                 * (1.0 - smoothstep(ubuf.selHigh, ubuf.selHigh + ubuf.selFeather, L));
+        } else {
+            mask = texture(selMask, v_texcoord).r; // colour-affinity mask texture
+        }
+        if (ubuf.selInvert > 0.5)
+            mask = 1.0 - mask;
+        if (ubuf.selEnabled > 0.5) {
+            vec3 adj = applyTone(col, ubuf.selExposure, ubuf.selContrast, ubuf.selSaturation,
+                                 0.0, 0.0, 0.0, 0.0, 0.0);
+            col = mix(col, adj, mask);
+        }
+        if (ubuf.selMaskView > 0.5) {
+            // Build the overlay, then fade the whole thing by the layer's opacity
+            // so opacity has a visible effect while the mask is shown (identical
+            // to before at selMaskOpacity = 1, vanishing at 0).
+            vec3 overlaid = (ubuf.selMaskView < 1.5)
+                ? mix(col * 0.4, vec3(0.95, 0.2, 0.2), mask * 0.85) // red over dimmed
+                : vec3(mask);                                       // grayscale mask
+            col = mix(col, overlaid, ubuf.selMaskOpacity);
+        }
+    }
+
+    // Composite this layer onto the running result by its mask × opacity. For
+    // the Base layer the mask is white and opacity 1, so this is just `col`.
+    float layerCov = texture(layerMask, v_texcoord).r * ubuf.layerOpacity;
+    fragColor = vec4(mix(c.rgb, col, layerCov), c.a);
+}
