@@ -5,7 +5,8 @@ layout(location = 0) in vec2 v_texcoord;
 layout(location = 0) out vec4 fragColor;
 
 layout(binding = 1) uniform sampler2D tex;
-layout(binding = 2) uniform sampler2D lut; // 256x1 tone curve
+layout(binding = 2) uniform sampler2D lut;     // 256x1 tone curve
+layout(binding = 3) uniform sampler3D lut3d;   // 32^3 look LUT
 
 layout(std140, binding = 0) uniform buf {
     mat4 mvp;
@@ -33,6 +34,9 @@ void main()
     col = vec3(texture(lut, vec2(col.r, 0.5)).r,
                texture(lut, vec2(col.g, 0.5)).g,
                texture(lut, vec2(col.b, 0.5)).b);
+    // 5. Look: trilinear 3D LUT (identity cube when no look). Linear sampling
+    //    does the interpolation; clamp to the cube domain.
+    col = texture(lut3d, clamp(col, 0.0, 1.0)).rgb;
 
     fragColor = vec4(col, c.a);
 }

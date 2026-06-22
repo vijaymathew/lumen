@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Lut.h"
+#include "core/Lut3D.h"
 #include "core/PreviewState.h"
 
 #include <QRhiWidget>
@@ -11,7 +12,9 @@
 #include <QPointF>
 #include <QSize>
 
+#include <cstdint>
 #include <memory>
+#include <vector>
 
 // CanvasWidget displays the working image as a single textured quad rendered
 // through Qt RHI, so the same code path runs on Metal (macOS), Vulkan, and
@@ -36,6 +39,9 @@ public:
 
     // Sets the per-channel tone-curve LUTs applied after the tone ops.
     void setCurveLuts(const ChannelLuts &luts);
+
+    // Sets the 3D LUT "look" applied last (resampled into a fixed-size cube).
+    void setLut3D(const Lut3D &look);
 
     // Resets zoom/pan so the image is fit-to-window and centred.
     void resetView();
@@ -63,6 +69,8 @@ private:
     std::unique_ptr<QRhiTexture> m_texture;
     std::unique_ptr<QRhiSampler> m_lutSampler;
     std::unique_ptr<QRhiTexture> m_lutTexture; // 256x1 tone-curve LUT
+    std::unique_ptr<QRhiSampler> m_lut3dSampler;
+    std::unique_ptr<QRhiTexture> m_lut3dTexture; // 32^3 look LUT
     std::unique_ptr<QRhiShaderResourceBindings> m_srb;
     std::unique_ptr<QRhiGraphicsPipeline> m_pipeline;
 
@@ -80,4 +88,6 @@ private:
     PreviewState m_preview;
     ChannelLuts m_luts = identityChannelLuts(); // per-channel tone curves
     bool m_lutDirty = true;
+    std::vector<uint8_t> m_lut3dData; // 32^3 RGBA cube; identity by default
+    bool m_lut3dDirty = true;
 };

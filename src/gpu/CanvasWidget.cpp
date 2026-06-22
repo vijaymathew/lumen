@@ -8,6 +8,7 @@
 #include <rhi/qshader.h>
 
 #include <algorithm>
+#include <cmath>
 
 namespace {
 
@@ -29,12 +30,37 @@ QShader loadShader(const QString &path)
     return {};
 }
 
+// Fixed cube edge for the GPU look texture. Any loaded LUT is resampled into it,
+// so the 3D texture is created once and only re-uploaded on change.
+constexpr int kLut3DDim = 32;
+
+std::vector<uint8_t> resampleCube(const Lut3D &lut)
+{
+    std::vector<uint8_t> cube(static_cast<size_t>(kLut3DDim) * kLut3DDim * kLut3DDim * 4);
+    double out[3];
+    for (int b = 0; b < kLut3DDim; ++b) {
+        for (int g = 0; g < kLut3DDim; ++g) {
+            for (int r = 0; r < kLut3DDim; ++r) {
+                lut.sample(r / double(kLut3DDim - 1), g / double(kLut3DDim - 1),
+                           b / double(kLut3DDim - 1), out);
+                const size_t idx = ((static_cast<size_t>(b) * kLut3DDim + g) * kLut3DDim + r) * 4;
+                for (int c = 0; c < 3; ++c)
+                    cube[idx + c] = static_cast<uint8_t>(
+                        std::clamp(std::lround(out[c] * 255.0), 0L, 255L));
+                cube[idx + 3] = 255;
+            }
+        }
+    }
+    return cube;
+}
+
 } // namespace
 
 CanvasWidget::CanvasWidget(QWidget *parent)
     : QRhiWidget(parent)
 {
     setFocusPolicy(Qt::StrongFocus);
+    m_lut3dData = resampleCube(Lut3D{}); // identity
 }
 
 void CanvasWidget::setImage(const QImage &image)
@@ -71,6 +97,16 @@ void CanvasWidget::setCurveLuts(const ChannelLuts &luts)
     update();
 }
 
+void CanvasWidget::setLut3D(const Lut3D &look)
+{
+    std::vector<uint8_t> cube = resampleCube(look);
+    if (cube == m_lut3dData)
+        return;
+    m_lut3dData = std::move(cube);
+    m_lut3dDirty = true;
+    update();
+}
+
 void CanvasWidget::initialize(QRhiCommandBuffer *cb)
 {
     QRhi *r = rhi();
@@ -83,11 +119,14 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
         m_sampler.reset();
         m_lutTexture.reset();
         m_lutSampler.reset();
+        m_lut3dTexture.reset();
+        m_lut3dSampler.reset();
         m_ubuf.reset();
         m_vbuf.reset();
         m_textureSize = {};
         m_textureDirty = !m_pendingImage.isNull();
         m_lutDirty = true;
+        m_lut3dDirty = true;
         m_rhi = r;
     }
 
@@ -126,6 +165,22 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
         m_lutTexture.reset(r->newTexture(QRhiTexture::RGBA8, QSize(256, 1)));
         m_lutTexture->create();
         m_lutDirty = true;
+    }
+
+    if (!m_lut3dSampler) {
+        // Linear in all three axes → hardware trilinear interpolation.
+        m_lut3dSampler.reset(r->newSampler(QRhiSampler::Linear, QRhiSampler::Linear,
+                                           QRhiSampler::None, QRhiSampler::ClampToEdge,
+                                           QRhiSampler::ClampToEdge,
+                                           QRhiSampler::ClampToEdge));
+        m_lut3dSampler->create();
+    }
+
+    if (!m_lut3dTexture) {
+        m_lut3dTexture.reset(r->newTexture(QRhiTexture::RGBA8, kLut3DDim, kLut3DDim,
+                                           kLut3DDim, 1, QRhiTexture::ThreeDimensional));
+        m_lut3dTexture->create();
+        m_lut3dDirty = true;
     }
 }
 
@@ -207,6 +262,9 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
                 QRhiShaderResourceBinding::sampledTexture(
                     2, QRhiShaderResourceBinding::FragmentStage,
                     m_lutTexture.get(), m_lutSampler.get()),
+                QRhiShaderResourceBinding::sampledTexture(
+                    3, QRhiShaderResourceBinding::FragmentStage,
+                    m_lut3dTexture.get(), m_lut3dSampler.get()),
             });
             m_srb->create();
         }
@@ -230,6 +288,25 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         QRhiTextureUploadEntry entry(0, 0, sub);
         u->uploadTexture(m_lutTexture.get(), QRhiTextureUploadDescription(entry));
         m_lutDirty = false;
+    }
+
+    if (m_lut3dDirty && m_lut3dTexture) {
+        // One upload entry per depth slice (layer = z) of the 3D texture.
+        const int sliceBytes = kLut3DDim * kLut3DDim * 4;
+        std::vector<QByteArray> slices;
+        std::vector<QRhiTextureUploadEntry> entries;
+        slices.reserve(kLut3DDim);
+        entries.reserve(kLut3DDim);
+        for (int z = 0; z < kLut3DDim; ++z) {
+            slices.emplace_back(reinterpret_cast<const char *>(
+                                    m_lut3dData.data() + static_cast<size_t>(z) * sliceBytes),
+                                sliceBytes);
+            entries.emplace_back(z, 0, QRhiTextureSubresourceUploadDescription(slices.back()));
+        }
+        QRhiTextureUploadDescription desc;
+        desc.setEntries(entries.begin(), entries.end());
+        u->uploadTexture(m_lut3dTexture.get(), desc);
+        m_lut3dDirty = false;
     }
 
     ensurePipeline();

@@ -7,6 +7,8 @@
 #include <QJsonObject>
 #include <QString>
 
+class Lut3D;
+
 // EditNode is the base class for one non-destructive edit in the pipeline
 // (DESIGN.md §5.1). A node holds its parameters (in subclasses), an enabled
 // flag, and a dirty flag for cache invalidation. The graph walks nodes in order,
@@ -51,6 +53,9 @@ public:
     // (luts[c][i] := myLut[c][luts[c][i]]). Default is no-op; curve nodes
     // override it.
     virtual void contributeToPreviewLut(ChannelLuts &) const {}
+
+    // The 3D LUT "look" this node applies, or nullptr if it isn't a look node.
+    virtual const Lut3D *lookLut() const { return nullptr; }
 
     // Serialises / restores this node's parameters (for undo/redo, and later
     // project save/load). Subclasses extend the base, which handles `enabled`.

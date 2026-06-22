@@ -49,9 +49,11 @@ MainWindow::MainWindow(QWidget *parent)
     setWindowTitle(QStringLiteral("Lumen"));
 
     // The graph owns the nodes; we keep raw pointers to drive them. Order is
-    // tune -> curves (the shader applies tone ops then the curve LUT to match).
+    // tune -> curves -> lut (the shader applies tone ops, then the curve LUT,
+    // then the 3D look LUT, to match).
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
+    m_lutNode = static_cast<LutNode *>(m_graph.addNode(std::make_unique<LutNode>()));
 
     m_canvas = new CanvasWidget(this);
     setCentralWidget(m_canvas);
@@ -223,6 +225,7 @@ void MainWindow::updatePreview()
 {
     m_canvas->setPreviewState(m_graph.previewState());
     m_canvas->setCurveLuts(m_graph.previewLut());
+    m_canvas->setLut3D(m_graph.previewLook());
 }
 
 void MainWindow::openToneTool()

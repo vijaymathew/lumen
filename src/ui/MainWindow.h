@@ -4,6 +4,7 @@
 
 #include "core/CurvesNode.h"
 #include "core/EditGraph.h"
+#include "core/LutNode.h"
 #include "core/TuneNode.h"
 #include "input/InputController.h"
 
@@ -66,5 +67,6 @@ private:
     EditGraph m_graph;
     TuneNode *m_tune = nullptr;     // owned by m_graph
     CurvesNode *m_curves = nullptr; // owned by m_graph
+    LutNode *m_lutNode = nullptr;   // owned by m_graph
     QString m_sourcePath;           // for a sensible default export name
 };
