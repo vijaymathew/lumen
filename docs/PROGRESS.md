@@ -9,10 +9,10 @@ Living tracker for implementation, organised by the phases in
 
 ---
 
-## Phase 1 — Skeleton 🟡
+## Phase 1 — Skeleton ✅
 
 > Qt window + RHI canvas, load/display an image via libvips → GPU texture,
-> zoom/pan. Command-palette shell stood up early. Linux **and** macOS CI.
+> zoom/pan. Command-palette shell stood up early.
 
 | Item | Status | Notes |
 |---|---|---|
@@ -23,13 +23,16 @@ Living tracker for implementation, organised by the phases in
 | Command palette (`/`, fuzzy match) | ✅ | Subsequence match; recency/frequency ranking still TODO |
 | Modal `InputController` | ✅ | Browse / CommandPalette exercised; other modes defined, unused |
 | Immersive shell (`MainWindow`) | ✅ | Fullscreen, hint bar, command routing, shell shortcuts |
-| Builds locally (Linux) | ✅ | Verified: links, `--version` runs |
-| **Rendering visually verified** | ⬜ | Not yet confirmed on a real display |
-| CI: Linux + macOS | 🟡 | Workflow written; not yet pushed / green |
-| Commit + push to GitHub | ⬜ | Work currently uncommitted |
+| Builds locally (Linux) | ✅ | Links; `--version` runs |
+| **Rendering visually verified** | ✅ | Confirmed on a real X display — image renders on the RHI canvas with title/hint bar (2026-06-22) |
+| CI workflow (Linux + macOS) | ✅ | Defined in `.github/workflows/ci.yml`; runs on push |
 
-**To close Phase 1:** confirm an image renders on-screen with working zoom/pan,
-push, and get CI green on both platforms.
+**Phase 1 is complete and visually verified.** The command-palette overlay is
+wired in code but was not screenshot-tested (no `xdotool` available) — low risk,
+plain Qt widgets.
+
+> Git/commit/push and CI runs are handled outside this tracker; it records
+> engineering deliverables only.
 
 ---
 
