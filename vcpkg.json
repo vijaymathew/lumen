@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "lumen",
+  "version": "0.1.0",
+  "description": "An immersive, command-palette-driven photo editor",
+  "$comment": "Optional. CI uses system Qt (via aqt) + system libvips; this manifest is for local vcpkg-based builds. Building Qt from vcpkg is heavy — prefer a system/aqt Qt and use vcpkg only for the imaging deps if desired.",
+  "dependencies": [
+    "libvips"
+  ]
+}
