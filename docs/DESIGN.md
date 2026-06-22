@@ -146,8 +146,13 @@ handling plus this small shared keyboard set.
   too dark loses edit context, too light hurts overlay legibility. Start with a
   sensible default and tune by feel during development; keep it a single named
   constant (or a hidden setting) so it's trivial to adjust.
-- **Tool panels dock consistently at the bottom** so users build spatial memory.
-  The palette appears near the top. (Consistency over the mixed mockup layout.)
+- **Tool panels float as a compact card in the same place** (top-right) so users
+  build spatial memory while the image stays in full view. The palette appears
+  near the top-centre. (Revised from the earlier "dock at the bottom" idea: a
+  full-width bottom strip obscured too much of the photo; a right-side card keeps
+  the subject clear. Consistency of *placement* is what builds the muscle memory,
+  not which edge it's on.) Panels are modeless — you can pan/zoom the image while
+  a tool is open.
 
 ---
 
@@ -178,8 +183,18 @@ Each node holds:
 - A **dirty flag** for cache invalidation
 
 Two render paths from the same graph:
-- **Preview** — downsampled image through GPU shaders for real-time feedback.
-- **Export** — full graph through libvips at full resolution.
+- **Preview** — GPU shaders for real-time feedback. Pointwise tone nodes
+  contribute to a `PreviewState` (via `EditNode::contributeToPreview`) that the
+  graph accumulates (`EditGraph::previewState()`) and the fragment shader
+  applies. So the on-screen image is driven by walking the graph, not by any one
+  tool wiring itself to the canvas. (A spatial or strongly order-dependent node —
+  blur, masks — will need a true multi-pass shader chain; that's added when such
+  a node first exists. Pointwise tone ops fold into the flat `PreviewState`.)
+- **Export** — full graph through libvips at full resolution (`EditGraph::result()`).
+
+Each node therefore has two implementations kept consistent: `apply()` (libvips,
+export) and `contributeToPreview()` (GPU, preview). They use the same math so
+preview predicts export (e.g. exposure's `2^(ev/2.2)` in both).
 
 ### 5.2 Layers
 

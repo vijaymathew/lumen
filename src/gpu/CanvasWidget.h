@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/PreviewState.h"
+
 #include <QRhiWidget>
 #include <rhi/qrhi.h>
 
@@ -27,6 +29,10 @@ public:
     // Swaps in a new image. The upload happens lazily on the next render.
     void setImage(const QImage &image);
 
+    // Sets the preview parameters accumulated from the edit graph; applied live
+    // in the fragment shader.
+    void setPreviewState(const PreviewState &state);
+
     // Resets zoom/pan so the image is fit-to-window and centred.
     void resetView();
 
@@ -41,6 +47,8 @@ protected:
 private:
     void ensurePipeline();
     QMatrix4x4 computeMvp(const QSize &targetPixels);
+    // Multiplies zoom by `factor`, keeping the image point under the cursor fixed.
+    void zoomAt(float factor, const QPointF &cursorDevicePx);
 
     // RHI we last built resources against; used to detect device changes.
     QRhi *m_rhi = nullptr;
@@ -61,4 +69,7 @@ private:
     float m_zoom = 1.0f;
     QPointF m_pan{0.0, 0.0};
     QPointF m_lastMousePos;
+
+    // Preview adjustments (from the edit graph) fed to the shader.
+    PreviewState m_preview;
 };

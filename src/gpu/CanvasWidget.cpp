@@ -1,5 +1,7 @@
 #include "gpu/CanvasWidget.h"
 
+#include "gpu/ZoomMath.h"
+
 #include <QFile>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -50,6 +52,14 @@ void CanvasWidget::resetView()
     update();
 }
 
+void CanvasWidget::setPreviewState(const PreviewState &state)
+{
+    if (m_preview.exposure == state.exposure)
+        return;
+    m_preview = state;
+    update();
+}
+
 void CanvasWidget::initialize(QRhiCommandBuffer *cb)
 {
     QRhi *r = rhi();
@@ -77,8 +87,9 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
     }
 
     if (!m_ubuf) {
-        // One mat4 (64 bytes).
-        m_ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 64));
+        // std140 layout: mat4 mvp (64 bytes) + float exposure at offset 64.
+        // Rounded up to a 16-byte multiple → 80 bytes.
+        m_ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 80));
         m_ubuf->create();
     }
 
@@ -118,27 +129,21 @@ void CanvasWidget::ensurePipeline()
 
 QMatrix4x4 CanvasWidget::computeMvp(const QSize &targetPixels)
 {
-    const float w = targetPixels.width();
-    const float h = targetPixels.height();
-    const float iw = m_textureSize.width();
-    const float ih = m_textureSize.height();
-    if (iw <= 0 || ih <= 0 || w <= 0 || h <= 0)
+    const QSizeF widget(targetPixels.width(), targetPixels.height());
+    const QSizeF image(m_textureSize.width(), m_textureSize.height());
+    if (image.isEmpty() || widget.isEmpty())
         return {};
 
-    const float fit = std::min(w / iw, h / ih);
-    const float scale = fit * m_zoom;
-    const float dw = iw * scale;
-    const float dh = ih * scale;
-    const float dx = (w - dw) * 0.5f + static_cast<float>(m_pan.x());
-    const float dy = (h - dh) * 0.5f + static_cast<float>(m_pan.y());
+    const QSizeF disp = zoommath::displayedSize(widget, image, m_zoom);
+    const QPointF tl = zoommath::imageTopLeft(widget, image, m_zoom, m_pan);
 
     // Pixel-space orthographic projection, top-left origin.
     QMatrix4x4 proj;
-    proj.ortho(0.0f, w, h, 0.0f, -1.0f, 1.0f);
+    proj.ortho(0.0f, widget.width(), widget.height(), 0.0f, -1.0f, 1.0f);
 
     QMatrix4x4 model;
-    model.translate(dx, dy);
-    model.scale(dw, dh);
+    model.translate(tl.x(), tl.y());
+    model.scale(disp.width(), disp.height());
 
     // clipSpaceCorrMatrix() adapts GL-style NDC to whatever backend is active.
     return rhi()->clipSpaceCorrMatrix() * proj * model;
@@ -164,7 +169,10 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
             m_srb.reset(r->newShaderResourceBindings());
             m_srb->setBindings({
                 QRhiShaderResourceBinding::uniformBuffer(
-                    0, QRhiShaderResourceBinding::VertexStage, m_ubuf.get()),
+                    0,
+                    QRhiShaderResourceBinding::VertexStage
+                        | QRhiShaderResourceBinding::FragmentStage,
+                    m_ubuf.get()),
                 QRhiShaderResourceBinding::sampledTexture(
                     1, QRhiShaderResourceBinding::FragmentStage,
                     m_texture.get(), m_sampler.get()),
@@ -185,6 +193,7 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
     if (drawable) {
         const QMatrix4x4 mvp = computeMvp(target);
         u->updateDynamicBuffer(m_ubuf.get(), 0, 64, mvp.constData());
+        u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(float), &m_preview.exposure);
     }
 
     const QColor clearColor(17, 17, 19); // matches the app's dark canvas
@@ -221,8 +230,23 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent *e)
 
 void CanvasWidget::wheelEvent(QWheelEvent *e)
 {
-    // TODO(milestone-2): zoom around the cursor position rather than the centre.
     const float factor = (e->angleDelta().y() > 0) ? 1.1f : (1.0f / 1.1f);
-    m_zoom = std::clamp(m_zoom * factor, 0.05f, 40.0f);
+    // Zoom around the cursor: the image point under the pointer stays put.
+    zoomAt(factor, e->position() * devicePixelRatioF());
+}
+
+void CanvasWidget::zoomAt(float factor, const QPointF &cursorDevicePx)
+{
+    const QSizeF widget(width() * devicePixelRatioF(), height() * devicePixelRatioF());
+    const QSizeF image(m_textureSize.width(), m_textureSize.height());
+    if (image.isEmpty() || widget.isEmpty())
+        return;
+
+    const float newZoom = std::clamp(m_zoom * factor, 0.05f, 40.0f);
+    if (newZoom == m_zoom)
+        return;
+
+    m_pan = zoommath::panForZoom(widget, image, m_zoom, newZoom, m_pan, cursorDevicePx);
+    m_zoom = newZoom;
     update();
 }

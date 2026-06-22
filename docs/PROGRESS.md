@@ -36,19 +36,20 @@ plain Qt widgets.
 
 ---
 
-## Phase 2 — Edit graph 🟡 (foundational, started)
+## Phase 2 — Edit graph ✅
 
 > Non-destructive node pipeline: nodes, dirty/cache system, a simple exposure
 > node end-to-end (preview + export).
 
 | Item | Status | Notes |
 |---|---|---|
-| `EditNode` base + `EditGraph` | ⬜ | Core architecture decision (DESIGN §5.1) |
-| Dirty-flag / cache invalidation | ⬜ | |
-| `TuneNode` (exposure) — preview path | ⬜ | GLSL/RHI shader on downsampled image |
-| `TuneNode` — libvips export path | ⬜ | Full-res |
-| Global undo/redo over the graph | ⬜ | Distinct from per-tool session undo |
-| Cursor-centred zoom | ⬜ | Carried over from Phase 1 |
+| `EditNode` base + `EditGraph` | ✅ | `Image` (RAII libvips wrapper), abstract `EditNode`, ordered `EditGraph`; in headless `lumen_core` lib |
+| Dirty-flag / cache invalidation | ✅ | Lazy eval + per-node cache + downstream dirty propagation; unit-tested (`edit_graph_test`) |
+| `TuneNode` (exposure) — preview path | ✅ | `TuneNode` model + exposure uniform in fragment shader; modeless draggable right-side card; verified on-screen (+2 EV brightens) |
+| `TuneNode` — libvips export path | ✅ | Export command walks `EditGraph.result()` at full res → `Image::saveToFile` (alpha stripped); round-trip unit-tested + verified on a real photo (export matches preview) |
+| Wire graph into the display pipeline | ✅ | Preview driven by `EditGraph::previewState()` (walks nodes → `PreviewState` → fragment shader); GPU real-time path kept. Spatial/multi-pass nodes deferred until one exists |
+| Global undo/redo over the graph | ✅ | Snapshot history of node state (JSON); commit per tool session, no-op coalescing, redo-tail truncation; Ctrl+Z/Ctrl+Shift+Z + palette; unit-tested + verified on-screen. Structural undo (add/remove/reorder) deferred until nodes are user-addable |
+| Cursor-centred zoom | ✅ | Wheel zoom keeps the image point under the cursor fixed; view math extracted to `gpu/ZoomMath.h`, shared with the renderer, unit-tested (`zoom_test`) |
 
 ---
 
