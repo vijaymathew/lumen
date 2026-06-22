@@ -18,3 +18,12 @@ struct MaskBuffer {
 // `rgba` is row-major 8-bit with `bands` (>=3) per pixel.
 MaskBuffer colorAffinityMask(const uint8_t *rgba, int width, int height, int bands,
                              float tr, float tg, float tb, float range);
+
+// Paints a soft circular brush stamp into `mask` at (cx, cy) in mask-pixel
+// coords, `radius` in pixels with `hardness` [0,1] edge softness. `add` paints
+// toward 1 (selected); otherwise toward 0 (deselected).
+void stampBrush(MaskBuffer &mask, float cx, float cy, float radius, float hardness,
+                bool add);
+
+// Bilinearly resamples `src` to width x height.
+MaskBuffer upscaleMask(const MaskBuffer &src, int width, int height);

@@ -7,9 +7,12 @@
 #include "core/CurvesNode.h"
 #include "core/EditGraph.h"
 #include "core/LutNode.h"
+#include "core/SelectiveMask.h"
 #include "core/SelectiveNode.h"
 #include "core/TuneNode.h"
 #include "input/InputController.h"
+
+#include <vector>
 
 class CanvasWidget;
 class CommandPalette;
@@ -58,6 +61,10 @@ private:
     void closeSelectiveTool();
     void recomputeSelectiveMask();
     void onColorPicked(const QPointF &imageNormalized);
+    void initBrushMask();
+    void beginBrushStroke();
+    void brushAt(const QPointF &imageNormalized);
+    bool brushSessionUndo(); // returns true if it handled the undo
     void closeActiveTool();
     void updatePreview(); // push tone state + curve LUT + look to the canvas
     void exportImage();
@@ -86,4 +93,13 @@ private:
     QString m_sourcePath;                // for a sensible default export name
     QImage m_sourceQImage;               // for colour sampling + preview mask
     int m_maskView = 0;                  // selective mask overlay (preview-only)
+
+    // Brush-paint session.
+    MaskBuffer m_brushMask;
+    std::vector<std::vector<float>> m_brushUndo; // per-stroke snapshots
+    int m_brushSize = 30;
+    int m_brushHardness = 50;
+    bool m_brushAdd = true;
+    QPointF m_lastBrushPoint;
+    bool m_brushHasLast = false;
 };

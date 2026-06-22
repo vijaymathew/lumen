@@ -5,6 +5,10 @@
 
 #include "core/SelectiveMask.h"
 
+#include <QBuffer>
+#include <QByteArray>
+#include <QImage>
+
 #include <algorithm>
 #include <cmath>
 
@@ -21,6 +25,46 @@ double smoothstep(double e0, double e1, double x)
     const double t = std::clamp((x - e0) / (e1 - e0), 0.0, 1.0);
     return t * t * (3.0 - 2.0 * t);
 }
+
+// A brush mask is bulky, so persist it as a base64 PNG (only when present).
+QString encodeMask(const MaskBuffer &m)
+{
+    if (m.isEmpty())
+        return {};
+    QImage img(m.width, m.height, QImage::Format_Grayscale8);
+    for (int y = 0; y < m.height; ++y) {
+        uchar *line = img.scanLine(y);
+        for (int x = 0; x < m.width; ++x)
+            line[x] = static_cast<uchar>(
+                std::clamp(std::lround(m.data[static_cast<size_t>(y) * m.width + x] * 255.0f),
+                           0L, 255L));
+    }
+    QByteArray bytes;
+    QBuffer buf(&bytes);
+    buf.open(QIODevice::WriteOnly);
+    img.save(&buf, "PNG");
+    return QString::fromLatin1(bytes.toBase64());
+}
+
+MaskBuffer decodeMask(const QString &s)
+{
+    MaskBuffer m;
+    if (s.isEmpty())
+        return m;
+    QImage img;
+    if (!img.loadFromData(QByteArray::fromBase64(s.toLatin1()), "PNG"))
+        return m;
+    img = img.convertToFormat(QImage::Format_Grayscale8);
+    m.width = img.width();
+    m.height = img.height();
+    m.data.resize(static_cast<size_t>(m.width) * m.height);
+    for (int y = 0; y < m.height; ++y) {
+        const uchar *line = img.constScanLine(y);
+        for (int x = 0; x < m.width; ++x)
+            m.data[static_cast<size_t>(y) * m.width + x] = line[x] / 255.0f;
+    }
+    return m;
+}
 } // namespace
 
 SelectiveNode::SelectiveNode()
@@ -31,7 +75,7 @@ SelectiveNode::SelectiveNode()
 void SelectiveNode::setValues(const SelectiveValues &values)
 {
     SelectiveValues v = values;
-    v.maskMode = std::clamp(v.maskMode, 0, 1);
+    v.maskMode = std::clamp(v.maskMode, 0, 2);
     v.low = std::clamp(v.low, 0.0f, 1.0f);
     v.high = std::clamp(v.high, 0.0f, 1.0f);
     if (v.high < v.low)
@@ -57,9 +101,16 @@ bool SelectiveNode::isNeutral() const
         && m_values.saturation == 0.0f;
 }
 
+void SelectiveNode::setBrushMask(const MaskBuffer &mask)
+{
+    m_brushMask = mask;
+    invalidate();
+}
+
 void SelectiveNode::contributeToPreview(PreviewState &state) const
 {
-    state.selMaskMode = static_cast<float>(m_values.maskMode);
+    // Shader mask path: 0 = luminosity (parametric), 1 = texture (colour/brush).
+    state.selMaskMode = m_values.maskMode == 0 ? 0.0f : 1.0f;
     // Publish the luminosity range so the mask overlay works even before an
     // adjustment is dialled in (colour-mask preview comes from a texture).
     state.selLow = m_values.low;
@@ -94,12 +145,16 @@ Image SelectiveNode::apply(const Image &input) const
 
     auto *px = static_cast<uint8_t *>(buf);
 
-    const bool colorMode = m_values.maskMode == 1;
-    MaskBuffer colorMask;
-    if (colorMode)
-        colorMask = colorAffinityMask(px, w, h, bands, m_values.targetR,
-                                      m_values.targetG, m_values.targetB,
-                                      m_values.colorRange);
+    // A per-pixel mask at image resolution for colour/brush modes (luminosity
+    // is computed inline).
+    MaskBuffer textureMask;
+    if (m_values.maskMode == 1)
+        textureMask = colorAffinityMask(px, w, h, bands, m_values.targetR,
+                                        m_values.targetG, m_values.targetB,
+                                        m_values.colorRange);
+    else if (m_values.maskMode == 2)
+        textureMask = upscaleMask(m_brushMask, w, h);
+    const bool useTexture = m_values.maskMode != 0;
 
     const double low = m_values.low;
     const double high = m_values.high;
@@ -114,8 +169,8 @@ Image SelectiveNode::apply(const Image &input) const
         double col[3] = {p[0] / 255.0, p[1] / 255.0, p[2] / 255.0};
 
         double mask;
-        if (colorMode) {
-            mask = colorMask.data.empty() ? 0.0 : colorMask.data[i];
+        if (useTexture) {
+            mask = textureMask.data.empty() ? 0.0 : textureMask.data[i];
         } else {
             const double L = kLumaR * col[0] + kLumaG * col[1] + kLumaB * col[2];
             mask = smoothstep(low - feather, low, L)
@@ -157,6 +212,8 @@ QJsonObject SelectiveNode::saveState() const
     state[QStringLiteral("exposure")] = m_values.exposure;
     state[QStringLiteral("contrast")] = m_values.contrast;
     state[QStringLiteral("saturation")] = m_values.saturation;
+    if (m_values.maskMode == 2 && !m_brushMask.isEmpty())
+        state[QStringLiteral("brushMask")] = encodeMask(m_brushMask);
     return state;
 }
 
@@ -176,4 +233,5 @@ void SelectiveNode::restoreState(const QJsonObject &state)
     v.contrast = static_cast<float>(state.value(QStringLiteral("contrast")).toDouble(0.0));
     v.saturation = static_cast<float>(state.value(QStringLiteral("saturation")).toDouble(0.0));
     setValues(v);
+    m_brushMask = decodeMask(state.value(QStringLiteral("brushMask")).toString());
 }

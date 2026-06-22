@@ -26,6 +26,8 @@ signals:
     void valuesChanged(const SelectiveValues &values);
     void maskViewChanged(int mode); // 0 off, 1 red overlay, 2 grayscale
     void pickColorRequested();
+    void brushSettingsChanged(int size, int hardness, bool add);
+    void brushClearRequested();
 
 protected:
     void mousePressEvent(QMouseEvent *event) override;
@@ -47,10 +49,20 @@ private:
 
     QPushButton *m_lumaButton = nullptr;
     QPushButton *m_colorButton = nullptr;
+    QPushButton *m_brushButton = nullptr;
     QPushButton *m_maskButton = nullptr;
     QWidget *m_lumaSection = nullptr;
     QWidget *m_colorSection = nullptr;
+    QWidget *m_brushSection = nullptr;
     QLabel *m_swatch = nullptr;
+
+    QSlider *m_brushSize = nullptr;
+    QSlider *m_brushHardness = nullptr;
+    QLabel *m_brushSizeValue = nullptr;
+    QLabel *m_brushHardnessValue = nullptr;
+    QPushButton *m_addButton = nullptr;
+    QPushButton *m_subButton = nullptr;
+    bool m_brushAdd = true;
 
     QSlider *m_low = nullptr;
     QSlider *m_high = nullptr;

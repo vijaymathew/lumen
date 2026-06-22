@@ -52,6 +52,34 @@ int main()
     CHECK(left > 0.7f);  // matches the target colour
     CHECK(right < 0.3f); // far from the target colour
 
+    // Brush stamp: Add paints toward 1 near the centre, leaves corners untouched.
+    MaskBuffer bm;
+    bm.width = 32;
+    bm.height = 32;
+    bm.data.assign(32 * 32, 0.0f);
+    stampBrush(bm, 16, 16, 8, 0.5f, true);
+    CHECK(bm.data[16 * 32 + 16] > 0.9f);
+    CHECK(bm.data[0] < 0.1f);
+
+    // Subtract from a full mask carves a hole at the centre.
+    MaskBuffer full;
+    full.width = 32;
+    full.height = 32;
+    full.data.assign(32 * 32, 1.0f);
+    stampBrush(full, 16, 16, 8, 0.5f, false);
+    CHECK(full.data[16 * 32 + 16] < 0.1f);
+    CHECK(full.data[0] > 0.9f);
+
+    // Upscale preserves dimensions and corner values.
+    MaskBuffer small;
+    small.width = 2;
+    small.height = 2;
+    small.data = {0.0f, 1.0f, 1.0f, 0.0f};
+    MaskBuffer up = upscaleMask(small, 8, 8);
+    CHECK(up.width == 8 && up.height == 8);
+    CHECK(up.data[0] < 0.2f);             // top-left ~ 0
+    CHECK(up.data[7] > 0.8f);             // top-right ~ 1
+
     std::puts("guided_filter_test: OK");
     return 0;
 }

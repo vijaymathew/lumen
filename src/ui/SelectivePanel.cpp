@@ -41,16 +41,20 @@ SelectivePanel::SelectivePanel(QWidget *parent)
     titleRow->addWidget(m_maskButton);
 
     // Mask-mode selector.
-    m_lumaButton = new QPushButton(QStringLiteral("Luminosity"), this);
+    m_lumaButton = new QPushButton(QStringLiteral("Lum"), this);
     m_colorButton = new QPushButton(QStringLiteral("Colour"), this);
+    m_brushButton = new QPushButton(QStringLiteral("Brush"), this);
     m_lumaButton->setCheckable(true);
     m_colorButton->setCheckable(true);
+    m_brushButton->setCheckable(true);
     connect(m_lumaButton, &QPushButton::clicked, this, [this] { setMaskMode(0, true); });
     connect(m_colorButton, &QPushButton::clicked, this, [this] { setMaskMode(1, true); });
+    connect(m_brushButton, &QPushButton::clicked, this, [this] { setMaskMode(2, true); });
     auto *modeRow = new QHBoxLayout;
     modeRow->setContentsMargins(0, 0, 0, 0);
     modeRow->addWidget(m_lumaButton);
     modeRow->addWidget(m_colorButton);
+    modeRow->addWidget(m_brushButton);
 
     // Luminosity section.
     m_lumaSection = new QWidget(this);
@@ -81,6 +85,64 @@ SelectivePanel::SelectivePanel(QWidget *parent)
     colorLayout->addLayout(pickRow);
     m_range = addRow(colorLayout, QStringLiteral("Range"), 2, 100, &m_rangeValue);
 
+    // Brush section.
+    m_brushSection = new QWidget(this);
+    auto *brushLayout = new QVBoxLayout(m_brushSection);
+    brushLayout->setContentsMargins(0, 0, 0, 0);
+    brushLayout->setSpacing(8);
+    brushLayout->addWidget(makeSection(m_brushSection, QStringLiteral("Brush")));
+    m_addButton = new QPushButton(QStringLiteral("Add"), m_brushSection);
+    m_subButton = new QPushButton(QStringLiteral("Subtract"), m_brushSection);
+    m_addButton->setCheckable(true);
+    m_subButton->setCheckable(true);
+    auto *clear = new QPushButton(QStringLiteral("Clear"), m_brushSection);
+    connect(m_addButton, &QPushButton::clicked, this, [this] {
+        m_brushAdd = true;
+        m_addButton->setChecked(true);
+        m_subButton->setChecked(false);
+        emit brushSettingsChanged(m_brushSize->value(), m_brushHardness->value(), m_brushAdd);
+    });
+    connect(m_subButton, &QPushButton::clicked, this, [this] {
+        m_brushAdd = false;
+        m_addButton->setChecked(false);
+        m_subButton->setChecked(true);
+        emit brushSettingsChanged(m_brushSize->value(), m_brushHardness->value(), m_brushAdd);
+    });
+    connect(clear, &QPushButton::clicked, this, &SelectivePanel::brushClearRequested);
+    auto *modeBrushRow = new QHBoxLayout;
+    modeBrushRow->setContentsMargins(0, 0, 0, 0);
+    modeBrushRow->addWidget(m_addButton);
+    modeBrushRow->addWidget(m_subButton);
+    modeBrushRow->addStretch(1);
+    modeBrushRow->addWidget(clear);
+    brushLayout->addLayout(modeBrushRow);
+
+    const auto brushRow = [this, brushLayout](const QString &name, int def, QLabel **valueOut) {
+        auto *header = new QHBoxLayout;
+        header->setContentsMargins(0, 0, 0, 0);
+        auto *nameLabel = new QLabel(name);
+        nameLabel->setObjectName(QStringLiteral("rowName"));
+        auto *valueLabel = new QLabel();
+        valueLabel->setObjectName(QStringLiteral("rowValue"));
+        valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        header->addWidget(nameLabel);
+        header->addStretch(1);
+        header->addWidget(valueLabel);
+        auto *slider = new QSlider(Qt::Horizontal);
+        slider->setRange(1, 100);
+        slider->setValue(def);
+        connect(slider, &QSlider::valueChanged, this, [this, valueLabel](int v) {
+            valueLabel->setText(QString::number(v));
+            emit brushSettingsChanged(m_brushSize->value(), m_brushHardness->value(), m_brushAdd);
+        });
+        brushLayout->addLayout(header);
+        brushLayout->addWidget(slider);
+        *valueOut = valueLabel;
+        return slider;
+    };
+    m_brushSize = brushRow(QStringLiteral("Size"), 30, &m_brushSizeValue);
+    m_brushHardness = brushRow(QStringLiteral("Hardness"), 50, &m_brushHardnessValue);
+
     // Adjust section (always visible).
     auto *adjust = new QWidget(this);
     auto *adjustLayout = new QVBoxLayout(adjust);
@@ -105,6 +167,7 @@ SelectivePanel::SelectivePanel(QWidget *parent)
     layout->addLayout(modeRow);
     layout->addWidget(m_lumaSection);
     layout->addWidget(m_colorSection);
+    layout->addWidget(m_brushSection);
     layout->addWidget(adjust);
 
     setStyleSheet(QStringLiteral(R"(
@@ -157,11 +220,16 @@ void SelectivePanel::setMaskMode(int mode, bool emitChange)
     m_maskMode = mode;
     m_lumaButton->setChecked(mode == 0);
     m_colorButton->setChecked(mode == 1);
+    m_brushButton->setChecked(mode == 2);
     m_lumaSection->setVisible(mode == 0);
     m_colorSection->setVisible(mode == 1);
+    m_brushSection->setVisible(mode == 2);
     adjustSize();
-    if (emitChange)
+    if (emitChange) {
         emit valuesChanged(currentValues());
+        if (mode == 2)
+            emit brushSettingsChanged(m_brushSize->value(), m_brushHardness->value(), m_brushAdd);
+    }
 }
 
 void SelectivePanel::setTargetColor(const QColor &color)
@@ -222,6 +290,11 @@ void SelectivePanel::reveal(const SelectiveValues &v)
         s->blockSignals(false);
 
     setTargetColor(QColor::fromRgbF(v.targetR, v.targetG, v.targetB));
+    m_brushAdd = true;
+    m_addButton->setChecked(true);
+    m_subButton->setChecked(false);
+    m_brushSizeValue->setText(QString::number(m_brushSize->value()));
+    m_brushHardnessValue->setText(QString::number(m_brushHardness->value()));
     setMaskMode(v.maskMode, false);
     refreshLabels();
 

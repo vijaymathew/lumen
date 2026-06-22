@@ -109,6 +109,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_selectivePanel, &SelectivePanel::valuesChanged, this,
             [this](const SelectiveValues &v) {
                 m_selective->setValues(v);
+                m_canvas->setBrushMode(v.maskMode == 2);
+                if (v.maskMode == 2 && m_brushMask.isEmpty())
+                    initBrushMask();
                 recomputeSelectiveMask();
                 updatePreview();
             });
@@ -119,6 +122,22 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_selectivePanel, &SelectivePanel::pickColorRequested, this,
             [this] { m_canvas->setColorPickMode(true); });
     connect(m_canvas, &CanvasWidget::colorPointPicked, this, &MainWindow::onColorPicked);
+    connect(m_selectivePanel, &SelectivePanel::brushSettingsChanged, this,
+            [this](int size, int hardness, bool add) {
+                m_brushSize = size;
+                m_brushHardness = hardness;
+                m_brushAdd = add;
+            });
+    connect(m_selectivePanel, &SelectivePanel::brushClearRequested, this, [this] {
+        if (m_brushMask.isEmpty())
+            return;
+        m_brushUndo.push_back(m_brushMask.data); // clear is undoable
+        std::fill(m_brushMask.data.begin(), m_brushMask.data.end(), 0.0f);
+        m_canvas->setSelectiveMask(m_brushMask);
+    });
+    connect(m_canvas, &CanvasWidget::brushStrokeBegan, this, &MainWindow::beginBrushStroke);
+    connect(m_canvas, &CanvasWidget::brushPoint, this, &MainWindow::brushAt);
+    connect(m_canvas, &CanvasWidget::brushStrokeEnded, this, [this] { m_brushHasLast = false; });
 
     // Dismissible hint bar, bottom-centre over the canvas.
     m_hint = new QLabel(this);
@@ -351,6 +370,16 @@ void MainWindow::openSelectiveTool()
     const int margin = 18;
     m_selectivePanel->move(width() - m_selectivePanel->width() - margin, margin);
     m_selectivePanel->reveal(m_selective->values());
+
+    // Restore the brush session from the node (may be empty).
+    m_brushMask = m_selective->brushMask();
+    m_brushUndo.clear();
+    m_brushHasLast = false;
+    const bool brush = m_selective->values().maskMode == 2;
+    if (brush && m_brushMask.isEmpty())
+        initBrushMask();
+    m_canvas->setBrushMode(brush);
+
     recomputeSelectiveMask();
     updatePreview();
 }
@@ -359,6 +388,11 @@ void MainWindow::closeSelectiveTool()
 {
     m_selectivePanel->hide();
     m_canvas->setColorPickMode(false);
+    m_canvas->setBrushMode(false);
+    // Commit the painted mask into the node (one global undo step).
+    if (m_selective->values().maskMode == 2)
+        m_selective->setBrushMask(m_brushMask);
+    m_brushUndo.clear();
     m_maskView = 0; // clear the mask overlay
     updatePreview();
     m_graph.commit();
@@ -369,6 +403,10 @@ void MainWindow::closeSelectiveTool()
 void MainWindow::recomputeSelectiveMask()
 {
     const SelectiveValues v = m_selective->values();
+    if (v.maskMode == 2) {
+        m_canvas->setSelectiveMask(m_brushMask); // painted mask
+        return;
+    }
     if (v.maskMode != 1 || m_sourceQImage.isNull()) {
         m_canvas->setSelectiveMask({}); // luminosity mode is parametric in-shader
         return;
@@ -384,6 +422,73 @@ void MainWindow::recomputeSelectiveMask()
     MaskBuffer mask = colorAffinityMask(img.constBits(), img.width(), img.height(), 4,
                                         v.targetR, v.targetG, v.targetB, v.colorRange);
     m_canvas->setSelectiveMask(mask);
+}
+
+void MainWindow::initBrushMask()
+{
+    if (m_sourceQImage.isNull())
+        return;
+    constexpr int cap = 1280;
+    int w = m_sourceQImage.width();
+    int h = m_sourceQImage.height();
+    if (std::max(w, h) > cap) {
+        const double s = double(cap) / std::max(w, h);
+        w = std::max(1, static_cast<int>(std::lround(w * s)));
+        h = std::max(1, static_cast<int>(std::lround(h * s)));
+    }
+    m_brushMask.width = w;
+    m_brushMask.height = h;
+    m_brushMask.data.assign(static_cast<size_t>(w) * h, 0.0f);
+}
+
+void MainWindow::beginBrushStroke()
+{
+    if (m_brushMask.isEmpty())
+        return;
+    m_brushUndo.push_back(m_brushMask.data); // snapshot for session undo
+    if (m_brushUndo.size() > 50)
+        m_brushUndo.erase(m_brushUndo.begin());
+    m_brushHasLast = false;
+}
+
+void MainWindow::brushAt(const QPointF &norm)
+{
+    if (m_brushMask.isEmpty())
+        return;
+    const int w = m_brushMask.width;
+    const int h = m_brushMask.height;
+    const float cx = static_cast<float>(norm.x()) * (w - 1);
+    const float cy = static_cast<float>(norm.y()) * (h - 1);
+    const float radius = std::max(1.0f, (m_brushSize / 100.0f) * 0.3f * std::min(w, h));
+    const float hardness = m_brushHardness / 100.0f;
+
+    if (m_brushHasLast) {
+        // Stamp along the segment so fast drags don't leave gaps.
+        const float dx = cx - m_lastBrushPoint.x();
+        const float dy = cy - m_lastBrushPoint.y();
+        const float dist = std::sqrt(dx * dx + dy * dy);
+        const float step = std::max(1.0f, radius * 0.25f);
+        const int steps = static_cast<int>(dist / step);
+        for (int k = 1; k < steps; ++k) {
+            const float t = k / float(steps);
+            stampBrush(m_brushMask, m_lastBrushPoint.x() + dx * t,
+                       m_lastBrushPoint.y() + dy * t, radius, hardness, m_brushAdd);
+        }
+    }
+    stampBrush(m_brushMask, cx, cy, radius, hardness, m_brushAdd);
+    m_lastBrushPoint = QPointF(cx, cy);
+    m_brushHasLast = true;
+    m_canvas->setSelectiveMask(m_brushMask);
+}
+
+bool MainWindow::brushSessionUndo()
+{
+    if (m_brushUndo.empty())
+        return false;
+    m_brushMask.data = m_brushUndo.back();
+    m_brushUndo.pop_back();
+    m_canvas->setSelectiveMask(m_brushMask);
+    return true;
 }
 
 void MainWindow::onColorPicked(const QPointF &norm)
@@ -425,6 +530,10 @@ void MainWindow::closeActiveTool()
 
 void MainWindow::doUndo()
 {
+    // While brush-painting, Ctrl+Z is a per-stroke session undo.
+    if (m_selectivePanel->isVisible() && m_selective->values().maskMode == 2
+        && brushSessionUndo())
+        return;
     if (m_graph.undo())
         afterHistoryChange();
 }
@@ -448,6 +557,11 @@ void MainWindow::afterHistoryChange()
                              m_lutNode->intensity());
     if (m_selectivePanel->isVisible()) {
         m_selectivePanel->reveal(m_selective->values());
+        if (m_selective->values().maskMode == 2) {
+            m_brushMask = m_selective->brushMask(); // sync session to restored state
+            m_brushUndo.clear();
+            m_canvas->setBrushMode(true);
+        }
         recomputeSelectiveMask();
     }
 }

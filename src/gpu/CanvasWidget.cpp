@@ -410,29 +410,64 @@ void CanvasWidget::setColorPickMode(bool on)
     setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
 }
 
+void CanvasWidget::setBrushMode(bool on)
+{
+    m_brushMode = on;
+    m_brushing = false;
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+}
+
+QPointF CanvasWidget::imageNormalizedAt(const QPointF &widgetPos)
+{
+    const qreal dpr = devicePixelRatioF();
+    const QSizeF widget(width() * dpr, height() * dpr);
+    const QSizeF image(m_textureSize.width(), m_textureSize.height());
+    const QPointF px = zoommath::imagePixelAt(widget, image, m_zoom, m_pan, widgetPos * dpr);
+    return QPointF(std::clamp(px.x() / image.width(), 0.0, 1.0),
+                   std::clamp(px.y() / image.height(), 0.0, 1.0));
+}
+
 void CanvasWidget::mousePressEvent(QMouseEvent *e)
 {
     if (e->button() != Qt::LeftButton)
         return;
 
-    if (m_pickMode && !m_textureSize.isEmpty()) {
-        const qreal dpr = devicePixelRatioF();
-        const QSizeF widget(width() * dpr, height() * dpr);
-        const QSizeF image(m_textureSize.width(), m_textureSize.height());
-        const QPointF px = zoommath::imagePixelAt(widget, image, m_zoom, m_pan,
-                                                  e->position() * dpr);
-        const QPointF norm(std::clamp(px.x() / image.width(), 0.0, 1.0),
-                           std::clamp(px.y() / image.height(), 0.0, 1.0));
+    if (m_textureSize.isEmpty()) {
+        m_lastMousePos = e->position();
+        return;
+    }
+
+    if (m_pickMode) {
+        const QPointF norm = imageNormalizedAt(e->position());
         setColorPickMode(false);
         emit colorPointPicked(norm);
+        return;
+    }
+
+    if (m_brushMode) {
+        m_brushing = true;
+        emit brushStrokeBegan();
+        emit brushPoint(imageNormalizedAt(e->position()));
         return;
     }
 
     m_lastMousePos = e->position();
 }
 
+void CanvasWidget::mouseReleaseEvent(QMouseEvent *e)
+{
+    if (e->button() == Qt::LeftButton && m_brushing) {
+        m_brushing = false;
+        emit brushStrokeEnded();
+    }
+}
+
 void CanvasWidget::mouseMoveEvent(QMouseEvent *e)
 {
+    if (m_brushing) {
+        emit brushPoint(imageNormalizedAt(e->position()));
+        return;
+    }
     if (e->buttons() & Qt::LeftButton) {
         const QPointF delta = e->position() - m_lastMousePos;
         m_lastMousePos = e->position();

@@ -1,13 +1,14 @@
 #pragma once
 
 #include "core/EditNode.h"
+#include "core/SelectiveMask.h"
 
 // Parameters for a selective (luminosity-masked) tone adjustment. The mask
 // selects pixels whose luminance falls in [low, high], feathered by `feather`
 // on each side; the adjustment (exposure/contrast/saturation) is blended in by
 // the mask weight.
 struct SelectiveValues {
-    // Mask: 0 = luminosity range (parametric), 1 = colour affinity (guided).
+    // Mask: 0 = luminosity range (parametric), 1 = colour affinity, 2 = brush.
     int maskMode = 0;
     // Luminosity-range mask.
     float low = 0.0f; // luminance range [0,1]
@@ -41,6 +42,11 @@ public:
     const SelectiveValues &values() const { return m_values; }
     void setValues(const SelectiveValues &values);
 
+    // The painted brush mask (used when maskMode == 2). Stored at working
+    // resolution; apply() upscales it to the image.
+    const MaskBuffer &brushMask() const { return m_brushMask; }
+    void setBrushMask(const MaskBuffer &mask);
+
     Image apply(const Image &input) const override;
     void contributeToPreview(PreviewState &state) const override;
 
@@ -51,4 +57,5 @@ private:
     bool isNeutral() const;
 
     SelectiveValues m_values;
+    MaskBuffer m_brushMask; // painted mask for brush mode
 };

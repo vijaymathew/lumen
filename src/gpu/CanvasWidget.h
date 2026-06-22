@@ -55,8 +55,14 @@ public:
     // the image-normalised position instead of panning.
     void setColorPickMode(bool on);
 
+    // Brush mode: left-drag paints (emits brush signals) instead of panning.
+    void setBrushMode(bool on);
+
 signals:
     void colorPointPicked(QPointF imageNormalized);
+    void brushStrokeBegan();
+    void brushPoint(QPointF imageNormalized);
+    void brushStrokeEnded();
 
 protected:
     void initialize(QRhiCommandBuffer *cb) override;
@@ -64,11 +70,13 @@ protected:
 
     void mousePressEvent(QMouseEvent *e) override;
     void mouseMoveEvent(QMouseEvent *e) override;
+    void mouseReleaseEvent(QMouseEvent *e) override;
     void wheelEvent(QWheelEvent *e) override;
 
 private:
     void ensurePipeline();
     void buildSrb();
+    QPointF imageNormalizedAt(const QPointF &widgetPos);
     QMatrix4x4 computeMvp(const QSize &targetPixels);
     // Multiplies zoom by `factor`, keeping the image point under the cursor fixed.
     void zoomAt(float factor, const QPointF &cursorDevicePx);
@@ -100,6 +108,8 @@ private:
     QPointF m_pan{0.0, 0.0};
     QPointF m_lastMousePos;
     bool m_pickMode = false;
+    bool m_brushMode = false;
+    bool m_brushing = false;
 
     // Preview adjustments (from the edit graph) fed to the shader.
     PreviewState m_preview;
