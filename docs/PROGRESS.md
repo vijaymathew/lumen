@@ -60,7 +60,7 @@ plain Qt widgets.
 
 | Item | Status | Notes |
 |---|---|---|
-| Tone sliders (tool panel, bottom-docked) | ⬜ | |
+| Tone sliders (floating tool panel) | ✅ | Exposure + contrast + saturation in `TuneNode`, driven by a 3-slider `TonePanel`; GPU preview & libvips export use identical math (verified to match on a real photo). Warmth/highlights/shadows can follow. (Panel floats per §4.6, not bottom-docked) |
 | Curves editor — drag points, add/remove | ⬜ | Pointer-first; keyboard nudge as garnish |
 | Per-channel + luminance curves | ⬜ | |
 

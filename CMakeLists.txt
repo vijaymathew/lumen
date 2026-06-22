@@ -71,8 +71,8 @@ qt_add_executable(lumen
     src/input/InputController.cpp
     src/input/CommandPalette.h
     src/input/CommandPalette.cpp
-    src/ui/ExposurePanel.h
-    src/ui/ExposurePanel.cpp
+    src/ui/TonePanel.h
+    src/ui/TonePanel.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
 )

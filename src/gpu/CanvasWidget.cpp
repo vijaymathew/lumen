@@ -54,7 +54,9 @@ void CanvasWidget::resetView()
 
 void CanvasWidget::setPreviewState(const PreviewState &state)
 {
-    if (m_preview.exposure == state.exposure)
+    if (m_preview.exposure == state.exposure
+        && m_preview.contrast == state.contrast
+        && m_preview.saturation == state.saturation)
         return;
     m_preview = state;
     update();
@@ -193,7 +195,10 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
     if (drawable) {
         const QMatrix4x4 mvp = computeMvp(target);
         u->updateDynamicBuffer(m_ubuf.get(), 0, 64, mvp.constData());
-        u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(float), &m_preview.exposure);
+        // PreviewState's floats are contiguous and match the shader block order.
+        static_assert(sizeof(PreviewState) == 3 * sizeof(float),
+                      "PreviewState must be 3 tightly-packed floats");
+        u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(PreviewState), &m_preview.exposure);
     }
 
     const QColor clearColor(17, 17, 19); // matches the app's dark canvas

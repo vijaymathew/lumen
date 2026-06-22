@@ -8,7 +8,7 @@
 
 class CanvasWidget;
 class CommandPalette;
-class ExposurePanel;
+class TonePanel;
 class QLabel;
 
 // MainWindow is the immersive shell: a fullscreen canvas with a "/"-triggered
@@ -39,8 +39,8 @@ private:
     void layoutOverlays();
 
     void openCommandPalette();
-    void openExposureTool();
-    void closeExposureTool();
+    void openToneTool();
+    void closeToneTool();
     void exportImage();
 
     void doUndo();
@@ -51,7 +51,7 @@ private:
     CanvasWidget *m_canvas = nullptr;
     QWidget *m_scrim = nullptr; // dims the image behind the command palette
     CommandPalette *m_palette = nullptr;
-    ExposurePanel *m_exposurePanel = nullptr;
+    TonePanel *m_tonePanel = nullptr;
     QLabel *m_hint = nullptr;
 
     // The non-destructive edit graph. The GPU preview reads the tune node's

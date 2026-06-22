@@ -3,7 +3,7 @@
 #include "core/Image.h"
 #include "gpu/CanvasWidget.h"
 #include "input/CommandPalette.h"
-#include "ui/ExposurePanel.h"
+#include "ui/TonePanel.h"
 
 #include <memory>
 
@@ -66,13 +66,15 @@ MainWindow::MainWindow(QWidget *parent)
         m_canvas->setFocus();
     });
 
-    m_exposurePanel = new ExposurePanel(this);
-    connect(m_exposurePanel, &ExposurePanel::exposureChanged, this, [this](double ev) {
-        m_tune->setExposure(static_cast<float>(ev)); // update the model node
+    m_tonePanel = new TonePanel(this);
+    connect(m_tonePanel, &TonePanel::valuesChanged, this, [this](const ToneValues &v) {
+        m_tune->setExposure(v.exposure); // update the model node
+        m_tune->setContrast(v.contrast);
+        m_tune->setSaturation(v.saturation);
         // The preview is driven by walking the graph, not the node directly.
         m_canvas->setPreviewState(m_graph.previewState());
     });
-    connect(m_exposurePanel, &ExposurePanel::closed, this, &MainWindow::closeExposureTool);
+    connect(m_tonePanel, &TonePanel::closed, this, &MainWindow::closeToneTool);
 
     // Dismissible hint bar, bottom-centre over the canvas.
     m_hint = new QLabel(this);
@@ -103,7 +105,7 @@ void MainWindow::buildCommands()
     m_palette->setCommands({
         {QStringLiteral("open"), QStringLiteral("Open image…")},
         {QStringLiteral("export"), QStringLiteral("Export image…")},
-        {QStringLiteral("exposure"), QStringLiteral("Exposure")},
+        {QStringLiteral("tone"), QStringLiteral("Tone (exposure, contrast, saturation)")},
         {QStringLiteral("undo"), QStringLiteral("Undo")},
         {QStringLiteral("redo"), QStringLiteral("Redo")},
         {QStringLiteral("reset-view"), QStringLiteral("Reset view")},
@@ -122,8 +124,8 @@ void MainWindow::runCommand(const QString &id)
         openImageDialog();
     } else if (id == QLatin1String("export")) {
         exportImage();
-    } else if (id == QLatin1String("exposure")) {
-        openExposureTool();
+    } else if (id == QLatin1String("tone")) {
+        openToneTool();
     } else if (id == QLatin1String("undo")) {
         doUndo();
     } else if (id == QLatin1String("redo")) {
@@ -207,19 +209,19 @@ void MainWindow::toggleFullScreen()
         showFullScreen();
 }
 
-void MainWindow::openExposureTool()
+void MainWindow::openToneTool()
 {
     m_input.setMode(InputController::Mode::ToolActive);
     // Default position: top-right with a margin. The user can drag it from here.
-    m_exposurePanel->adjustSize();
+    m_tonePanel->adjustSize();
     const int margin = 18;
-    m_exposurePanel->move(width() - m_exposurePanel->width() - margin, margin);
-    m_exposurePanel->reveal(m_tune->exposure());
+    m_tonePanel->move(width() - m_tonePanel->width() - margin, margin);
+    m_tonePanel->reveal({m_tune->exposure(), m_tune->contrast(), m_tune->saturation()});
 }
 
-void MainWindow::closeExposureTool()
+void MainWindow::closeToneTool()
 {
-    m_exposurePanel->hide();
+    m_tonePanel->hide();
     m_graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
@@ -241,8 +243,8 @@ void MainWindow::afterHistoryChange()
 {
     m_canvas->setPreviewState(m_graph.previewState());
     // If a tool is open, reseed its control from the restored state.
-    if (m_exposurePanel->isVisible())
-        m_exposurePanel->reveal(m_tune->exposure());
+    if (m_tonePanel->isVisible())
+        m_tonePanel->reveal({m_tune->exposure(), m_tune->contrast(), m_tune->saturation()});
 }
 
 void MainWindow::showHint(const QString &text)
@@ -265,11 +267,11 @@ void MainWindow::layoutOverlays()
 
     // The tool panel floats and is user-draggable (placed on open), so don't
     // reposition it here — just clamp it back into view if the window shrank.
-    if (m_exposurePanel->isVisible()) {
-        QPoint p = m_exposurePanel->pos();
-        p.setX(std::clamp(p.x(), 0, std::max(0, width() - m_exposurePanel->width())));
-        p.setY(std::clamp(p.y(), 0, std::max(0, height() - m_exposurePanel->height())));
-        m_exposurePanel->move(p);
+    if (m_tonePanel->isVisible()) {
+        QPoint p = m_tonePanel->pos();
+        p.setX(std::clamp(p.x(), 0, std::max(0, width() - m_tonePanel->width())));
+        p.setY(std::clamp(p.y(), 0, std::max(0, height() - m_tonePanel->height())));
+        m_tonePanel->move(p);
     }
 
     // Hint bar: bottom-centre.
@@ -305,11 +307,11 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         // Esc/Enter close the active tool; "/" swaps to the palette.
         if (e->key() == Qt::Key_Escape || e->key() == Qt::Key_Return
             || e->key() == Qt::Key_Enter) {
-            closeExposureTool();
+            closeToneTool();
             return;
         }
         if (e->key() == Qt::Key_Slash) {
-            closeExposureTool();
+            closeToneTool();
             openCommandPalette();
             return;
         }
