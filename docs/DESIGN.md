@@ -3,7 +3,7 @@
 > A native, Linux-first photo editor inspired by Snapseed, built around an
 > immersive fullscreen canvas and a command-palette-driven workflow.
 
-**Status:** Draft / pre-implementation
+**Status:** Implementation started (milestone 1) — see [PROGRESS.md](PROGRESS.md)
 **Last updated:** 2026-06-22
 **Primary target:** Linux · **Also a v1 requirement:** macOS
 

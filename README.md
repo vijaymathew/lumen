@@ -10,6 +10,7 @@ for the full design.
 > **Status: milestone 1 (skeleton).** Loads and displays an image through
 > libvips on a Qt RHI canvas with zoom/pan, plus the command-palette shell.
 > Editing tools (curves, selective, healing, looks) are not implemented yet.
+> Phase-by-phase progress is tracked in [docs/PROGRESS.md](docs/PROGRESS.md).
 
 ## What works today
 
