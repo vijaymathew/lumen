@@ -43,10 +43,11 @@ plain Qt widgets.
 
 | Item | Status | Notes |
 |---|---|---|
-| `EditNode` base + `EditGraph` | ⬜ | Core architecture decision (DESIGN §5.1) |
-| Dirty-flag / cache invalidation | ⬜ | |
+| `EditNode` base + `EditGraph` | ✅ | `Image` (RAII libvips wrapper), abstract `EditNode`, ordered `EditGraph`; in headless `lumen_core` lib |
+| Dirty-flag / cache invalidation | ✅ | Lazy eval + per-node cache + downstream dirty propagation; unit-tested (`edit_graph_test`) |
 | `TuneNode` (exposure) — preview path | ⬜ | GLSL/RHI shader on downsampled image |
-| `TuneNode` — libvips export path | ⬜ | Full-res |
+| `TuneNode` — libvips export path | ⬜ | Full-res; first concrete `EditNode` |
+| Wire graph into the display pipeline | ⬜ | `MainWindow`/canvas currently bypass the graph |
 | Global undo/redo over the graph | ⬜ | Distinct from per-tool session undo |
 | Cursor-centred zoom | ⬜ | Carried over from Phase 1 |
 
