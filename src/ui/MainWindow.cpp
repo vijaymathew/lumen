@@ -52,7 +52,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_canvas = new CanvasWidget(this);
     setCentralWidget(m_canvas);
-    m_canvas->installEventFilter(this); // catch "/" while in Browse mode
 
     // Created before the palette so the palette stacks above it.
     m_scrim = new Scrim(this);
@@ -87,7 +86,7 @@ MainWindow::MainWindow(QWidget *parent)
     buildCommands();
 
     // Shell shortcuts. Bare keys are avoided so they don't clash with typing in
-    // the palette; "/" is handled via the canvas event filter instead.
+    // the palette; "/" and Esc are handled in keyPressEvent instead.
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+O")), this, [this] { openImageDialog(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Q")), this, [this] { close(); });
     new QShortcut(QKeySequence(Qt::Key_F11), this, [this] { toggleFullScreen(); });
@@ -283,20 +282,40 @@ void MainWindow::resizeEvent(QResizeEvent *e)
     layoutOverlays();
 }
 
-bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+void MainWindow::openCommandPalette()
 {
-    if (watched == m_canvas && event->type() == QEvent::KeyPress) {
-        auto *ke = static_cast<QKeyEvent *>(event);
-        if (ke->key() == Qt::Key_Slash
-            && m_input.mode() == InputController::Mode::Browse) {
-            m_input.setMode(InputController::Mode::CommandPalette);
-            layoutOverlays();
-            m_scrim->show();
-            m_scrim->raise();   // above the canvas
-            m_palette->reveal();
-            m_palette->raise(); // above the scrim
-            return true;
+    m_input.setMode(InputController::Mode::CommandPalette);
+    layoutOverlays();
+    m_scrim->show();
+    m_scrim->raise();   // above the canvas
+    m_palette->reveal();
+    m_palette->raise(); // above the scrim
+}
+
+void MainWindow::keyPressEvent(QKeyEvent *e)
+{
+    switch (m_input.mode()) {
+    case InputController::Mode::Browse:
+        if (e->key() == Qt::Key_Slash) {
+            openCommandPalette();
+            return;
         }
+        break;
+    case InputController::Mode::ToolActive:
+        // Esc/Enter close the active tool; "/" swaps to the palette.
+        if (e->key() == Qt::Key_Escape || e->key() == Qt::Key_Return
+            || e->key() == Qt::Key_Enter) {
+            closeExposureTool();
+            return;
+        }
+        if (e->key() == Qt::Key_Slash) {
+            closeExposureTool();
+            openCommandPalette();
+            return;
+        }
+        break;
+    default:
+        break;
     }
-    return QMainWindow::eventFilter(watched, event);
+    QMainWindow::keyPressEvent(e);
 }

@@ -26,7 +26,9 @@ public:
 
 protected:
     void resizeEvent(QResizeEvent *e) override;
-    bool eventFilter(QObject *watched, QEvent *event) override;
+    // Central key handling: catches keys via propagation no matter which child
+    // widget has focus, so the active tool can always be closed.
+    void keyPressEvent(QKeyEvent *e) override;
 
 private:
     void buildCommands();
@@ -36,6 +38,7 @@ private:
     void showHint(const QString &text);
     void layoutOverlays();
 
+    void openCommandPalette();
     void openExposureTool();
     void closeExposureTool();
     void exportImage();

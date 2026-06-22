@@ -47,6 +47,8 @@ protected:
 private:
     void ensurePipeline();
     QMatrix4x4 computeMvp(const QSize &targetPixels);
+    // Multiplies zoom by `factor`, keeping the image point under the cursor fixed.
+    void zoomAt(float factor, const QPointF &cursorDevicePx);
 
     // RHI we last built resources against; used to detect device changes.
     QRhi *m_rhi = nullptr;

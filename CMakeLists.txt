@@ -66,6 +66,7 @@ qt_add_executable(lumen
     src/main.cpp
     src/gpu/CanvasWidget.h
     src/gpu/CanvasWidget.cpp
+    src/gpu/ZoomMath.h
     src/input/InputController.h
     src/input/InputController.cpp
     src/input/CommandPalette.h
@@ -135,4 +136,10 @@ if(BUILD_TESTING)
     target_link_libraries(undo_test PRIVATE lumen_core)
     target_compile_options(undo_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME undo_test COMMAND undo_test)
+
+    # ZoomMath is a header in src/gpu; lumen_core exposes the src include dir.
+    add_executable(zoom_test tests/zoom_test.cpp)
+    target_link_libraries(zoom_test PRIVATE lumen_core)
+    target_compile_options(zoom_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME zoom_test COMMAND zoom_test)
 endif()
