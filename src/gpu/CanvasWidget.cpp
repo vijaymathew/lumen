@@ -35,8 +35,6 @@ CanvasWidget::CanvasWidget(QWidget *parent)
     : QRhiWidget(parent)
 {
     setFocusPolicy(Qt::StrongFocus);
-    for (int i = 0; i < 256; ++i)
-        m_lut[i] = static_cast<uint8_t>(i); // identity
 }
 
 void CanvasWidget::setImage(const QImage &image)
@@ -64,11 +62,11 @@ void CanvasWidget::setPreviewState(const PreviewState &state)
     update();
 }
 
-void CanvasWidget::setCurveLut(const std::array<uint8_t, 256> &lut)
+void CanvasWidget::setCurveLuts(const ChannelLuts &luts)
 {
-    if (m_lut == lut)
+    if (m_luts == luts)
         return;
-    m_lut = lut;
+    m_luts = luts;
     m_lutDirty = true;
     update();
 }
@@ -124,8 +122,8 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
     }
 
     if (!m_lutTexture) {
-        // 256x1 single-channel tone-curve LUT.
-        m_lutTexture.reset(r->newTexture(QRhiTexture::R8, QSize(256, 1)));
+        // 256x1 RGBA tone-curve LUT: R/G/B channels hold the per-channel curves.
+        m_lutTexture.reset(r->newTexture(QRhiTexture::RGBA8, QSize(256, 1)));
         m_lutTexture->create();
         m_lutDirty = true;
     }
@@ -220,8 +218,14 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
     }
 
     if (m_lutDirty && m_lutTexture) {
-        const QByteArray bytes(reinterpret_cast<const char *>(m_lut.data()),
-                               static_cast<qsizetype>(m_lut.size()));
+        // Interleave the three LUTs into RGBA texels (alpha unused).
+        QByteArray bytes(256 * 4, char(0));
+        for (int i = 0; i < 256; ++i) {
+            bytes[i * 4 + 0] = static_cast<char>(m_luts[0][i]);
+            bytes[i * 4 + 1] = static_cast<char>(m_luts[1][i]);
+            bytes[i * 4 + 2] = static_cast<char>(m_luts[2][i]);
+            bytes[i * 4 + 3] = char(255);
+        }
         QRhiTextureSubresourceUploadDescription sub(bytes);
         QRhiTextureUploadEntry entry(0, 0, sub);
         u->uploadTexture(m_lutTexture.get(), QRhiTextureUploadDescription(entry));

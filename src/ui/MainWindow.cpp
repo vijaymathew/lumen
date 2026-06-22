@@ -79,8 +79,8 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_tonePanel, &TonePanel::closed, this, &MainWindow::closeToneTool);
 
     m_curvesPanel = new CurvesPanel(this);
-    connect(m_curvesPanel, &CurvesPanel::curveChanged, this, [this](const Curve &c) {
-        m_curves->setCurve(c);
+    connect(m_curvesPanel, &CurvesPanel::curveChanged, this, [this](const ChannelCurves &c) {
+        m_curves->setCurves(c);
         updatePreview();
     });
 
@@ -222,7 +222,7 @@ void MainWindow::toggleFullScreen()
 void MainWindow::updatePreview()
 {
     m_canvas->setPreviewState(m_graph.previewState());
-    m_canvas->setCurveLut(m_graph.previewLut());
+    m_canvas->setCurveLuts(m_graph.previewLut());
 }
 
 void MainWindow::openToneTool()
@@ -249,7 +249,7 @@ void MainWindow::openCurvesTool()
     m_curvesPanel->adjustSize();
     const int margin = 18;
     m_curvesPanel->move(width() - m_curvesPanel->width() - margin, margin);
-    m_curvesPanel->reveal(m_curves->curve());
+    m_curvesPanel->reveal(m_curves->curves());
 }
 
 void MainWindow::closeCurvesTool()
@@ -291,7 +291,7 @@ void MainWindow::afterHistoryChange()
     if (m_tonePanel->isVisible())
         m_tonePanel->reveal({m_tune->exposure(), m_tune->contrast(), m_tune->saturation()});
     if (m_curvesPanel->isVisible())
-        m_curvesPanel->reveal(m_curves->curve());
+        m_curvesPanel->reveal(m_curves->curves());
 }
 
 void MainWindow::showHint(const QString &text)

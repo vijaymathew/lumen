@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Lut.h"
 #include "core/PreviewState.h"
 
 #include <QRhiWidget>
@@ -10,8 +11,6 @@
 #include <QPointF>
 #include <QSize>
 
-#include <array>
-#include <cstdint>
 #include <memory>
 
 // CanvasWidget displays the working image as a single textured quad rendered
@@ -35,8 +34,8 @@ public:
     // in the fragment shader.
     void setPreviewState(const PreviewState &state);
 
-    // Sets the tone-curve LUT (256 entries) applied after the tone ops.
-    void setCurveLut(const std::array<uint8_t, 256> &lut);
+    // Sets the per-channel tone-curve LUTs applied after the tone ops.
+    void setCurveLuts(const ChannelLuts &luts);
 
     // Resets zoom/pan so the image is fit-to-window and centred.
     void resetView();
@@ -79,6 +78,6 @@ private:
 
     // Preview adjustments (from the edit graph) fed to the shader.
     PreviewState m_preview;
-    std::array<uint8_t, 256> m_lut; // tone-curve LUT; identity by default
+    ChannelLuts m_luts = identityChannelLuts(); // per-channel tone curves
     bool m_lutDirty = true;
 };

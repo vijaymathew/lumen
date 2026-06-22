@@ -116,16 +116,14 @@ PreviewState EditGraph::previewState() const
     return state;
 }
 
-std::array<uint8_t, 256> EditGraph::previewLut() const
+ChannelLuts EditGraph::previewLut() const
 {
-    std::array<uint8_t, 256> lut;
-    for (int i = 0; i < 256; ++i)
-        lut[i] = static_cast<uint8_t>(i); // identity
+    ChannelLuts luts = identityChannelLuts();
     for (const auto &node : m_nodes) {
         if (node->isEnabled())
-            node->contributeToPreviewLut(lut);
+            node->contributeToPreviewLut(luts);
     }
-    return lut;
+    return luts;
 }
 
 QJsonArray EditGraph::saveState() const

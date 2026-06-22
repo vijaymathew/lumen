@@ -49,24 +49,36 @@ int main(int /*argc*/, char **argv)
     // Preview LUT composition through the graph.
     EditGraph graph;
     auto *node = static_cast<CurvesNode *>(graph.addNode(std::make_unique<CurvesNode>()));
-    // No curve yet -> identity preview LUT.
-    auto pl = graph.previewLut();
-    CHECK(pl[100] == 100);
-    node->setCurve(bright);
+    // No curve yet -> identity preview LUTs on all channels.
+    ChannelLuts pl = graph.previewLut();
+    CHECK(pl[0][100] == 100 && pl[1][100] == 100 && pl[2][100] == 100);
+
+    // Master curve lifts all three channels.
+    ChannelCurves cc;
+    cc.master = bright;
+    node->setCurves(cc);
     pl = graph.previewLut();
-    CHECK(pl[128] > 128);
+    CHECK(pl[0][128] > 128 && pl[1][128] > 128 && pl[2][128] > 128);
+
+    // A red-only curve affects red but leaves green/blue identity.
+    ChannelCurves redOnly;
+    redOnly.red = bright;
+    node->setCurves(redOnly);
+    pl = graph.previewLut();
+    CHECK(pl[0][128] > 128);  // red lifted
+    CHECK(pl[1][128] == 128); // green unchanged
+    CHECK(pl[2][128] == 128); // blue unchanged
 
     // Disabled node contributes nothing.
     node->setEnabled(false);
     pl = graph.previewLut();
-    CHECK(pl[128] == 128);
+    CHECK(pl[0][128] == 128);
     node->setEnabled(true);
 
-    // apply() yields a valid same-size image; identity curve is a passthrough.
+    // apply() yields a valid same-size image; identity curves are a passthrough.
     Image src = Image::black(4, 4);
     CHECK(!src.isNull());
     CurvesNode passthrough;
-    CHECK(passthrough.curve().isIdentity());
     Image same = passthrough.apply(src);
     CHECK(same.width() == 4 && same.height() == 4);
     Image out = node->apply(src);

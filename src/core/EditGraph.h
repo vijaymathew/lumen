@@ -1,13 +1,12 @@
 #pragma once
 
 #include "core/Image.h"
+#include "core/Lut.h"
 #include "core/PreviewState.h"
 
 #include <QJsonArray>
 #include <QString>
 
-#include <array>
-#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -60,9 +59,9 @@ public:
     // edit and push the result to the canvas.
     PreviewState previewState() const;
 
-    // Composes the tone-curve LUT of all enabled curve nodes (identity if none).
-    // The canvas applies this after the PreviewState tone ops.
-    std::array<uint8_t, 256> previewLut() const;
+    // Composes the per-channel tone-curve LUTs of all enabled curve nodes
+    // (identity if none). The canvas applies these after the PreviewState ops.
+    ChannelLuts previewLut() const;
 
     // --- Undo/redo ---------------------------------------------------------
     // History is a stack of graph snapshots. Call commit() to record the current

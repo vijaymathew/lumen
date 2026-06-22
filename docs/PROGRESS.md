@@ -53,7 +53,7 @@ plain Qt widgets.
 
 ---
 
-## Phase 3 — Tone tools + curves editor ⬜
+## Phase 3 — Tone tools + curves editor ✅
 
 > Brightness/contrast/highlights/shadows/WB/saturation; pointer-first curve
 > editor (DESIGN §4.4).
@@ -62,7 +62,7 @@ plain Qt widgets.
 |---|---|---|
 | Tone sliders (floating tool panel) | ✅ | Exposure + contrast + saturation in `TuneNode`, driven by a 3-slider `TonePanel`; GPU preview & libvips export use identical math (verified to match on a real photo). Warmth/highlights/shadows can follow. (Panel floats per §4.6, not bottom-docked) |
 | Curves editor — drag points, add/remove | ✅ | `Curve` (monotone-cubic → 256 LUT), `CurvesNode` (libvips `maplut`), GPU LUT texture in canvas (preview==export verified), pointer-first `CurvesPanel` (click add / drag move / drag-out or Del remove, arrow nudge, draggable card) |
-| Per-channel + luminance curves | ⬜ | Master RGB curve done; per-channel needs a channel selector + 3 LUTs |
+| Per-channel + luminance curves | ✅ | Four curves (RGB master + R/G/B); effective LUT = channel ∘ master; 3-channel GPU LUT texture (RGBA) + 4-band libvips `maplut`; channel-selector tabs in the editor; preview==export verified on a real photo |
 
 ---
 
