@@ -3,6 +3,7 @@
 #include "core/Image.h"
 #include "core/PreviewState.h"
 
+#include <QJsonObject>
 #include <QString>
 
 // EditNode is the base class for one non-destructive edit in the pipeline
@@ -44,6 +45,11 @@ public:
     // contribution; pointwise tone nodes override it. (The graph only calls this
     // for enabled nodes.)
     virtual void contributeToPreview(PreviewState &) const {}
+
+    // Serialises / restores this node's parameters (for undo/redo, and later
+    // project save/load). Subclasses extend the base, which handles `enabled`.
+    virtual QJsonObject saveState() const;
+    virtual void restoreState(const QJsonObject &state);
 
 protected:
     // Subclasses call this from parameter setters to invalidate cached output.

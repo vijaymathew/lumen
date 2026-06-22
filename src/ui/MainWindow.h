@@ -40,6 +40,10 @@ private:
     void closeExposureTool();
     void exportImage();
 
+    void doUndo();
+    void doRedo();
+    void afterHistoryChange(); // refresh preview + any open tool after undo/redo
+
     InputController m_input;
     CanvasWidget *m_canvas = nullptr;
     QWidget *m_scrim = nullptr; // dims the image behind the command palette

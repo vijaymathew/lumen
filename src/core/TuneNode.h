@@ -22,6 +22,9 @@ public:
     Image apply(const Image &input) const override;
     void contributeToPreview(PreviewState &state) const override;
 
+    QJsonObject saveState() const override;
+    void restoreState(const QJsonObject &state) override;
+
 private:
     float m_exposure = 0.0f;
 };

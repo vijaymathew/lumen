@@ -36,7 +36,7 @@ plain Qt widgets.
 
 ---
 
-## Phase 2 — Edit graph 🟡 (foundational, started)
+## Phase 2 — Edit graph ✅ (cursor-centred zoom is carried-over Phase 1 polish)
 
 > Non-destructive node pipeline: nodes, dirty/cache system, a simple exposure
 > node end-to-end (preview + export).
@@ -48,7 +48,7 @@ plain Qt widgets.
 | `TuneNode` (exposure) — preview path | ✅ | `TuneNode` model + exposure uniform in fragment shader; modeless draggable right-side card; verified on-screen (+2 EV brightens) |
 | `TuneNode` — libvips export path | ✅ | Export command walks `EditGraph.result()` at full res → `Image::saveToFile` (alpha stripped); round-trip unit-tested + verified on a real photo (export matches preview) |
 | Wire graph into the display pipeline | ✅ | Preview driven by `EditGraph::previewState()` (walks nodes → `PreviewState` → fragment shader); GPU real-time path kept. Spatial/multi-pass nodes deferred until one exists |
-| Global undo/redo over the graph | ⬜ | Distinct from per-tool session undo |
+| Global undo/redo over the graph | ✅ | Snapshot history of node state (JSON); commit per tool session, no-op coalescing, redo-tail truncation; Ctrl+Z/Ctrl+Shift+Z + palette; unit-tested + verified on-screen. Structural undo (add/remove/reorder) deferred until nodes are user-addable |
 | Cursor-centred zoom | ⬜ | Carried over from Phase 1 |
 
 ---

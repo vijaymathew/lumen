@@ -26,6 +26,19 @@ void TuneNode::contributeToPreview(PreviewState &state) const
     state.exposure += m_exposure; // EV stops sum
 }
 
+QJsonObject TuneNode::saveState() const
+{
+    QJsonObject state = EditNode::saveState();
+    state[QStringLiteral("exposure")] = m_exposure;
+    return state;
+}
+
+void TuneNode::restoreState(const QJsonObject &state)
+{
+    EditNode::restoreState(state);
+    setExposure(static_cast<float>(state.value(QStringLiteral("exposure")).toDouble()));
+}
+
 Image TuneNode::apply(const Image &input) const
 {
     if (input.isNull() || m_exposure == 0.0f)

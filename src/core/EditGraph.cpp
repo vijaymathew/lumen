@@ -2,6 +2,8 @@
 
 #include "core/EditNode.h"
 
+#include <QJsonObject>
+
 #include <algorithm>
 
 EditGraph::EditGraph() = default;
@@ -112,6 +114,81 @@ PreviewState EditGraph::previewState() const
             node->contributeToPreview(state);
     }
     return state;
+}
+
+QJsonArray EditGraph::saveState() const
+{
+    QJsonArray nodes;
+    for (const auto &node : m_nodes) {
+        QJsonObject entry;
+        entry[QStringLiteral("id")] = node->id();
+        entry[QStringLiteral("type")] = node->typeName();
+        entry[QStringLiteral("state")] = node->saveState();
+        nodes.append(entry);
+    }
+    return nodes;
+}
+
+void EditGraph::restoreState(const QJsonArray &state)
+{
+    // Current scope: the node set is fixed, so restore parameters by matching id.
+    // Structural undo (add/remove/reorder) will recreate nodes via a type
+    // factory when the UI can add/remove nodes.
+    for (const QJsonValue &value : state) {
+        const QJsonObject entry = value.toObject();
+        if (EditNode *node = findNode(entry.value(QStringLiteral("id")).toString()))
+            node->restoreState(entry.value(QStringLiteral("state")).toObject());
+    }
+}
+
+void EditGraph::resetHistory()
+{
+    m_history.clear();
+    m_history.push_back(saveState());
+    m_historyIndex = 0;
+}
+
+void EditGraph::commit()
+{
+    QJsonArray state = saveState();
+    // Skip if nothing changed since the current snapshot.
+    if (m_historyIndex >= 0 && m_history[m_historyIndex] == state)
+        return;
+
+    // Drop any redo tail, then push.
+    if (m_historyIndex + 1 < static_cast<int>(m_history.size()))
+        m_history.erase(m_history.begin() + m_historyIndex + 1, m_history.end());
+    m_history.push_back(std::move(state));
+    m_historyIndex = static_cast<int>(m_history.size()) - 1;
+}
+
+bool EditGraph::canUndo() const
+{
+    return m_historyIndex > 0;
+}
+
+bool EditGraph::canRedo() const
+{
+    return m_historyIndex >= 0
+        && m_historyIndex + 1 < static_cast<int>(m_history.size());
+}
+
+bool EditGraph::undo()
+{
+    if (!canUndo())
+        return false;
+    --m_historyIndex;
+    restoreState(m_history[m_historyIndex]);
+    return true;
+}
+
+bool EditGraph::redo()
+{
+    if (!canRedo())
+        return false;
+    ++m_historyIndex;
+    restoreState(m_history[m_historyIndex]);
+    return true;
 }
 
 int EditGraph::indexOf(const QString &id) const

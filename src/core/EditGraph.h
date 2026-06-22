@@ -3,6 +3,7 @@
 #include "core/Image.h"
 #include "core/PreviewState.h"
 
+#include <QJsonArray>
 #include <QString>
 
 #include <memory>
@@ -57,10 +58,32 @@ public:
     // edit and push the result to the canvas.
     PreviewState previewState() const;
 
+    // --- Undo/redo ---------------------------------------------------------
+    // History is a stack of graph snapshots. Call commit() to record the current
+    // state as a new undo step (a no-op if nothing changed since the last). The
+    // typical pattern: commit() when a tool's editing session ends.
+
+    // Clears history and records the current state as the baseline. Call when
+    // loading a new image so each image has its own undo timeline.
+    void resetHistory();
+
+    void commit();
+    bool canUndo() const;
+    bool canRedo() const;
+    bool undo(); // restores the previous snapshot; returns false if none
+    bool redo(); // restores the next snapshot; returns false if none
+
+    // Serialises / restores all node parameters (also reusable for project I/O).
+    QJsonArray saveState() const;
+    void restoreState(const QJsonArray &state);
+
 private:
     int indexOf(const QString &id) const;
 
     Image m_source;
     std::vector<std::unique_ptr<EditNode>> m_nodes;
     std::vector<Image> m_cache; // m_cache[i] = output of node i when clean
+
+    std::vector<QJsonArray> m_history;
+    int m_historyIndex = -1;
 };

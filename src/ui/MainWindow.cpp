@@ -92,6 +92,8 @@ MainWindow::MainWindow(QWidget *parent)
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Q")), this, [this] { close(); });
     new QShortcut(QKeySequence(Qt::Key_F11), this, [this] { toggleFullScreen(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+0")), this, [this] { m_canvas->resetView(); });
+    new QShortcut(QKeySequence::Undo, this, [this] { doUndo(); });
+    new QShortcut(QKeySequence::Redo, this, [this] { doRedo(); });
 
     resize(1280, 800);
 }
@@ -103,6 +105,8 @@ void MainWindow::buildCommands()
         {QStringLiteral("open"), QStringLiteral("Open image…")},
         {QStringLiteral("export"), QStringLiteral("Export image…")},
         {QStringLiteral("exposure"), QStringLiteral("Exposure")},
+        {QStringLiteral("undo"), QStringLiteral("Undo")},
+        {QStringLiteral("redo"), QStringLiteral("Redo")},
         {QStringLiteral("reset-view"), QStringLiteral("Reset view")},
         {QStringLiteral("fullscreen"), QStringLiteral("Toggle fullscreen")},
         {QStringLiteral("curves"), QStringLiteral("Curves")},
@@ -121,6 +125,10 @@ void MainWindow::runCommand(const QString &id)
         exportImage();
     } else if (id == QLatin1String("exposure")) {
         openExposureTool();
+    } else if (id == QLatin1String("undo")) {
+        doUndo();
+    } else if (id == QLatin1String("redo")) {
+        doRedo();
     } else if (id == QLatin1String("reset-view")) {
         m_canvas->resetView();
     } else if (id == QLatin1String("fullscreen")) {
@@ -145,6 +153,7 @@ bool MainWindow::openPath(const QString &path)
     m_graph.setSource(source);             // full-res source for export
     m_canvas->setImage(source.toQImage()); // unedited image for the GPU preview
     m_canvas->setPreviewState(m_graph.previewState()); // apply any existing edits
+    m_graph.resetHistory(); // fresh undo timeline for this image
     m_sourcePath = path;
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
     return true;
@@ -212,8 +221,29 @@ void MainWindow::openExposureTool()
 void MainWindow::closeExposureTool()
 {
     m_exposurePanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
+}
+
+void MainWindow::doUndo()
+{
+    if (m_graph.undo())
+        afterHistoryChange();
+}
+
+void MainWindow::doRedo()
+{
+    if (m_graph.redo())
+        afterHistoryChange();
+}
+
+void MainWindow::afterHistoryChange()
+{
+    m_canvas->setPreviewState(m_graph.previewState());
+    // If a tool is open, reseed its control from the restored state.
+    if (m_exposurePanel->isVisible())
+        m_exposurePanel->reveal(m_tune->exposure());
 }
 
 void MainWindow::showHint(const QString &text)

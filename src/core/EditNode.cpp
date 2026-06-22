@@ -19,3 +19,15 @@ void EditNode::setEnabled(bool enabled)
         m_dirty = true; // toggling enable/disable changes this node's output
     }
 }
+
+QJsonObject EditNode::saveState() const
+{
+    QJsonObject state;
+    state[QStringLiteral("enabled")] = m_enabled;
+    return state;
+}
+
+void EditNode::restoreState(const QJsonObject &state)
+{
+    setEnabled(state.value(QStringLiteral("enabled")).toBool(true));
+}
