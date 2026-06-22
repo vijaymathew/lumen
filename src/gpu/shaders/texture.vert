@@ -11,6 +11,15 @@ layout(std140, binding = 0) uniform buf {
     float contrast;
     float saturation;
     float lutIntensity;
+    float selEnabled;
+    float selLow;
+    float selHigh;
+    float selFeather;
+    float selExposure;
+    float selContrast;
+    float selSaturation;
+    float selMaskView;
+    float selMaskMode;
 } ubuf;
 
 void main()

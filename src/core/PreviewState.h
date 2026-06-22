@@ -13,8 +13,22 @@
 // Field order and packing must match the shader's std140 uniform block (see
 // texture.frag) — CanvasWidget uploads these as contiguous floats.
 struct PreviewState {
+    // TuneNode — global tone.
     float exposure = 0.0f;     // EV stops, summed across nodes
     float contrast = 1.0f;     // factor, 1 = neutral, multiplied across nodes
     float saturation = 1.0f;   // factor, 1 = neutral, multiplied across nodes
+    // LutNode.
     float lutIntensity = 1.0f; // look blend [0,1]; harmless when the LUT is identity
+    // SelectiveNode — luminosity-masked tone adjustment.
+    float selEnabled = 0.0f;     // 0/1
+    float selLow = 0.0f;         // luminosity range [0,1]
+    float selHigh = 1.0f;
+    float selFeather = 0.1f;
+    float selExposure = 0.0f;    // EV stops
+    float selContrast = 1.0f;    // factor
+    float selSaturation = 1.0f;  // factor
+    float selMaskView = 0.0f;    // preview-only: 0 off, 1 red overlay, 2 grayscale
+    float selMaskMode = 0.0f;    // 0 luminosity (parametric), 1 colour (texture)
+
+    friend bool operator==(const PreviewState &, const PreviewState &) = default;
 };
