@@ -14,6 +14,8 @@
 #include <QShortcut>
 #include <QStandardPaths>
 
+#include <algorithm>
+
 namespace {
 
 // Dim opacity for overlays (0–255). A tuning value, not a fixed constant
@@ -156,7 +158,10 @@ void MainWindow::toggleFullScreen()
 void MainWindow::openExposureTool()
 {
     m_input.setMode(InputController::Mode::ToolActive);
-    layoutOverlays();
+    // Default position: top-right with a margin. The user can drag it from here.
+    m_exposurePanel->adjustSize();
+    const int margin = 18;
+    m_exposurePanel->move(width() - m_exposurePanel->width() - margin, margin);
     m_exposurePanel->reveal(m_tune->exposure());
 }
 
@@ -185,14 +190,17 @@ void MainWindow::layoutOverlays()
     m_palette->resize(pw, ph);
     m_palette->move((width() - pw) / 2, height() / 8);
 
-    // Exposure tool panel: full-width strip docked at the bottom.
-    const int panelH = 64;
-    m_exposurePanel->setGeometry(0, height() - panelH, width(), panelH);
+    // The tool panel floats and is user-draggable (placed on open), so don't
+    // reposition it here — just clamp it back into view if the window shrank.
+    if (m_exposurePanel->isVisible()) {
+        QPoint p = m_exposurePanel->pos();
+        p.setX(std::clamp(p.x(), 0, std::max(0, width() - m_exposurePanel->width())));
+        p.setY(std::clamp(p.y(), 0, std::max(0, height() - m_exposurePanel->height())));
+        m_exposurePanel->move(p);
+    }
 
-    // Hint bar: bottom-centre, lifted above the tool panel when it's visible.
-    const int hintBottom = m_exposurePanel->isVisible() ? panelH + 14 : 18;
-    m_hint->move((width() - m_hint->width()) / 2,
-                 height() - m_hint->height() - hintBottom);
+    // Hint bar: bottom-centre.
+    m_hint->move((width() - m_hint->width()) / 2, height() - m_hint->height() - 18);
 }
 
 void MainWindow::resizeEvent(QResizeEvent *e)

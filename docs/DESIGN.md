@@ -146,8 +146,13 @@ handling plus this small shared keyboard set.
   too dark loses edit context, too light hurts overlay legibility. Start with a
   sensible default and tune by feel during development; keep it a single named
   constant (or a hidden setting) so it's trivial to adjust.
-- **Tool panels dock consistently at the bottom** so users build spatial memory.
-  The palette appears near the top. (Consistency over the mixed mockup layout.)
+- **Tool panels float as a compact card in the same place** (top-right) so users
+  build spatial memory while the image stays in full view. The palette appears
+  near the top-centre. (Revised from the earlier "dock at the bottom" idea: a
+  full-width bottom strip obscured too much of the photo; a right-side card keeps
+  the subject clear. Consistency of *placement* is what builds the muscle memory,
+  not which edge it's on.) Panels are modeless — you can pan/zoom the image while
+  a tool is open.
 
 ---
 

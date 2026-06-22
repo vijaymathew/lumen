@@ -24,9 +24,17 @@ signals:
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
+    // Dragging the card body (anywhere but the slider) repositions it.
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+
 private:
     void onSliderChanged(int value);
 
     QSlider *m_slider = nullptr;
     QLabel *m_value = nullptr;
+
+    bool m_dragging = false;
+    QPoint m_dragOffset; // cursor position within the card at drag start
 };
