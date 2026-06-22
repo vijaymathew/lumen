@@ -8,10 +8,34 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QKeyEvent>
+#include <QPainter>
 #include <QLabel>
 #include <QMessageBox>
 #include <QShortcut>
 #include <QStandardPaths>
+
+namespace {
+
+// Dim opacity for overlays (0–255). A tuning value, not a fixed constant
+// (DESIGN.md §4.6): too dark loses context, too light hurts contrast.
+constexpr int kScrimAlpha = 140; // ~0.55
+
+// A translucent layer that dims whatever is behind it. It paints a
+// semi-transparent fill without clearing to an opaque background first, so the
+// (RHI-composited) canvas shows through, dimmed.
+class Scrim : public QWidget {
+public:
+    using QWidget::QWidget;
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.fillRect(rect(), QColor(10, 10, 11, kScrimAlpha));
+    }
+};
+
+} // namespace
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -23,9 +47,15 @@ MainWindow::MainWindow(QWidget *parent)
     setCentralWidget(m_canvas);
     m_canvas->installEventFilter(this); // catch "/" while in Browse mode
 
+    // Created before the palette so the palette stacks above it.
+    m_scrim = new Scrim(this);
+    m_scrim->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_scrim->hide();
+
     m_palette = new CommandPalette(this);
     connect(m_palette, &CommandPalette::commandTriggered, this, &MainWindow::runCommand);
     connect(m_palette, &CommandPalette::dismissed, this, [this] {
+        m_scrim->hide();
         m_input.setMode(InputController::Mode::Browse);
         m_canvas->setFocus();
     });
@@ -146,6 +176,9 @@ void MainWindow::showHint(const QString &text)
 
 void MainWindow::layoutOverlays()
 {
+    // Scrim covers the whole window, behind the palette.
+    m_scrim->setGeometry(rect());
+
     // Palette: fixed width, near the top-centre.
     const int pw = 360;
     const int ph = 320;
@@ -176,7 +209,10 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
             && m_input.mode() == InputController::Mode::Browse) {
             m_input.setMode(InputController::Mode::CommandPalette);
             layoutOverlays();
+            m_scrim->show();
+            m_scrim->raise();   // above the canvas
             m_palette->reveal();
+            m_palette->raise(); // above the scrim
             return true;
         }
     }

@@ -11,6 +11,11 @@ CommandPalette::CommandPalette(QWidget *parent)
     : QWidget(parent)
 {
     setObjectName(QStringLiteral("commandPalette"));
+    // A bare QWidget does not paint a stylesheet `background` unless this is set.
+    // Without it the panel is transparent and only the search field and the
+    // selected row (which paint their own backgrounds) are legible — the rest of
+    // the list sits directly on the photo, so readability depends on the image.
+    setAttribute(Qt::WA_StyledBackground, true);
 
     m_search = new QLineEdit(this);
     m_search->setPlaceholderText(QStringLiteral("Type a command…"));
@@ -41,9 +46,9 @@ CommandPalette::CommandPalette(QWidget *parent)
             font-size: 14px;
         }
         QListWidget {
-            background: transparent;
+            background: #1c1c1f;
             border: none;
-            color: #b4b4b8;
+            color: #c8c8cc;
             font-size: 13px;
         }
         QListWidget::item { padding: 7px 10px; border-radius: 6px; }

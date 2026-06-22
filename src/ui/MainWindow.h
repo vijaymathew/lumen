@@ -42,6 +42,7 @@ private:
 
     InputController m_input;
     CanvasWidget *m_canvas = nullptr;
+    QWidget *m_scrim = nullptr; // dims the image behind the command palette
     CommandPalette *m_palette = nullptr;
     ExposurePanel *m_exposurePanel = nullptr;
     QLabel *m_hint = nullptr;
