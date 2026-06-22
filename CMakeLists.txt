@@ -55,6 +55,10 @@ add_library(lumen_core STATIC
     src/core/EditGraph.cpp
     src/core/TuneNode.h
     src/core/TuneNode.cpp
+    src/core/Curve.h
+    src/core/Curve.cpp
+    src/core/CurvesNode.h
+    src/core/CurvesNode.cpp
 )
 target_include_directories(lumen_core PUBLIC src)
 target_link_libraries(lumen_core PUBLIC Qt6::Core Qt6::Gui PkgConfig::VIPS)
@@ -73,6 +77,8 @@ qt_add_executable(lumen
     src/input/CommandPalette.cpp
     src/ui/TonePanel.h
     src/ui/TonePanel.cpp
+    src/ui/CurvesPanel.h
+    src/ui/CurvesPanel.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
 )
@@ -142,4 +148,9 @@ if(BUILD_TESTING)
     target_link_libraries(zoom_test PRIVATE lumen_core)
     target_compile_options(zoom_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME zoom_test COMMAND zoom_test)
+
+    add_executable(curves_test tests/curves_test.cpp)
+    target_link_libraries(curves_test PRIVATE lumen_core)
+    target_compile_options(curves_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME curves_test COMMAND curves_test)
 endif()

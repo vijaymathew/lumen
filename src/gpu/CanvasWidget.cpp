@@ -35,6 +35,8 @@ CanvasWidget::CanvasWidget(QWidget *parent)
     : QRhiWidget(parent)
 {
     setFocusPolicy(Qt::StrongFocus);
+    for (int i = 0; i < 256; ++i)
+        m_lut[i] = static_cast<uint8_t>(i); // identity
 }
 
 void CanvasWidget::setImage(const QImage &image)
@@ -62,6 +64,15 @@ void CanvasWidget::setPreviewState(const PreviewState &state)
     update();
 }
 
+void CanvasWidget::setCurveLut(const std::array<uint8_t, 256> &lut)
+{
+    if (m_lut == lut)
+        return;
+    m_lut = lut;
+    m_lutDirty = true;
+    update();
+}
+
 void CanvasWidget::initialize(QRhiCommandBuffer *cb)
 {
     QRhi *r = rhi();
@@ -72,10 +83,13 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
         m_srb.reset();
         m_texture.reset();
         m_sampler.reset();
+        m_lutTexture.reset();
+        m_lutSampler.reset();
         m_ubuf.reset();
         m_vbuf.reset();
         m_textureSize = {};
         m_textureDirty = !m_pendingImage.isNull();
+        m_lutDirty = true;
         m_rhi = r;
     }
 
@@ -100,6 +114,20 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
                                       QRhiSampler::None, QRhiSampler::ClampToEdge,
                                       QRhiSampler::ClampToEdge));
         m_sampler->create();
+    }
+
+    if (!m_lutSampler) {
+        m_lutSampler.reset(r->newSampler(QRhiSampler::Linear, QRhiSampler::Linear,
+                                         QRhiSampler::None, QRhiSampler::ClampToEdge,
+                                         QRhiSampler::ClampToEdge));
+        m_lutSampler->create();
+    }
+
+    if (!m_lutTexture) {
+        // 256x1 single-channel tone-curve LUT.
+        m_lutTexture.reset(r->newTexture(QRhiTexture::R8, QSize(256, 1)));
+        m_lutTexture->create();
+        m_lutDirty = true;
     }
 }
 
@@ -178,6 +206,9 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
                 QRhiShaderResourceBinding::sampledTexture(
                     1, QRhiShaderResourceBinding::FragmentStage,
                     m_texture.get(), m_sampler.get()),
+                QRhiShaderResourceBinding::sampledTexture(
+                    2, QRhiShaderResourceBinding::FragmentStage,
+                    m_lutTexture.get(), m_lutSampler.get()),
             });
             m_srb->create();
         }
@@ -186,6 +217,15 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         m_textureSize = s;
         m_pendingImage = QImage();
         m_textureDirty = false;
+    }
+
+    if (m_lutDirty && m_lutTexture) {
+        const QByteArray bytes(reinterpret_cast<const char *>(m_lut.data()),
+                               static_cast<qsizetype>(m_lut.size()));
+        QRhiTextureSubresourceUploadDescription sub(bytes);
+        QRhiTextureUploadEntry entry(0, 0, sub);
+        u->uploadTexture(m_lutTexture.get(), QRhiTextureUploadDescription(entry));
+        m_lutDirty = false;
     }
 
     ensurePipeline();

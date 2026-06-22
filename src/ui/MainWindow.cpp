@@ -3,6 +3,7 @@
 #include "core/Image.h"
 #include "gpu/CanvasWidget.h"
 #include "input/CommandPalette.h"
+#include "ui/CurvesPanel.h"
 #include "ui/TonePanel.h"
 
 #include <memory>
@@ -47,8 +48,10 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setWindowTitle(QStringLiteral("Lumen"));
 
-    // The graph owns the tune node; we keep a raw pointer to drive it.
+    // The graph owns the nodes; we keep raw pointers to drive them. Order is
+    // tune -> curves (the shader applies tone ops then the curve LUT to match).
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
+    m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
 
     m_canvas = new CanvasWidget(this);
     setCentralWidget(m_canvas);
@@ -71,10 +74,15 @@ MainWindow::MainWindow(QWidget *parent)
         m_tune->setExposure(v.exposure); // update the model node
         m_tune->setContrast(v.contrast);
         m_tune->setSaturation(v.saturation);
-        // The preview is driven by walking the graph, not the node directly.
-        m_canvas->setPreviewState(m_graph.previewState());
+        updatePreview(); // preview is driven by walking the graph
     });
     connect(m_tonePanel, &TonePanel::closed, this, &MainWindow::closeToneTool);
+
+    m_curvesPanel = new CurvesPanel(this);
+    connect(m_curvesPanel, &CurvesPanel::curveChanged, this, [this](const Curve &c) {
+        m_curves->setCurve(c);
+        updatePreview();
+    });
 
     // Dismissible hint bar, bottom-centre over the canvas.
     m_hint = new QLabel(this);
@@ -106,11 +114,11 @@ void MainWindow::buildCommands()
         {QStringLiteral("open"), QStringLiteral("Open image…")},
         {QStringLiteral("export"), QStringLiteral("Export image…")},
         {QStringLiteral("tone"), QStringLiteral("Tone (exposure, contrast, saturation)")},
+        {QStringLiteral("curves"), QStringLiteral("Curves")},
         {QStringLiteral("undo"), QStringLiteral("Undo")},
         {QStringLiteral("redo"), QStringLiteral("Redo")},
         {QStringLiteral("reset-view"), QStringLiteral("Reset view")},
         {QStringLiteral("fullscreen"), QStringLiteral("Toggle fullscreen")},
-        {QStringLiteral("curves"), QStringLiteral("Curves")},
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment")},
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
         {QStringLiteral("looks"), QStringLiteral("Looks (LUT)")},
@@ -126,6 +134,8 @@ void MainWindow::runCommand(const QString &id)
         exportImage();
     } else if (id == QLatin1String("tone")) {
         openToneTool();
+    } else if (id == QLatin1String("curves")) {
+        openCurvesTool();
     } else if (id == QLatin1String("undo")) {
         doUndo();
     } else if (id == QLatin1String("redo")) {
@@ -153,7 +163,7 @@ bool MainWindow::openPath(const QString &path)
 
     m_graph.setSource(source);             // full-res source for export
     m_canvas->setImage(source.toQImage()); // unedited image for the GPU preview
-    m_canvas->setPreviewState(m_graph.previewState()); // apply any existing edits
+    updatePreview();        // apply any existing edits
     m_graph.resetHistory(); // fresh undo timeline for this image
     m_sourcePath = path;
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
@@ -209,6 +219,12 @@ void MainWindow::toggleFullScreen()
         showFullScreen();
 }
 
+void MainWindow::updatePreview()
+{
+    m_canvas->setPreviewState(m_graph.previewState());
+    m_canvas->setCurveLut(m_graph.previewLut());
+}
+
 void MainWindow::openToneTool()
 {
     m_input.setMode(InputController::Mode::ToolActive);
@@ -227,6 +243,35 @@ void MainWindow::closeToneTool()
     m_canvas->setFocus();
 }
 
+void MainWindow::openCurvesTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_curvesPanel->adjustSize();
+    const int margin = 18;
+    m_curvesPanel->move(width() - m_curvesPanel->width() - margin, margin);
+    m_curvesPanel->reveal(m_curves->curve());
+}
+
+void MainWindow::closeCurvesTool()
+{
+    m_curvesPanel->hide();
+    m_graph.commit();
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::closeActiveTool()
+{
+    if (m_tonePanel->isVisible())
+        closeToneTool();
+    else if (m_curvesPanel->isVisible())
+        closeCurvesTool();
+    else {
+        m_input.setMode(InputController::Mode::Browse);
+        m_canvas->setFocus();
+    }
+}
+
 void MainWindow::doUndo()
 {
     if (m_graph.undo())
@@ -241,10 +286,12 @@ void MainWindow::doRedo()
 
 void MainWindow::afterHistoryChange()
 {
-    m_canvas->setPreviewState(m_graph.previewState());
+    updatePreview();
     // If a tool is open, reseed its control from the restored state.
     if (m_tonePanel->isVisible())
         m_tonePanel->reveal({m_tune->exposure(), m_tune->contrast(), m_tune->saturation()});
+    if (m_curvesPanel->isVisible())
+        m_curvesPanel->reveal(m_curves->curve());
 }
 
 void MainWindow::showHint(const QString &text)
@@ -267,12 +314,16 @@ void MainWindow::layoutOverlays()
 
     // The tool panel floats and is user-draggable (placed on open), so don't
     // reposition it here — just clamp it back into view if the window shrank.
-    if (m_tonePanel->isVisible()) {
-        QPoint p = m_tonePanel->pos();
-        p.setX(std::clamp(p.x(), 0, std::max(0, width() - m_tonePanel->width())));
-        p.setY(std::clamp(p.y(), 0, std::max(0, height() - m_tonePanel->height())));
-        m_tonePanel->move(p);
-    }
+    const auto clampIntoView = [this](QWidget *panel) {
+        if (!panel->isVisible())
+            return;
+        QPoint p = panel->pos();
+        p.setX(std::clamp(p.x(), 0, std::max(0, width() - panel->width())));
+        p.setY(std::clamp(p.y(), 0, std::max(0, height() - panel->height())));
+        panel->move(p);
+    };
+    clampIntoView(m_tonePanel);
+    clampIntoView(m_curvesPanel);
 
     // Hint bar: bottom-centre.
     m_hint->move((width() - m_hint->width()) / 2, height() - m_hint->height() - 18);
@@ -307,11 +358,11 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         // Esc/Enter close the active tool; "/" swaps to the palette.
         if (e->key() == Qt::Key_Escape || e->key() == Qt::Key_Return
             || e->key() == Qt::Key_Enter) {
-            closeToneTool();
+            closeActiveTool();
             return;
         }
         if (e->key() == Qt::Key_Slash) {
-            closeToneTool();
+            closeActiveTool();
             openCommandPalette();
             return;
         }

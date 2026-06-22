@@ -6,6 +6,8 @@
 #include <QJsonArray>
 #include <QString>
 
+#include <array>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -57,6 +59,10 @@ public:
     // the GPU (display) path counterpart to result(). Cheap — call it on any
     // edit and push the result to the canvas.
     PreviewState previewState() const;
+
+    // Composes the tone-curve LUT of all enabled curve nodes (identity if none).
+    // The canvas applies this after the PreviewState tone ops.
+    std::array<uint8_t, 256> previewLut() const;
 
     // --- Undo/redo ---------------------------------------------------------
     // History is a stack of graph snapshots. Call commit() to record the current

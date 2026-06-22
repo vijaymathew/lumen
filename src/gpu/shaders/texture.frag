@@ -5,6 +5,7 @@ layout(location = 0) in vec2 v_texcoord;
 layout(location = 0) out vec4 fragColor;
 
 layout(binding = 1) uniform sampler2D tex;
+layout(binding = 2) uniform sampler2D lut; // 256x1 tone curve
 
 layout(std140, binding = 0) uniform buf {
     mat4 mvp;
@@ -26,6 +27,11 @@ void main()
     // 3. Saturation: mix toward Rec.709 luma.
     float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
     col = mix(vec3(luma), col, ubuf.saturation);
+    // 4. Tone curve: per-channel LUT (identity when no curve). Clamp-to-edge
+    //    handles out-of-range values, matching the uchar clamp before maplut.
+    col = vec3(texture(lut, vec2(col.r, 0.5)).r,
+               texture(lut, vec2(col.g, 0.5)).r,
+               texture(lut, vec2(col.b, 0.5)).r);
 
     fragColor = vec4(col, c.a);
 }

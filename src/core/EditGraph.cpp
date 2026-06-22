@@ -116,6 +116,18 @@ PreviewState EditGraph::previewState() const
     return state;
 }
 
+std::array<uint8_t, 256> EditGraph::previewLut() const
+{
+    std::array<uint8_t, 256> lut;
+    for (int i = 0; i < 256; ++i)
+        lut[i] = static_cast<uint8_t>(i); // identity
+    for (const auto &node : m_nodes) {
+        if (node->isEnabled())
+            node->contributeToPreviewLut(lut);
+    }
+    return lut;
+}
+
 QJsonArray EditGraph::saveState() const
 {
     QJsonArray nodes;

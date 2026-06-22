@@ -6,6 +6,9 @@
 #include <QJsonObject>
 #include <QString>
 
+#include <array>
+#include <cstdint>
+
 // EditNode is the base class for one non-destructive edit in the pipeline
 // (DESIGN.md §5.1). A node holds its parameters (in subclasses), an enabled
 // flag, and a dirty flag for cache invalidation. The graph walks nodes in order,
@@ -45,6 +48,10 @@ public:
     // contribution; pointwise tone nodes override it. (The graph only calls this
     // for enabled nodes.)
     virtual void contributeToPreview(PreviewState &) const {}
+
+    // Composes this node's tone curve into the running 256-entry preview LUT
+    // (lut[i] := myLut[lut[i]]). Default is no-op; curve nodes override it.
+    virtual void contributeToPreviewLut(std::array<uint8_t, 256> &) const {}
 
     // Serialises / restores this node's parameters (for undo/redo, and later
     // project save/load). Subclasses extend the base, which handles `enabled`.
