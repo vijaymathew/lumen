@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is a v1 target (docs/DESIGN.md §7), so it is exercised from
+        # milestone 1 — an untested macOS build rots fast.
+        os: [ubuntu-24.04, macos-14]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libvips + Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvips-dev ninja-build
+
+      - name: Install libvips + Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install vips ninja
+
+      # QRhiWidget requires Qt 6.7+, newer than distro packages, so pull Qt via
+      # aqt. The ShaderTools module (qsb / qt_add_shaders) ships with desktop Qt.
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.2'
+          cache: true
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build --parallel
