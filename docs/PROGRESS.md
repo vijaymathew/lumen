@@ -78,17 +78,17 @@ plain Qt widgets.
 
 ---
 
-## Phase 5 — Selective adjustments ⬜
+## Phase 5 — Selective adjustments 🟡
 
 > Local edits via mask (color-affinity, luminosity/tone, brush). DESIGN §4.4–4.5.
 
 | Item | Status | Notes |
 |---|---|---|
-| Mask infrastructure on `EditNode` | ⬜ | |
-| Luminosity/tone range mask (parametric) | ⬜ | Keyboard-friendly path |
+| Mask infrastructure on `EditNode` | ✅ | Pointwise masked-tone path: mask gates `mix(input, tone(input), mask)`. Parametric masks fold into the shader chain; texture-based masks (brush/colour) will extend this |
+| Luminosity/tone range mask (parametric) | ✅ | `SelectiveNode` + `SelectivePanel` (range low/high + feather, exposure/contrast/saturation); smoothstep mask; libvips export + shader preview, preview==export verified. **Show mask** toggle: off → red overlay → grayscale (preview-only) |
 | Color-affinity mask (guided filter) | ⬜ | OpenCV `ximgproc::guidedFilter` |
 | Brush mask (Add/Subtract, session undo) | ⬜ | Accumulate → flatten on commit (DESIGN §4.5) |
-| `SelectiveNode` | ⬜ | |
+| `SelectiveNode` | ✅ | Masked exposure/contrast/saturation; in the graph after looks; unit-tested (`selective_test`) |
 
 ---
 

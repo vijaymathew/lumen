@@ -5,6 +5,7 @@
 #include "input/CommandPalette.h"
 #include "ui/CurvesPanel.h"
 #include "ui/LooksPanel.h"
+#include "ui/SelectivePanel.h"
 #include "ui/TonePanel.h"
 
 #include <memory>
@@ -55,6 +56,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
     m_lutNode = static_cast<LutNode *>(m_graph.addNode(std::make_unique<LutNode>()));
+    m_selective = static_cast<SelectiveNode *>(m_graph.addNode(std::make_unique<SelectiveNode>()));
 
     m_canvas = new CanvasWidget(this);
     setCentralWidget(m_canvas);
@@ -96,6 +98,17 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_looksPanel, &LooksPanel::intensityChanged, this, [this](double v) {
         m_lutNode->setIntensity(static_cast<float>(v));
+        updatePreview();
+    });
+
+    m_selectivePanel = new SelectivePanel(this);
+    connect(m_selectivePanel, &SelectivePanel::valuesChanged, this,
+            [this](const SelectiveValues &v) {
+                m_selective->setValues(v);
+                updatePreview();
+            });
+    connect(m_selectivePanel, &SelectivePanel::maskViewChanged, this, [this](int mode) {
+        m_maskView = mode;
         updatePreview();
     });
 
@@ -153,6 +166,8 @@ void MainWindow::runCommand(const QString &id)
         openCurvesTool();
     } else if (id == QLatin1String("looks")) {
         openLooksTool();
+    } else if (id == QLatin1String("selective")) {
+        openSelectiveTool();
     } else if (id == QLatin1String("undo")) {
         doUndo();
     } else if (id == QLatin1String("redo")) {
@@ -238,7 +253,9 @@ void MainWindow::toggleFullScreen()
 
 void MainWindow::updatePreview()
 {
-    m_canvas->setPreviewState(m_graph.previewState());
+    PreviewState ps = m_graph.previewState();
+    ps.selMaskView = static_cast<float>(m_maskView); // preview-only overlay
+    m_canvas->setPreviewState(ps);
     m_canvas->setCurveLuts(m_graph.previewLut());
     m_canvas->setLut3D(m_graph.previewLook());
 }
@@ -316,6 +333,27 @@ void MainWindow::loadLookFile()
     updatePreview();
 }
 
+void MainWindow::openSelectiveTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_maskView = 0; // panel resets its toggle on reveal too
+    m_selectivePanel->adjustSize();
+    const int margin = 18;
+    m_selectivePanel->move(width() - m_selectivePanel->width() - margin, margin);
+    m_selectivePanel->reveal(m_selective->values());
+    updatePreview();
+}
+
+void MainWindow::closeSelectiveTool()
+{
+    m_selectivePanel->hide();
+    m_maskView = 0; // clear the mask overlay
+    updatePreview();
+    m_graph.commit();
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
 void MainWindow::closeActiveTool()
 {
     if (m_tonePanel->isVisible())
@@ -324,6 +362,8 @@ void MainWindow::closeActiveTool()
         closeCurvesTool();
     else if (m_looksPanel->isVisible())
         closeLooksTool();
+    else if (m_selectivePanel->isVisible())
+        closeSelectiveTool();
     else {
         m_input.setMode(InputController::Mode::Browse);
         m_canvas->setFocus();
@@ -353,6 +393,8 @@ void MainWindow::afterHistoryChange()
     if (m_looksPanel->isVisible())
         m_looksPanel->reveal(QFileInfo(m_lutNode->sourcePath()).fileName(),
                              m_lutNode->intensity());
+    if (m_selectivePanel->isVisible())
+        m_selectivePanel->reveal(m_selective->values());
 }
 
 void MainWindow::showHint(const QString &text)
@@ -386,6 +428,7 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_tonePanel);
     clampIntoView(m_curvesPanel);
     clampIntoView(m_looksPanel);
+    clampIntoView(m_selectivePanel);
 
     // Hint bar: bottom-centre.
     m_hint->move((width() - m_hint->width()) / 2, height() - m_hint->height() - 18);

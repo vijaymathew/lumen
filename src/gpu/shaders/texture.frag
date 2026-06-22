@@ -14,31 +14,59 @@ layout(std140, binding = 0) uniform buf {
     float contrast;     // factor, 1 = neutral
     float saturation;   // factor, 1 = neutral
     float lutIntensity; // look blend [0,1]
+    float selEnabled;
+    float selLow;
+    float selHigh;
+    float selFeather;
+    float selExposure;
+    float selContrast;
+    float selSaturation;
+    float selMaskView;
 } ubuf;
+
+const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+
+vec3 applyTone(vec3 c, float exposure, float contrast, float saturation)
+{
+    c *= exp2(exposure / 2.2);
+    c = (c - 0.5) * contrast + 0.5;
+    float l = dot(c, kLuma);
+    return mix(vec3(l), c, saturation);
+}
 
 void main()
 {
     vec4 c = texture(tex, v_texcoord);
     vec3 col = c.rgb;
 
-    // Same order and math as TuneNode::apply() so preview predicts export.
-    // 1. Exposure: encoded-space multiply (power-law gamma 2.2).
-    col *= exp2(ubuf.exposure / 2.2);
-    // 2. Contrast: scale around mid-grey.
-    col = (col - 0.5) * ubuf.contrast + 0.5;
-    // 3. Saturation: mix toward Rec.709 luma.
-    float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
-    col = mix(vec3(luma), col, ubuf.saturation);
-    // 4. Tone curves: each channel maps through its own LUT column (R->.r,
-    //    G->.g, B->.b). Identity when no curve. Clamp-to-edge handles
-    //    out-of-range values, matching the uchar clamp before maplut.
+    // Same order and math as the node apply() methods so preview predicts
+    // export. 1. Global tone (TuneNode).
+    col = applyTone(col, ubuf.exposure, ubuf.contrast, ubuf.saturation);
+    // 2. Tone curves: each channel maps through its own LUT column (R->.r,
+    //    G->.g, B->.b). Identity when no curve.
     col = vec3(texture(lut, vec2(col.r, 0.5)).r,
                texture(lut, vec2(col.g, 0.5)).g,
                texture(lut, vec2(col.b, 0.5)).b);
-    // 5. Look: trilinear 3D LUT (identity cube when no look), blended with the
-    //    pre-look colour by intensity. Linear sampling does the interpolation.
+    // 3. Look: trilinear 3D LUT, blended with the pre-look colour by intensity.
     vec3 lutCol = texture(lut3d, clamp(col, 0.0, 1.0)).rgb;
     col = mix(col, lutCol, ubuf.lutIntensity);
+    // 4. Selective: a luminosity-masked tone adjustment (SelectiveNode), plus an
+    //    optional preview-only mask overlay.
+    if (ubuf.selEnabled > 0.5 || ubuf.selMaskView > 0.5) {
+        float L = dot(col, kLuma);
+        float mask = smoothstep(ubuf.selLow - ubuf.selFeather, ubuf.selLow, L)
+                   * (1.0 - smoothstep(ubuf.selHigh, ubuf.selHigh + ubuf.selFeather, L));
+        if (ubuf.selEnabled > 0.5) {
+            vec3 adj = applyTone(col, ubuf.selExposure, ubuf.selContrast, ubuf.selSaturation);
+            col = mix(col, adj, mask);
+        }
+        if (ubuf.selMaskView > 0.5) {
+            if (ubuf.selMaskView < 1.5)
+                col = mix(col * 0.4, vec3(0.95, 0.2, 0.2), mask * 0.85); // red over dimmed
+            else
+                col = vec3(mask); // grayscale mask
+        }
+    }
 
     fragColor = vec4(col, c.a);
 }

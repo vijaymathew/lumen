@@ -63,6 +63,8 @@ add_library(lumen_core STATIC
     src/core/Lut3D.cpp
     src/core/LutNode.h
     src/core/LutNode.cpp
+    src/core/SelectiveNode.h
+    src/core/SelectiveNode.cpp
 )
 target_include_directories(lumen_core PUBLIC src)
 target_link_libraries(lumen_core PUBLIC Qt6::Core Qt6::Gui PkgConfig::VIPS)
@@ -85,6 +87,8 @@ qt_add_executable(lumen
     src/ui/CurvesPanel.cpp
     src/ui/LooksPanel.h
     src/ui/LooksPanel.cpp
+    src/ui/SelectivePanel.h
+    src/ui/SelectivePanel.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
 )
@@ -169,4 +173,9 @@ if(BUILD_TESTING)
     target_link_libraries(lutnode_test PRIVATE lumen_core)
     target_compile_options(lutnode_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME lutnode_test COMMAND lutnode_test)
+
+    add_executable(selective_test tests/selective_test.cpp)
+    target_link_libraries(selective_test PRIVATE lumen_core)
+    target_compile_options(selective_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME selective_test COMMAND selective_test)
 endif()

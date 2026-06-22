@@ -80,10 +80,7 @@ void CanvasWidget::resetView()
 
 void CanvasWidget::setPreviewState(const PreviewState &state)
 {
-    if (m_preview.exposure == state.exposure
-        && m_preview.contrast == state.contrast
-        && m_preview.saturation == state.saturation
-        && m_preview.lutIntensity == state.lutIntensity)
+    if (m_preview == state)
         return;
     m_preview = state;
     update();
@@ -141,9 +138,9 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
     }
 
     if (!m_ubuf) {
-        // std140 layout: mat4 mvp (64 bytes) + float exposure at offset 64.
-        // Rounded up to a 16-byte multiple → 80 bytes.
-        m_ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 80));
+        // std140: mat4 mvp (64) + PreviewState's 11 floats (44) at offset 64.
+        // Rounded up to a 16-byte multiple → 112 bytes.
+        m_ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 112));
         m_ubuf->create();
     }
 
@@ -318,8 +315,8 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         const QMatrix4x4 mvp = computeMvp(target);
         u->updateDynamicBuffer(m_ubuf.get(), 0, 64, mvp.constData());
         // PreviewState's floats are contiguous and match the shader block order.
-        static_assert(sizeof(PreviewState) == 4 * sizeof(float),
-                      "PreviewState must be 4 tightly-packed floats");
+        static_assert(sizeof(PreviewState) == 12 * sizeof(float),
+                      "PreviewState must be 12 tightly-packed floats");
         u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(PreviewState), &m_preview.exposure);
     }
 

@@ -5,6 +5,7 @@
 #include "core/CurvesNode.h"
 #include "core/EditGraph.h"
 #include "core/LutNode.h"
+#include "core/SelectiveNode.h"
 #include "core/TuneNode.h"
 #include "input/InputController.h"
 
@@ -12,6 +13,7 @@ class CanvasWidget;
 class CommandPalette;
 class CurvesPanel;
 class LooksPanel;
+class SelectivePanel;
 class TonePanel;
 class QLabel;
 
@@ -50,6 +52,8 @@ private:
     void openLooksTool();
     void closeLooksTool();
     void loadLookFile();
+    void openSelectiveTool();
+    void closeSelectiveTool();
     void closeActiveTool();
     void updatePreview(); // push tone state + curve LUT + look to the canvas
     void exportImage();
@@ -65,13 +69,16 @@ private:
     TonePanel *m_tonePanel = nullptr;
     CurvesPanel *m_curvesPanel = nullptr;
     LooksPanel *m_looksPanel = nullptr;
+    SelectivePanel *m_selectivePanel = nullptr;
     QLabel *m_hint = nullptr;
 
     // The non-destructive edit graph. The GPU preview reads the tune node's
     // exposure live; Export walks the graph at full resolution via libvips.
     EditGraph m_graph;
-    TuneNode *m_tune = nullptr;     // owned by m_graph
-    CurvesNode *m_curves = nullptr; // owned by m_graph
-    LutNode *m_lutNode = nullptr;   // owned by m_graph
-    QString m_sourcePath;           // for a sensible default export name
+    TuneNode *m_tune = nullptr;          // owned by m_graph
+    CurvesNode *m_curves = nullptr;      // owned by m_graph
+    LutNode *m_lutNode = nullptr;        // owned by m_graph
+    SelectiveNode *m_selective = nullptr; // owned by m_graph
+    QString m_sourcePath;                // for a sensible default export name
+    int m_maskView = 0;                  // selective mask overlay (preview-only)
 };
