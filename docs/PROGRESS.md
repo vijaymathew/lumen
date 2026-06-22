@@ -66,15 +66,15 @@ plain Qt widgets.
 
 ---
 
-## Phase 4 — LUT looks ⬜
+## Phase 4 — LUT looks 🟡
 
 > 3D LUT (HALD CLUT) loader + apply.
 
 | Item | Status | Notes |
 |---|---|---|
-| HALD CLUT loader | ⬜ | |
-| `LutNode` (trilinear apply) | ⬜ | |
-| Look intensity slider | ⬜ | |
+| HALD CLUT loader | ✅ | `Lut3D` parses a HALD CLUT (side n³ → cube edge n²) with a trilinear `sample()`; identity round-trip + file load + invalid-input unit-tested (`lut3d_test`) |
+| `LutNode` (trilinear apply) | ⬜ | Apply `Lut3D` to the image: libvips export + GPU 3D texture preview |
+| Look intensity slider | ⬜ | Blend the look with the original by amount |
 
 ---
 
