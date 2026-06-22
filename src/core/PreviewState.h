@@ -28,6 +28,7 @@ struct PreviewState {
     float selContrast = 1.0f;    // factor
     float selSaturation = 1.0f;  // factor
     float selMaskView = 0.0f;    // preview-only: 0 off, 1 red overlay, 2 grayscale
+    float selMaskMode = 0.0f;    // 0 luminosity (parametric), 1 colour (texture)
 
     friend bool operator==(const PreviewState &, const PreviewState &) = default;
 };

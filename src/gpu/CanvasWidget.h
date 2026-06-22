@@ -3,6 +3,7 @@
 #include "core/Lut.h"
 #include "core/Lut3D.h"
 #include "core/PreviewState.h"
+#include "core/SelectiveMask.h"
 
 #include <QRhiWidget>
 #include <rhi/qrhi.h>
@@ -43,8 +44,19 @@ public:
     // Sets the 3D LUT "look" applied last (resampled into a fixed-size cube).
     void setLut3D(const Lut3D &look);
 
+    // Sets the selective colour-affinity mask texture (used when mask mode is
+    // colour). An empty mask resets to fully-selected.
+    void setSelectiveMask(const MaskBuffer &mask);
+
     // Resets zoom/pan so the image is fit-to-window and centred.
     void resetView();
+
+    // Enters colour-pick mode: the next left-click emits colorPointPicked with
+    // the image-normalised position instead of panning.
+    void setColorPickMode(bool on);
+
+signals:
+    void colorPointPicked(QPointF imageNormalized);
 
 protected:
     void initialize(QRhiCommandBuffer *cb) override;
@@ -56,6 +68,7 @@ protected:
 
 private:
     void ensurePipeline();
+    void buildSrb();
     QMatrix4x4 computeMvp(const QSize &targetPixels);
     // Multiplies zoom by `factor`, keeping the image point under the cursor fixed.
     void zoomAt(float factor, const QPointF &cursorDevicePx);
@@ -71,8 +84,11 @@ private:
     std::unique_ptr<QRhiTexture> m_lutTexture; // 256x1 tone-curve LUT
     std::unique_ptr<QRhiSampler> m_lut3dSampler;
     std::unique_ptr<QRhiTexture> m_lut3dTexture; // 32^3 look LUT
+    std::unique_ptr<QRhiSampler> m_selMaskSampler;
+    std::unique_ptr<QRhiTexture> m_selMaskTexture; // selective mask (R8)
     std::unique_ptr<QRhiShaderResourceBindings> m_srb;
     std::unique_ptr<QRhiGraphicsPipeline> m_pipeline;
+    bool m_srbDirty = true;
 
     // Pending image waiting to be uploaded to m_texture.
     QImage m_pendingImage;
@@ -83,6 +99,7 @@ private:
     float m_zoom = 1.0f;
     QPointF m_pan{0.0, 0.0};
     QPointF m_lastMousePos;
+    bool m_pickMode = false;
 
     // Preview adjustments (from the edit graph) fed to the shader.
     PreviewState m_preview;
@@ -90,4 +107,8 @@ private:
     bool m_lutDirty = true;
     std::vector<uint8_t> m_lut3dData; // 32^3 RGBA cube; identity by default
     bool m_lut3dDirty = true;
+    std::vector<uint8_t> m_selMaskData{255, 0, 0, 255}; // RGBA, R=mask; 1x1 selected
+    int m_selMaskW = 1;
+    int m_selMaskH = 1;
+    bool m_selMaskDirty = true;
 };

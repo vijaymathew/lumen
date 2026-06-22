@@ -19,6 +19,7 @@ layout(std140, binding = 0) uniform buf {
     float selContrast;
     float selSaturation;
     float selMaskView;
+    float selMaskMode;
 } ubuf;
 
 void main()

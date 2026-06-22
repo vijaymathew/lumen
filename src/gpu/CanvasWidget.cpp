@@ -119,12 +119,16 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
         m_lutSampler.reset();
         m_lut3dTexture.reset();
         m_lut3dSampler.reset();
+        m_selMaskTexture.reset();
+        m_selMaskSampler.reset();
         m_ubuf.reset();
         m_vbuf.reset();
         m_textureSize = {};
         m_textureDirty = !m_pendingImage.isNull();
         m_lutDirty = true;
         m_lut3dDirty = true;
+        m_selMaskDirty = true;
+        m_srbDirty = true;
         m_rhi = r;
     }
 
@@ -138,9 +142,9 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
     }
 
     if (!m_ubuf) {
-        // std140: mat4 mvp (64) + PreviewState's 11 floats (44) at offset 64.
-        // Rounded up to a 16-byte multiple → 112 bytes.
-        m_ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 112));
+        // std140: mat4 mvp (64) + PreviewState's 13 floats (52) at offset 64.
+        // Rounded up to a 16-byte multiple → 128 bytes.
+        m_ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 128));
         m_ubuf->create();
     }
 
@@ -180,6 +184,70 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
         m_lut3dTexture->create();
         m_lut3dDirty = true;
     }
+
+    if (!m_selMaskSampler) {
+        m_selMaskSampler.reset(r->newSampler(QRhiSampler::Linear, QRhiSampler::Linear,
+                                             QRhiSampler::None, QRhiSampler::ClampToEdge,
+                                             QRhiSampler::ClampToEdge));
+        m_selMaskSampler->create();
+    }
+
+    if (!m_selMaskTexture) {
+        // RGBA8 (not R8) so arbitrary-width rows stay 4-byte aligned; the shader
+        // samples .r.
+        m_selMaskTexture.reset(r->newTexture(QRhiTexture::RGBA8, QSize(m_selMaskW, m_selMaskH)));
+        m_selMaskTexture->create();
+        m_selMaskDirty = true;
+        m_srbDirty = true;
+    }
+}
+
+void CanvasWidget::buildSrb()
+{
+    QRhi *r = rhi();
+    m_srb.reset(r->newShaderResourceBindings());
+    m_srb->setBindings({
+        QRhiShaderResourceBinding::uniformBuffer(
+            0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage,
+            m_ubuf.get()),
+        QRhiShaderResourceBinding::sampledTexture(
+            1, QRhiShaderResourceBinding::FragmentStage, m_texture.get(), m_sampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(
+            2, QRhiShaderResourceBinding::FragmentStage, m_lutTexture.get(), m_lutSampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(
+            3, QRhiShaderResourceBinding::FragmentStage, m_lut3dTexture.get(), m_lut3dSampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(
+            4, QRhiShaderResourceBinding::FragmentStage, m_selMaskTexture.get(), m_selMaskSampler.get()),
+    });
+    m_srb->create();
+}
+
+void CanvasWidget::setSelectiveMask(const MaskBuffer &mask)
+{
+    std::vector<uint8_t> data;
+    int w = 1, h = 1;
+    if (mask.isEmpty()) {
+        data = {255, 0, 0, 255}; // fully selected
+    } else {
+        w = mask.width;
+        h = mask.height;
+        data.resize(mask.data.size() * 4);
+        for (size_t i = 0; i < mask.data.size(); ++i) {
+            const uint8_t v = static_cast<uint8_t>(
+                std::clamp(std::lround(mask.data[i] * 255.0f), 0L, 255L));
+            data[i * 4 + 0] = v; // shader samples .r
+            data[i * 4 + 1] = 0;
+            data[i * 4 + 2] = 0;
+            data[i * 4 + 3] = 255;
+        }
+    }
+    if (data == m_selMaskData && w == m_selMaskW && h == m_selMaskH)
+        return;
+    m_selMaskData = std::move(data);
+    m_selMaskW = w;
+    m_selMaskH = h;
+    m_selMaskDirty = true;
+    update();
 }
 
 void CanvasWidget::ensurePipeline()
@@ -244,33 +312,34 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         if (!m_texture || m_texture->pixelSize() != s) {
             m_texture.reset(r->newTexture(QRhiTexture::RGBA8, s));
             m_texture->create();
-
-            // The srb references the texture, so rebuild it (layout is stable,
-            // so the pipeline stays valid).
-            m_srb.reset(r->newShaderResourceBindings());
-            m_srb->setBindings({
-                QRhiShaderResourceBinding::uniformBuffer(
-                    0,
-                    QRhiShaderResourceBinding::VertexStage
-                        | QRhiShaderResourceBinding::FragmentStage,
-                    m_ubuf.get()),
-                QRhiShaderResourceBinding::sampledTexture(
-                    1, QRhiShaderResourceBinding::FragmentStage,
-                    m_texture.get(), m_sampler.get()),
-                QRhiShaderResourceBinding::sampledTexture(
-                    2, QRhiShaderResourceBinding::FragmentStage,
-                    m_lutTexture.get(), m_lutSampler.get()),
-                QRhiShaderResourceBinding::sampledTexture(
-                    3, QRhiShaderResourceBinding::FragmentStage,
-                    m_lut3dTexture.get(), m_lut3dSampler.get()),
-            });
-            m_srb->create();
+            m_srbDirty = true; // srb references the image texture
         }
 
         u->uploadTexture(m_texture.get(), keepAlive);
         m_textureSize = s;
         m_pendingImage = QImage();
         m_textureDirty = false;
+    }
+
+    // Selective mask texture (R8). Recreate when its size changes.
+    if (m_selMaskDirty && m_selMaskTexture) {
+        const QSize s(m_selMaskW, m_selMaskH);
+        if (m_selMaskTexture->pixelSize() != s) {
+            m_selMaskTexture.reset(r->newTexture(QRhiTexture::RGBA8, s));
+            m_selMaskTexture->create();
+            m_srbDirty = true;
+        }
+        QRhiTextureSubresourceUploadDescription sub(
+            QByteArray(reinterpret_cast<const char *>(m_selMaskData.data()),
+                       static_cast<qsizetype>(m_selMaskData.size())));
+        u->uploadTexture(m_selMaskTexture.get(),
+                         QRhiTextureUploadDescription(QRhiTextureUploadEntry(0, 0, sub)));
+        m_selMaskDirty = false;
+    }
+
+    if (m_srbDirty && m_texture && m_lutTexture && m_lut3dTexture && m_selMaskTexture) {
+        buildSrb();
+        m_srbDirty = false;
     }
 
     if (m_lutDirty && m_lutTexture) {
@@ -315,8 +384,8 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         const QMatrix4x4 mvp = computeMvp(target);
         u->updateDynamicBuffer(m_ubuf.get(), 0, 64, mvp.constData());
         // PreviewState's floats are contiguous and match the shader block order.
-        static_assert(sizeof(PreviewState) == 12 * sizeof(float),
-                      "PreviewState must be 12 tightly-packed floats");
+        static_assert(sizeof(PreviewState) == 13 * sizeof(float),
+                      "PreviewState must be 13 tightly-packed floats");
         u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(PreviewState), &m_preview.exposure);
     }
 
@@ -335,10 +404,31 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
     cb->endPass();
 }
 
+void CanvasWidget::setColorPickMode(bool on)
+{
+    m_pickMode = on;
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+}
+
 void CanvasWidget::mousePressEvent(QMouseEvent *e)
 {
-    if (e->button() == Qt::LeftButton)
-        m_lastMousePos = e->position();
+    if (e->button() != Qt::LeftButton)
+        return;
+
+    if (m_pickMode && !m_textureSize.isEmpty()) {
+        const qreal dpr = devicePixelRatioF();
+        const QSizeF widget(width() * dpr, height() * dpr);
+        const QSizeF image(m_textureSize.width(), m_textureSize.height());
+        const QPointF px = zoommath::imagePixelAt(widget, image, m_zoom, m_pan,
+                                                  e->position() * dpr);
+        const QPointF norm(std::clamp(px.x() / image.width(), 0.0, 1.0),
+                           std::clamp(px.y() / image.height(), 0.0, 1.0));
+        setColorPickMode(false);
+        emit colorPointPicked(norm);
+        return;
+    }
+
+    m_lastMousePos = e->position();
 }
 
 void CanvasWidget::mouseMoveEvent(QMouseEvent *e)

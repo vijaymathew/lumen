@@ -7,9 +7,18 @@
 // on each side; the adjustment (exposure/contrast/saturation) is blended in by
 // the mask weight.
 struct SelectiveValues {
-    float low = 0.0f;        // luminance range [0,1]
+    // Mask: 0 = luminosity range (parametric), 1 = colour affinity (guided).
+    int maskMode = 0;
+    // Luminosity-range mask.
+    float low = 0.0f; // luminance range [0,1]
     float high = 1.0f;
-    float feather = 0.1f;    // edge softness [0,1]
+    float feather = 0.1f; // edge softness [0,1]
+    // Colour-affinity mask.
+    float targetR = 0.0f; // sampled target colour [0,1]
+    float targetG = 0.0f;
+    float targetB = 0.0f;
+    float colorRange = 0.3f; // colour-distance tolerance [0,1]
+    // Adjustment.
     float exposure = 0.0f;   // EV stops
     float contrast = 0.0f;   // -100..100
     float saturation = 0.0f; // -100..100

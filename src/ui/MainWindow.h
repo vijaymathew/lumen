@@ -1,6 +1,8 @@
 #pragma once
 
+#include <QImage>
 #include <QMainWindow>
+#include <QPointF>
 
 #include "core/CurvesNode.h"
 #include "core/EditGraph.h"
@@ -54,6 +56,8 @@ private:
     void loadLookFile();
     void openSelectiveTool();
     void closeSelectiveTool();
+    void recomputeSelectiveMask();
+    void onColorPicked(const QPointF &imageNormalized);
     void closeActiveTool();
     void updatePreview(); // push tone state + curve LUT + look to the canvas
     void exportImage();
@@ -80,5 +84,6 @@ private:
     LutNode *m_lutNode = nullptr;        // owned by m_graph
     SelectiveNode *m_selective = nullptr; // owned by m_graph
     QString m_sourcePath;                // for a sensible default export name
+    QImage m_sourceQImage;               // for colour sampling + preview mask
     int m_maskView = 0;                  // selective mask overlay (preview-only)
 };

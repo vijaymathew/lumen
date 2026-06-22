@@ -86,7 +86,7 @@ plain Qt widgets.
 |---|---|---|
 | Mask infrastructure on `EditNode` | ✅ | Pointwise masked-tone path: mask gates `mix(input, tone(input), mask)`. Parametric masks fold into the shader chain; texture-based masks (brush/colour) will extend this |
 | Luminosity/tone range mask (parametric) | ✅ | `SelectiveNode` + `SelectivePanel` (range low/high + feather, exposure/contrast/saturation); smoothstep mask; libvips export + shader preview, preview==export verified. **Show mask** toggle: off → red overlay → grayscale (preview-only) |
-| Color-affinity mask (guided filter) | ⬜ | OpenCV `ximgproc::guidedFilter` |
+| Color-affinity mask (guided filter) | ✅ | Self-contained guided filter (He et al., integral-image box means — no OpenCV) refines a colour-distance mask; click-to-pick target on the canvas + Range slider; export computes the mask full-res in the node, preview uploads it as a mask texture (`sampler2D` binding 4); verified selecting the logo by colour |
 | Brush mask (Add/Subtract, session undo) | ⬜ | Accumulate → flatten on commit (DESIGN §4.5) |
 | `SelectiveNode` | ✅ | Masked exposure/contrast/saturation; in the graph after looks; unit-tested (`selective_test`) |
 

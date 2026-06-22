@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 
 #include "core/Image.h"
+#include "core/SelectiveMask.h"
 #include "gpu/CanvasWidget.h"
 #include "input/CommandPalette.h"
 #include "ui/CurvesPanel.h"
@@ -10,11 +11,14 @@
 
 #include <memory>
 
+#include <QColor>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QKeyEvent>
 #include <QPainter>
+
+#include <cmath>
 #include <QLabel>
 #include <QMessageBox>
 #include <QShortcut>
@@ -105,12 +109,16 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_selectivePanel, &SelectivePanel::valuesChanged, this,
             [this](const SelectiveValues &v) {
                 m_selective->setValues(v);
+                recomputeSelectiveMask();
                 updatePreview();
             });
     connect(m_selectivePanel, &SelectivePanel::maskViewChanged, this, [this](int mode) {
         m_maskView = mode;
         updatePreview();
     });
+    connect(m_selectivePanel, &SelectivePanel::pickColorRequested, this,
+            [this] { m_canvas->setColorPickMode(true); });
+    connect(m_canvas, &CanvasWidget::colorPointPicked, this, &MainWindow::onColorPicked);
 
     // Dismissible hint bar, bottom-centre over the canvas.
     m_hint = new QLabel(this);
@@ -193,8 +201,10 @@ bool MainWindow::openPath(const QString &path)
         return false;
     }
 
-    m_graph.setSource(source);             // full-res source for export
-    m_canvas->setImage(source.toQImage()); // unedited image for the GPU preview
+    m_sourceQImage = source.toQImage();
+    m_graph.setSource(source);            // full-res source for export
+    m_canvas->setImage(m_sourceQImage);   // unedited image for the GPU preview
+    recomputeSelectiveMask();
     updatePreview();        // apply any existing edits
     m_graph.resetHistory(); // fresh undo timeline for this image
     m_sourcePath = path;
@@ -341,17 +351,60 @@ void MainWindow::openSelectiveTool()
     const int margin = 18;
     m_selectivePanel->move(width() - m_selectivePanel->width() - margin, margin);
     m_selectivePanel->reveal(m_selective->values());
+    recomputeSelectiveMask();
     updatePreview();
 }
 
 void MainWindow::closeSelectiveTool()
 {
     m_selectivePanel->hide();
+    m_canvas->setColorPickMode(false);
     m_maskView = 0; // clear the mask overlay
     updatePreview();
     m_graph.commit();
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
+}
+
+void MainWindow::recomputeSelectiveMask()
+{
+    const SelectiveValues v = m_selective->values();
+    if (v.maskMode != 1 || m_sourceQImage.isNull()) {
+        m_canvas->setSelectiveMask({}); // luminosity mode is parametric in-shader
+        return;
+    }
+
+    // Compute the colour-affinity mask from the source at a capped resolution
+    // for a responsive preview (export recomputes at full res in the node).
+    constexpr int cap = 1280;
+    QImage img = m_sourceQImage;
+    if (std::max(img.width(), img.height()) > cap)
+        img = img.scaled(cap, cap, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    img = img.convertToFormat(QImage::Format_RGBA8888);
+    MaskBuffer mask = colorAffinityMask(img.constBits(), img.width(), img.height(), 4,
+                                        v.targetR, v.targetG, v.targetB, v.colorRange);
+    m_canvas->setSelectiveMask(mask);
+}
+
+void MainWindow::onColorPicked(const QPointF &norm)
+{
+    if (m_sourceQImage.isNull())
+        return;
+    const int x = std::clamp(static_cast<int>(std::lround(norm.x() * (m_sourceQImage.width() - 1))),
+                             0, m_sourceQImage.width() - 1);
+    const int y = std::clamp(static_cast<int>(std::lround(norm.y() * (m_sourceQImage.height() - 1))),
+                             0, m_sourceQImage.height() - 1);
+    const QColor c = m_sourceQImage.pixelColor(x, y);
+
+    SelectiveValues v = m_selective->values();
+    v.maskMode = 1;
+    v.targetR = static_cast<float>(c.redF());
+    v.targetG = static_cast<float>(c.greenF());
+    v.targetB = static_cast<float>(c.blueF());
+    m_selective->setValues(v);
+    m_selectivePanel->setTargetColor(c);
+    recomputeSelectiveMask();
+    updatePreview();
 }
 
 void MainWindow::closeActiveTool()
@@ -393,8 +446,10 @@ void MainWindow::afterHistoryChange()
     if (m_looksPanel->isVisible())
         m_looksPanel->reveal(QFileInfo(m_lutNode->sourcePath()).fileName(),
                              m_lutNode->intensity());
-    if (m_selectivePanel->isVisible())
+    if (m_selectivePanel->isVisible()) {
         m_selectivePanel->reveal(m_selective->values());
+        recomputeSelectiveMask();
+    }
 }
 
 void MainWindow::showHint(const QString &text)

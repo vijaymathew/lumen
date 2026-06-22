@@ -7,6 +7,7 @@ layout(location = 0) out vec4 fragColor;
 layout(binding = 1) uniform sampler2D tex;
 layout(binding = 2) uniform sampler2D lut;     // 256x1 tone curve
 layout(binding = 3) uniform sampler3D lut3d;   // 32^3 look LUT
+layout(binding = 4) uniform sampler2D selMask; // selective colour-affinity mask
 
 layout(std140, binding = 0) uniform buf {
     mat4 mvp;
@@ -22,6 +23,7 @@ layout(std140, binding = 0) uniform buf {
     float selContrast;
     float selSaturation;
     float selMaskView;
+    float selMaskMode;
 } ubuf;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -53,9 +55,14 @@ void main()
     // 4. Selective: a luminosity-masked tone adjustment (SelectiveNode), plus an
     //    optional preview-only mask overlay.
     if (ubuf.selEnabled > 0.5 || ubuf.selMaskView > 0.5) {
-        float L = dot(col, kLuma);
-        float mask = smoothstep(ubuf.selLow - ubuf.selFeather, ubuf.selLow, L)
-                   * (1.0 - smoothstep(ubuf.selHigh, ubuf.selHigh + ubuf.selFeather, L));
+        float mask;
+        if (ubuf.selMaskMode < 0.5) {
+            float L = dot(col, kLuma);
+            mask = smoothstep(ubuf.selLow - ubuf.selFeather, ubuf.selLow, L)
+                 * (1.0 - smoothstep(ubuf.selHigh, ubuf.selHigh + ubuf.selFeather, L));
+        } else {
+            mask = texture(selMask, v_texcoord).r; // colour-affinity mask texture
+        }
         if (ubuf.selEnabled > 0.5) {
             vec3 adj = applyTone(col, ubuf.selExposure, ubuf.selContrast, ubuf.selSaturation);
             col = mix(col, adj, mask);

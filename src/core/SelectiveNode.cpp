@@ -3,6 +3,8 @@
 
 #include "core/SelectiveNode.h"
 
+#include "core/SelectiveMask.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -29,11 +31,16 @@ SelectiveNode::SelectiveNode()
 void SelectiveNode::setValues(const SelectiveValues &values)
 {
     SelectiveValues v = values;
+    v.maskMode = std::clamp(v.maskMode, 0, 1);
     v.low = std::clamp(v.low, 0.0f, 1.0f);
     v.high = std::clamp(v.high, 0.0f, 1.0f);
     if (v.high < v.low)
         std::swap(v.low, v.high);
     v.feather = std::clamp(v.feather, kMinFeather, 1.0f);
+    v.targetR = std::clamp(v.targetR, 0.0f, 1.0f);
+    v.targetG = std::clamp(v.targetG, 0.0f, 1.0f);
+    v.targetB = std::clamp(v.targetB, 0.0f, 1.0f);
+    v.colorRange = std::clamp(v.colorRange, 0.02f, 1.0f);
     v.exposure = std::clamp(v.exposure, kMinExposure, kMaxExposure);
     v.contrast = std::clamp(v.contrast, kMinAmount, kMaxAmount);
     v.saturation = std::clamp(v.saturation, kMinAmount, kMaxAmount);
@@ -46,21 +53,21 @@ void SelectiveNode::setValues(const SelectiveValues &values)
 
 bool SelectiveNode::isNeutral() const
 {
-    // Without an adjustment the masked blend is the identity.
     return m_values.exposure == 0.0f && m_values.contrast == 0.0f
         && m_values.saturation == 0.0f;
 }
 
 void SelectiveNode::contributeToPreview(PreviewState &state) const
 {
-    // Always publish the mask range so the preview can show the mask overlay
-    // even before an adjustment is dialled in.
+    state.selMaskMode = static_cast<float>(m_values.maskMode);
+    // Publish the luminosity range so the mask overlay works even before an
+    // adjustment is dialled in (colour-mask preview comes from a texture).
     state.selLow = m_values.low;
     state.selHigh = m_values.high;
     state.selFeather = std::max(m_values.feather, kMinFeather);
 
     if (isNeutral())
-        return; // no adjustment → no effect (matches apply())
+        return;
     state.selEnabled = 1.0f;
     state.selExposure = m_values.exposure;
     state.selContrast = 1.0f + m_values.contrast / 100.0f;
@@ -85,7 +92,15 @@ Image SelectiveNode::apply(const Image &input) const
     if (!buf)
         return input;
 
-    // Same math/order as the fragment shader's selective branch.
+    auto *px = static_cast<uint8_t *>(buf);
+
+    const bool colorMode = m_values.maskMode == 1;
+    MaskBuffer colorMask;
+    if (colorMode)
+        colorMask = colorAffinityMask(px, w, h, bands, m_values.targetR,
+                                      m_values.targetG, m_values.targetB,
+                                      m_values.colorRange);
+
     const double low = m_values.low;
     const double high = m_values.high;
     const double feather = std::max(m_values.feather, kMinFeather);
@@ -93,15 +108,19 @@ Image SelectiveNode::apply(const Image &input) const
     const double c = 1.0 + m_values.contrast / 100.0;
     const double s = 1.0 + m_values.saturation / 100.0;
 
-    auto *px = static_cast<uint8_t *>(buf);
     const long long n = static_cast<long long>(w) * h;
     for (long long i = 0; i < n; ++i) {
         uint8_t *p = px + i * bands;
         double col[3] = {p[0] / 255.0, p[1] / 255.0, p[2] / 255.0};
 
-        const double L = kLumaR * col[0] + kLumaG * col[1] + kLumaB * col[2];
-        const double mask = smoothstep(low - feather, low, L)
-                          * (1.0 - smoothstep(high, high + feather, L));
+        double mask;
+        if (colorMode) {
+            mask = colorMask.data.empty() ? 0.0 : colorMask.data[i];
+        } else {
+            const double L = kLumaR * col[0] + kLumaG * col[1] + kLumaB * col[2];
+            mask = smoothstep(low - feather, low, L)
+                 * (1.0 - smoothstep(high, high + feather, L));
+        }
 
         double adj[3] = {col[0] * f, col[1] * f, col[2] * f};
         for (int ch = 0; ch < 3; ++ch)
@@ -127,9 +146,14 @@ Image SelectiveNode::apply(const Image &input) const
 QJsonObject SelectiveNode::saveState() const
 {
     QJsonObject state = EditNode::saveState();
+    state[QStringLiteral("maskMode")] = m_values.maskMode;
     state[QStringLiteral("low")] = m_values.low;
     state[QStringLiteral("high")] = m_values.high;
     state[QStringLiteral("feather")] = m_values.feather;
+    state[QStringLiteral("targetR")] = m_values.targetR;
+    state[QStringLiteral("targetG")] = m_values.targetG;
+    state[QStringLiteral("targetB")] = m_values.targetB;
+    state[QStringLiteral("colorRange")] = m_values.colorRange;
     state[QStringLiteral("exposure")] = m_values.exposure;
     state[QStringLiteral("contrast")] = m_values.contrast;
     state[QStringLiteral("saturation")] = m_values.saturation;
@@ -140,9 +164,14 @@ void SelectiveNode::restoreState(const QJsonObject &state)
 {
     EditNode::restoreState(state);
     SelectiveValues v;
+    v.maskMode = state.value(QStringLiteral("maskMode")).toInt(0);
     v.low = static_cast<float>(state.value(QStringLiteral("low")).toDouble(0.0));
     v.high = static_cast<float>(state.value(QStringLiteral("high")).toDouble(1.0));
     v.feather = static_cast<float>(state.value(QStringLiteral("feather")).toDouble(0.1));
+    v.targetR = static_cast<float>(state.value(QStringLiteral("targetR")).toDouble(0.0));
+    v.targetG = static_cast<float>(state.value(QStringLiteral("targetG")).toDouble(0.0));
+    v.targetB = static_cast<float>(state.value(QStringLiteral("targetB")).toDouble(0.0));
+    v.colorRange = static_cast<float>(state.value(QStringLiteral("colorRange")).toDouble(0.3));
     v.exposure = static_cast<float>(state.value(QStringLiteral("exposure")).toDouble(0.0));
     v.contrast = static_cast<float>(state.value(QStringLiteral("contrast")).toDouble(0.0));
     v.saturation = static_cast<float>(state.value(QStringLiteral("saturation")).toDouble(0.0));

@@ -65,6 +65,10 @@ add_library(lumen_core STATIC
     src/core/LutNode.cpp
     src/core/SelectiveNode.h
     src/core/SelectiveNode.cpp
+    src/core/GuidedFilter.h
+    src/core/GuidedFilter.cpp
+    src/core/SelectiveMask.h
+    src/core/SelectiveMask.cpp
 )
 target_include_directories(lumen_core PUBLIC src)
 target_link_libraries(lumen_core PUBLIC Qt6::Core Qt6::Gui PkgConfig::VIPS)
@@ -178,4 +182,9 @@ if(BUILD_TESTING)
     target_link_libraries(selective_test PRIVATE lumen_core)
     target_compile_options(selective_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME selective_test COMMAND selective_test)
+
+    add_executable(guided_filter_test tests/guided_filter_test.cpp)
+    target_link_libraries(guided_filter_test PRIVATE lumen_core)
+    target_compile_options(guided_filter_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME guided_filter_test COMMAND guided_filter_test)
 endif()
