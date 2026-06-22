@@ -5,6 +5,49 @@
 
 #include "core/Image.h"
 
+namespace {
+
+// Returns a new sRGB / 8-bit / 4-band (RGBA) image that the caller owns, or
+// nullptr on error. Does not consume `in`.
+VipsImage *toDisplayRGBA(VipsImage *in)
+{
+    VipsImage *cur = in;
+    g_object_ref(cur); // own a ref to whatever cur points at
+    auto replace = [&cur](VipsImage *next) {
+        g_object_unref(cur);
+        cur = next;
+    };
+
+    VipsImage *t = nullptr;
+    if (vips_colourspace(cur, &t, VIPS_INTERPRETATION_sRGB, nullptr)) {
+        g_object_unref(cur);
+        return nullptr;
+    }
+    replace(t);
+
+    if (cur->BandFmt != VIPS_FORMAT_UCHAR) {
+        t = nullptr;
+        if (vips_cast(cur, &t, VIPS_FORMAT_UCHAR, nullptr)) {
+            g_object_unref(cur);
+            return nullptr;
+        }
+        replace(t);
+    }
+
+    if (!vips_image_hasalpha(cur)) {
+        t = nullptr;
+        if (vips_addalpha(cur, &t, nullptr)) {
+            g_object_unref(cur);
+            return nullptr;
+        }
+        replace(t);
+    }
+
+    return cur; // caller owns
+}
+
+} // namespace
+
 Image::Image(_VipsImage *img)
     : m_image(img)
 {
@@ -77,4 +120,93 @@ int Image::width() const
 int Image::height() const
 {
     return m_image ? m_image->Ysize : 0;
+}
+
+Image Image::fromFile(const QString &path, QString *error)
+{
+    const QByteArray utf8 = path.toUtf8();
+    VipsImage *img = vips_image_new_from_file(utf8.constData(), nullptr);
+    if (!img) {
+        if (error)
+            *error = QStringLiteral("Could not open '%1': %2")
+                         .arg(path, QString::fromUtf8(vips_error_buffer()));
+        vips_error_clear();
+        return Image();
+    }
+
+    VipsImage *norm = toDisplayRGBA(img);
+    g_object_unref(img);
+    if (!norm) {
+        if (error)
+            *error = QStringLiteral("Could not decode '%1': %2")
+                         .arg(path, QString::fromUtf8(vips_error_buffer()));
+        vips_error_clear();
+        return Image();
+    }
+    return Image::adopt(norm);
+}
+
+QImage Image::toQImage() const
+{
+    if (!m_image)
+        return QImage();
+
+    VipsImage *norm = toDisplayRGBA(m_image);
+    if (!norm) {
+        vips_error_clear();
+        return QImage();
+    }
+
+    const int w = norm->Xsize;
+    const int h = norm->Ysize;
+    size_t size = 0;
+    void *buf = vips_image_write_to_memory(norm, &size);
+    g_object_unref(norm);
+    if (!buf) {
+        vips_error_clear();
+        return QImage();
+    }
+
+    // QImage takes ownership of the g_malloc'd buffer (freed via g_free).
+    return QImage(static_cast<uchar *>(buf), w, h, w * 4,
+                  QImage::Format_RGBA8888,
+                  [](void *p) { g_free(p); }, buf);
+}
+
+bool Image::saveToFile(const QString &path, QString *error) const
+{
+    if (!m_image) {
+        if (error)
+            *error = QStringLiteral("No image to export");
+        return false;
+    }
+
+    const QByteArray utf8 = path.toUtf8();
+
+    // Drop a trailing alpha band so formats without alpha (e.g. JPEG) succeed.
+    VipsImage *out = m_image;
+    bool owned = false;
+    if (vips_image_hasalpha(m_image)) {
+        VipsImage *rgb = nullptr;
+        const int n = vips_image_get_bands(m_image) - 1;
+        if (vips_extract_band(m_image, &rgb, 0, "n", n, nullptr)) {
+            if (error)
+                *error = QString::fromUtf8(vips_error_buffer());
+            vips_error_clear();
+            return false;
+        }
+        out = rgb;
+        owned = true;
+    }
+
+    const int rc = vips_image_write_to_file(out, utf8.constData(), nullptr);
+    if (owned)
+        g_object_unref(out);
+    if (rc) {
+        if (error)
+            *error = QString::fromUtf8(vips_error_buffer());
+        vips_error_clear();
+        return false;
+    }
+    return true;
 }

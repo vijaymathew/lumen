@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QImage>
 #include <QString>
 
 // Forward declaration so this header does not pull in libvips (and, with it,
@@ -28,6 +29,10 @@ public:
     // Creates a black RGB image of the given size (useful for tests/placeholders).
     static Image black(int width, int height);
 
+    // Loads and normalises an image to 8-bit sRGB with an alpha channel via
+    // libvips. On failure returns a null Image and sets *error (if provided).
+    static Image fromFile(const QString &path, QString *error = nullptr);
+
     Image(const Image &other);
     Image &operator=(const Image &other);
     Image(Image &&other) noexcept;
@@ -37,6 +42,14 @@ public:
     bool isNull() const { return m_image == nullptr; }
     int width() const;
     int height() const;
+
+    // Materialises to a packed RGBA8 QImage for display / GPU upload.
+    QImage toQImage() const;
+
+    // Writes to `path` (format chosen from the extension) via libvips. A
+    // trailing alpha channel is dropped so formats like JPEG work. Returns false
+    // and sets *error on failure.
+    bool saveToFile(const QString &path, QString *error = nullptr) const;
 
     // Raw handle for node implementations (only meaningful in vips-aware TUs).
     _VipsImage *handle() const { return m_image; }

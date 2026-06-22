@@ -2,8 +2,7 @@
 
 #include <QMainWindow>
 
-#include <memory>
-
+#include "core/EditGraph.h"
 #include "core/TuneNode.h"
 #include "input/InputController.h"
 
@@ -39,6 +38,7 @@ private:
 
     void openExposureTool();
     void closeExposureTool();
+    void exportImage();
 
     InputController m_input;
     CanvasWidget *m_canvas = nullptr;
@@ -47,7 +47,9 @@ private:
     ExposurePanel *m_exposurePanel = nullptr;
     QLabel *m_hint = nullptr;
 
-    // Exposure model node (the GPU preview reads its value; the libvips export
-    // path will walk it in a later phase).
-    std::unique_ptr<TuneNode> m_tune;
+    // The non-destructive edit graph. The GPU preview reads the tune node's
+    // exposure live; Export walks the graph at full resolution via libvips.
+    EditGraph m_graph;
+    TuneNode *m_tune = nullptr; // owned by m_graph
+    QString m_sourcePath;       // for a sensible default export name
 };

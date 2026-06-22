@@ -1,10 +1,13 @@
 #include "ui/MainWindow.h"
 
-#include "core/ImageBuffer.h"
+#include "core/Image.h"
 #include "gpu/CanvasWidget.h"
 #include "input/CommandPalette.h"
 #include "ui/ExposurePanel.h"
 
+#include <memory>
+
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QKeyEvent>
@@ -41,9 +44,11 @@ protected:
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
-    , m_tune(std::make_unique<TuneNode>())
 {
     setWindowTitle(QStringLiteral("Lumen"));
+
+    // The graph owns the tune node; we keep a raw pointer to drive it.
+    m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
 
     m_canvas = new CanvasWidget(this);
     setCentralWidget(m_canvas);
@@ -95,6 +100,7 @@ void MainWindow::buildCommands()
     // ids consumed by runCommand(). Editing tools are placeholders for now.
     m_palette->setCommands({
         {QStringLiteral("open"), QStringLiteral("Open image…")},
+        {QStringLiteral("export"), QStringLiteral("Export image…")},
         {QStringLiteral("exposure"), QStringLiteral("Exposure")},
         {QStringLiteral("reset-view"), QStringLiteral("Reset view")},
         {QStringLiteral("fullscreen"), QStringLiteral("Toggle fullscreen")},
@@ -110,6 +116,8 @@ void MainWindow::runCommand(const QString &id)
 {
     if (id == QLatin1String("open")) {
         openImageDialog();
+    } else if (id == QLatin1String("export")) {
+        exportImage();
     } else if (id == QLatin1String("exposure")) {
         openExposureTool();
     } else if (id == QLatin1String("reset-view")) {
@@ -126,12 +134,16 @@ void MainWindow::runCommand(const QString &id)
 
 bool MainWindow::openPath(const QString &path)
 {
-    ImageBuffer buffer;
-    if (!buffer.load(path)) {
-        QMessageBox::warning(this, QStringLiteral("Lumen"), buffer.errorString());
+    QString error;
+    Image source = Image::fromFile(path, &error);
+    if (source.isNull()) {
+        QMessageBox::warning(this, QStringLiteral("Lumen"), error);
         return false;
     }
-    m_canvas->setImage(buffer.image());
+
+    m_graph.setSource(source);          // full-res source for export
+    m_canvas->setImage(source.toQImage()); // unedited image for the GPU preview
+    m_sourcePath = path;
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
     return true;
 }
@@ -145,6 +157,36 @@ void MainWindow::openImageDialog()
         QStringLiteral("Images (*.jpg *.jpeg *.png *.tif *.tiff *.webp)"));
     if (!path.isEmpty())
         openPath(path);
+}
+
+void MainWindow::exportImage()
+{
+    if (m_graph.source().isNull()) {
+        showHint(QStringLiteral("Open an image before exporting"));
+        return;
+    }
+
+    // Suggest "<name>-edited.<ext>" next to the original.
+    const QFileInfo src(m_sourcePath);
+    const QString suffix = src.suffix().isEmpty() ? QStringLiteral("jpg") : src.suffix();
+    const QString suggested = src.dir().filePath(
+        src.completeBaseName() + QStringLiteral("-edited.") + suffix);
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Export image"), suggested,
+        QStringLiteral("Images (*.jpg *.jpeg *.png *.tif *.tiff *.webp)"));
+    if (path.isEmpty())
+        return;
+
+    // Walk the graph at full resolution, then write via libvips.
+    const Image result = m_graph.result();
+    QString error;
+    if (!result.saveToFile(path, &error)) {
+        QMessageBox::warning(this, QStringLiteral("Lumen"),
+                             QStringLiteral("Export failed: %1").arg(error));
+        return;
+    }
+    showHint(QStringLiteral("Exported to %1").arg(QFileInfo(path).fileName()));
 }
 
 void MainWindow::toggleFullScreen()
