@@ -83,6 +83,8 @@ qt_add_executable(lumen
     src/ui/TonePanel.cpp
     src/ui/CurvesPanel.h
     src/ui/CurvesPanel.cpp
+    src/ui/LooksPanel.h
+    src/ui/LooksPanel.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
 )

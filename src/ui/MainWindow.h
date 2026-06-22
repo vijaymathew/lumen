@@ -11,6 +11,7 @@
 class CanvasWidget;
 class CommandPalette;
 class CurvesPanel;
+class LooksPanel;
 class TonePanel;
 class QLabel;
 
@@ -46,8 +47,11 @@ private:
     void closeToneTool();
     void openCurvesTool();
     void closeCurvesTool();
+    void openLooksTool();
+    void closeLooksTool();
+    void loadLookFile();
     void closeActiveTool();
-    void updatePreview(); // push tone state + curve LUT to the canvas
+    void updatePreview(); // push tone state + curve LUT + look to the canvas
     void exportImage();
 
     void doUndo();
@@ -60,6 +64,7 @@ private:
     CommandPalette *m_palette = nullptr;
     TonePanel *m_tonePanel = nullptr;
     CurvesPanel *m_curvesPanel = nullptr;
+    LooksPanel *m_looksPanel = nullptr;
     QLabel *m_hint = nullptr;
 
     // The non-destructive edit graph. The GPU preview reads the tune node's

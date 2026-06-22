@@ -21,14 +21,20 @@ public:
     void clear();
 
     const Lut3D &lut() const { return m_lut; }
+    const QString &sourcePath() const { return m_sourcePath; }
+
+    float intensity() const { return m_intensity; } // [0,1]
+    void setIntensity(float intensity);
 
     Image apply(const Image &input) const override;
     const Lut3D *lookLut() const override { return &m_lut; }
+    void contributeToPreview(PreviewState &state) const override;
 
     QJsonObject saveState() const override;
     void restoreState(const QJsonObject &state) override;
 
 private:
     Lut3D m_lut;
-    QString m_sourcePath; // for persistence; empty for directly-set LUTs
+    QString m_sourcePath;     // for persistence; empty for directly-set LUTs
+    float m_intensity = 1.0f; // look blend [0,1]
 };

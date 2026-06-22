@@ -36,9 +36,24 @@ void LutNode::clear()
     invalidate();
 }
 
+void LutNode::setIntensity(float intensity)
+{
+    intensity = std::clamp(intensity, 0.0f, 1.0f);
+    if (intensity != m_intensity) {
+        m_intensity = intensity;
+        invalidate();
+    }
+}
+
+void LutNode::contributeToPreview(PreviewState &state) const
+{
+    if (m_lut.isValid())
+        state.lutIntensity = m_intensity; // last look wins (matches previewLook)
+}
+
 Image LutNode::apply(const Image &input) const
 {
-    if (input.isNull() || !m_lut.isValid())
+    if (input.isNull() || !m_lut.isValid() || m_intensity == 0.0f)
         return input;
 
     // Work on an 8-bit RGBA buffer.
@@ -57,13 +72,16 @@ Image LutNode::apply(const Image &input) const
 
     auto *px = static_cast<uint8_t *>(buf);
     const long long n = static_cast<long long>(w) * h;
+    const double t = m_intensity;
     double out[3];
     for (long long i = 0; i < n; ++i) {
         uint8_t *p = px + i * bands;
         m_lut.sample(p[0] / 255.0, p[1] / 255.0, p[2] / 255.0, out);
-        for (int c = 0; c < 3; ++c)
-            p[c] = static_cast<uint8_t>(
-                std::clamp(std::lround(out[c] * 255.0), 0L, 255L));
+        for (int c = 0; c < 3; ++c) {
+            // Blend the look with the original by intensity.
+            const double blended = p[c] * (1.0 - t) + out[c] * 255.0 * t;
+            p[c] = static_cast<uint8_t>(std::clamp(std::lround(blended), 0L, 255L));
+        }
         // alpha (and any extra band) left untouched
     }
 
@@ -80,6 +98,7 @@ QJsonObject LutNode::saveState() const
     QJsonObject state = EditNode::saveState();
     if (!m_sourcePath.isEmpty())
         state[QStringLiteral("hald")] = m_sourcePath;
+    state[QStringLiteral("intensity")] = m_intensity;
     return state;
 }
 
@@ -91,4 +110,6 @@ void LutNode::restoreState(const QJsonObject &state)
         clear();
     else
         loadHald(path);
+    setIntensity(static_cast<float>(
+        state.value(QStringLiteral("intensity")).toDouble(1.0)));
 }

@@ -10,9 +10,10 @@ layout(binding = 3) uniform sampler3D lut3d;   // 32^3 look LUT
 
 layout(std140, binding = 0) uniform buf {
     mat4 mvp;
-    float exposure;   // EV stops
-    float contrast;   // factor, 1 = neutral
-    float saturation; // factor, 1 = neutral
+    float exposure;     // EV stops
+    float contrast;     // factor, 1 = neutral
+    float saturation;   // factor, 1 = neutral
+    float lutIntensity; // look blend [0,1]
 } ubuf;
 
 void main()
@@ -34,9 +35,10 @@ void main()
     col = vec3(texture(lut, vec2(col.r, 0.5)).r,
                texture(lut, vec2(col.g, 0.5)).g,
                texture(lut, vec2(col.b, 0.5)).b);
-    // 5. Look: trilinear 3D LUT (identity cube when no look). Linear sampling
-    //    does the interpolation; clamp to the cube domain.
-    col = texture(lut3d, clamp(col, 0.0, 1.0)).rgb;
+    // 5. Look: trilinear 3D LUT (identity cube when no look), blended with the
+    //    pre-look colour by intensity. Linear sampling does the interpolation.
+    vec3 lutCol = texture(lut3d, clamp(col, 0.0, 1.0)).rgb;
+    col = mix(col, lutCol, ubuf.lutIntensity);
 
     fragColor = vec4(col, c.a);
 }

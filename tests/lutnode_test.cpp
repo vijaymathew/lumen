@@ -67,12 +67,21 @@ int main(int /*argc*/, char **argv)
     QColor pc = passImg.pixelColor(0, 0);
     CHECK(near8(pc.red(), 200) && near8(pc.green(), 100) && near8(pc.blue(), 50));
 
-    // Apply the inverting CLUT.
+    // Apply the inverting CLUT at full intensity.
     CHECK(node.loadHald(haldPath));
     CHECK(node.lut().isValid());
     Image inv = node.apply(src);
     QColor ic = inv.toQImage().pixelColor(0, 0);
     CHECK(near8(ic.red(), 55) && near8(ic.green(), 155) && near8(ic.blue(), 205));
+
+    // Intensity 0 -> passthrough; 0.5 -> halfway between original and inverted.
+    node.setIntensity(0.0f);
+    QColor zc = node.apply(src).toQImage().pixelColor(0, 0);
+    CHECK(near8(zc.red(), 200) && near8(zc.green(), 100) && near8(zc.blue(), 50));
+    node.setIntensity(0.5f);
+    QColor hc = node.apply(src).toQImage().pixelColor(0, 0);
+    CHECK(near8(hc.red(), 128) && near8(hc.green(), 128) && near8(hc.blue(), 128));
+    node.setIntensity(1.0f);
 
     // The graph exposes the look for the preview path.
     EditGraph graph;

@@ -10,6 +10,7 @@ layout(std140, binding = 0) uniform buf {
     float exposure;   // consumed in the fragment stage
     float contrast;
     float saturation;
+    float lutIntensity;
 } ubuf;
 
 void main()
