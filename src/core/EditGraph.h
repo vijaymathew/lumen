@@ -2,6 +2,7 @@
 
 #include "core/Image.h"
 #include "core/Lut.h"
+#include "core/Lut3D.h"
 #include "core/PreviewState.h"
 
 #include <QJsonArray>
@@ -62,6 +63,10 @@ public:
     // Composes the per-channel tone-curve LUTs of all enabled curve nodes
     // (identity if none). The canvas applies these after the PreviewState ops.
     ChannelLuts previewLut() const;
+
+    // The effective 3D LUT "look" of the enabled look nodes (the last one wins;
+    // composing multiple looks is out of scope). Invalid if there is none.
+    Lut3D previewLook() const;
 
     // --- Undo/redo ---------------------------------------------------------
     // History is a stack of graph snapshots. Call commit() to record the current

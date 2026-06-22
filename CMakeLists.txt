@@ -59,6 +59,10 @@ add_library(lumen_core STATIC
     src/core/Curve.cpp
     src/core/CurvesNode.h
     src/core/CurvesNode.cpp
+    src/core/Lut3D.h
+    src/core/Lut3D.cpp
+    src/core/LutNode.h
+    src/core/LutNode.cpp
 )
 target_include_directories(lumen_core PUBLIC src)
 target_link_libraries(lumen_core PUBLIC Qt6::Core Qt6::Gui PkgConfig::VIPS)
@@ -79,6 +83,8 @@ qt_add_executable(lumen
     src/ui/TonePanel.cpp
     src/ui/CurvesPanel.h
     src/ui/CurvesPanel.cpp
+    src/ui/LooksPanel.h
+    src/ui/LooksPanel.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
 )
@@ -153,4 +159,14 @@ if(BUILD_TESTING)
     target_link_libraries(curves_test PRIVATE lumen_core)
     target_compile_options(curves_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME curves_test COMMAND curves_test)
+
+    add_executable(lut3d_test tests/lut3d_test.cpp)
+    target_link_libraries(lut3d_test PRIVATE lumen_core)
+    target_compile_options(lut3d_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME lut3d_test COMMAND lut3d_test)
+
+    add_executable(lutnode_test tests/lutnode_test.cpp)
+    target_link_libraries(lutnode_test PRIVATE lumen_core)
+    target_compile_options(lutnode_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME lutnode_test COMMAND lutnode_test)
 endif()

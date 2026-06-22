@@ -4,6 +4,7 @@
 #include "gpu/CanvasWidget.h"
 #include "input/CommandPalette.h"
 #include "ui/CurvesPanel.h"
+#include "ui/LooksPanel.h"
 #include "ui/TonePanel.h"
 
 #include <memory>
@@ -49,9 +50,11 @@ MainWindow::MainWindow(QWidget *parent)
     setWindowTitle(QStringLiteral("Lumen"));
 
     // The graph owns the nodes; we keep raw pointers to drive them. Order is
-    // tune -> curves (the shader applies tone ops then the curve LUT to match).
+    // tune -> curves -> lut (the shader applies tone ops, then the curve LUT,
+    // then the 3D look LUT, to match).
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
+    m_lutNode = static_cast<LutNode *>(m_graph.addNode(std::make_unique<LutNode>()));
 
     m_canvas = new CanvasWidget(this);
     setCentralWidget(m_canvas);
@@ -81,6 +84,18 @@ MainWindow::MainWindow(QWidget *parent)
     m_curvesPanel = new CurvesPanel(this);
     connect(m_curvesPanel, &CurvesPanel::curveChanged, this, [this](const ChannelCurves &c) {
         m_curves->setCurves(c);
+        updatePreview();
+    });
+
+    m_looksPanel = new LooksPanel(this);
+    connect(m_looksPanel, &LooksPanel::loadRequested, this, &MainWindow::loadLookFile);
+    connect(m_looksPanel, &LooksPanel::clearRequested, this, [this] {
+        m_lutNode->clear();
+        m_looksPanel->setLookName(QString());
+        updatePreview();
+    });
+    connect(m_looksPanel, &LooksPanel::intensityChanged, this, [this](double v) {
+        m_lutNode->setIntensity(static_cast<float>(v));
         updatePreview();
     });
 
@@ -119,9 +134,9 @@ void MainWindow::buildCommands()
         {QStringLiteral("redo"), QStringLiteral("Redo")},
         {QStringLiteral("reset-view"), QStringLiteral("Reset view")},
         {QStringLiteral("fullscreen"), QStringLiteral("Toggle fullscreen")},
+        {QStringLiteral("looks"), QStringLiteral("Looks (LUT)")},
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment")},
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
-        {QStringLiteral("looks"), QStringLiteral("Looks (LUT)")},
         {QStringLiteral("quit"), QStringLiteral("Quit Lumen")},
     });
 }
@@ -136,6 +151,8 @@ void MainWindow::runCommand(const QString &id)
         openToneTool();
     } else if (id == QLatin1String("curves")) {
         openCurvesTool();
+    } else if (id == QLatin1String("looks")) {
+        openLooksTool();
     } else if (id == QLatin1String("undo")) {
         doUndo();
     } else if (id == QLatin1String("redo")) {
@@ -223,6 +240,7 @@ void MainWindow::updatePreview()
 {
     m_canvas->setPreviewState(m_graph.previewState());
     m_canvas->setCurveLuts(m_graph.previewLut());
+    m_canvas->setLut3D(m_graph.previewLook());
 }
 
 void MainWindow::openToneTool()
@@ -260,12 +278,52 @@ void MainWindow::closeCurvesTool()
     m_canvas->setFocus();
 }
 
+void MainWindow::openLooksTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_looksPanel->adjustSize();
+    const int margin = 18;
+    m_looksPanel->move(width() - m_looksPanel->width() - margin, margin);
+    m_looksPanel->reveal(QFileInfo(m_lutNode->sourcePath()).fileName(),
+                         m_lutNode->intensity());
+}
+
+void MainWindow::closeLooksTool()
+{
+    m_looksPanel->hide();
+    m_graph.commit();
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::loadLookFile()
+{
+    const QString dir =
+        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("Load HALD CLUT"), dir,
+        QStringLiteral("HALD CLUT images (*.png *.tif *.tiff *.jpg *.jpeg)"));
+    if (path.isEmpty())
+        return;
+
+    QString error;
+    if (!m_lutNode->loadHald(path, &error)) {
+        QMessageBox::warning(this, QStringLiteral("Lumen"),
+                             QStringLiteral("Could not load look: %1").arg(error));
+        return;
+    }
+    m_looksPanel->setLookName(QFileInfo(path).fileName());
+    updatePreview();
+}
+
 void MainWindow::closeActiveTool()
 {
     if (m_tonePanel->isVisible())
         closeToneTool();
     else if (m_curvesPanel->isVisible())
         closeCurvesTool();
+    else if (m_looksPanel->isVisible())
+        closeLooksTool();
     else {
         m_input.setMode(InputController::Mode::Browse);
         m_canvas->setFocus();
@@ -292,6 +350,9 @@ void MainWindow::afterHistoryChange()
         m_tonePanel->reveal({m_tune->exposure(), m_tune->contrast(), m_tune->saturation()});
     if (m_curvesPanel->isVisible())
         m_curvesPanel->reveal(m_curves->curves());
+    if (m_looksPanel->isVisible())
+        m_looksPanel->reveal(QFileInfo(m_lutNode->sourcePath()).fileName(),
+                             m_lutNode->intensity());
 }
 
 void MainWindow::showHint(const QString &text)
@@ -324,6 +385,7 @@ void MainWindow::layoutOverlays()
     };
     clampIntoView(m_tonePanel);
     clampIntoView(m_curvesPanel);
+    clampIntoView(m_looksPanel);
 
     // Hint bar: bottom-centre.
     m_hint->move((width() - m_hint->width()) / 2, height() - m_hint->height() - 18);

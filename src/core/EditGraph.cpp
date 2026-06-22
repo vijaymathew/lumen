@@ -126,6 +126,19 @@ ChannelLuts EditGraph::previewLut() const
     return luts;
 }
 
+Lut3D EditGraph::previewLook() const
+{
+    Lut3D look;
+    for (const auto &node : m_nodes) {
+        if (!node->isEnabled())
+            continue;
+        const Lut3D *l = node->lookLut();
+        if (l && l->isValid())
+            look = *l; // last enabled look wins
+    }
+    return look;
+}
+
 QJsonArray EditGraph::saveState() const
 {
     QJsonArray nodes;

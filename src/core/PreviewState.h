@@ -13,7 +13,8 @@
 // Field order and packing must match the shader's std140 uniform block (see
 // texture.frag) — CanvasWidget uploads these as contiguous floats.
 struct PreviewState {
-    float exposure = 0.0f;   // EV stops, summed across nodes
-    float contrast = 1.0f;   // factor, 1 = neutral, multiplied across nodes
-    float saturation = 1.0f; // factor, 1 = neutral, multiplied across nodes
+    float exposure = 0.0f;     // EV stops, summed across nodes
+    float contrast = 1.0f;     // factor, 1 = neutral, multiplied across nodes
+    float saturation = 1.0f;   // factor, 1 = neutral, multiplied across nodes
+    float lutIntensity = 1.0f; // look blend [0,1]; harmless when the LUT is identity
 };
