@@ -20,6 +20,7 @@ public:
     void setExposure(float ev);
 
     Image apply(const Image &input) const override;
+    void contributeToPreview(PreviewState &state) const override;
 
 private:
     float m_exposure = 0.0f;

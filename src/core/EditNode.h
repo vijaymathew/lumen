@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Image.h"
+#include "core/PreviewState.h"
 
 #include <QString>
 
@@ -36,8 +37,13 @@ public:
 
     // Applies this node's operation to `input`, returning a new image. Must be a
     // pure function of (input, parameters) so the graph can cache the result.
-    // Concrete nodes (TuneNode, etc.) arrive in Phase 2.3+.
+    // This is the full-resolution libvips (export) path.
     virtual Image apply(const Image &input) const = 0;
+
+    // Contributes this node's effect to the GPU preview state. Default is no
+    // contribution; pointwise tone nodes override it. (The graph only calls this
+    // for enabled nodes.)
+    virtual void contributeToPreview(PreviewState &) const {}
 
 protected:
     // Subclasses call this from parameter setters to invalidate cached output.

@@ -44,6 +44,7 @@ endif()
 # in Qt Widgets / RHI. Qt6::Gui is here only for QImage in the loader.
 
 add_library(lumen_core STATIC
+    src/core/PreviewState.h
     src/core/Image.h
     src/core/Image.cpp
     src/core/ImageBuffer.h

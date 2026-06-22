@@ -183,8 +183,18 @@ Each node holds:
 - A **dirty flag** for cache invalidation
 
 Two render paths from the same graph:
-- **Preview** — downsampled image through GPU shaders for real-time feedback.
-- **Export** — full graph through libvips at full resolution.
+- **Preview** — GPU shaders for real-time feedback. Pointwise tone nodes
+  contribute to a `PreviewState` (via `EditNode::contributeToPreview`) that the
+  graph accumulates (`EditGraph::previewState()`) and the fragment shader
+  applies. So the on-screen image is driven by walking the graph, not by any one
+  tool wiring itself to the canvas. (A spatial or strongly order-dependent node —
+  blur, masks — will need a true multi-pass shader chain; that's added when such
+  a node first exists. Pointwise tone ops fold into the flat `PreviewState`.)
+- **Export** — full graph through libvips at full resolution (`EditGraph::result()`).
+
+Each node therefore has two implementations kept consistent: `apply()` (libvips,
+export) and `contributeToPreview()` (GPU, preview). They use the same math so
+preview predicts export (e.g. exposure's `2^(ev/2.2)` in both).
 
 ### 5.2 Layers
 

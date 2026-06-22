@@ -21,6 +21,11 @@ void TuneNode::setExposure(float ev)
     }
 }
 
+void TuneNode::contributeToPreview(PreviewState &state) const
+{
+    state.exposure += m_exposure; // EV stops sum
+}
+
 Image TuneNode::apply(const Image &input) const
 {
     if (input.isNull() || m_exposure == 0.0f)

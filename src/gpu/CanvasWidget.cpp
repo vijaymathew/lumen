@@ -50,11 +50,11 @@ void CanvasWidget::resetView()
     update();
 }
 
-void CanvasWidget::setExposure(float ev)
+void CanvasWidget::setPreviewState(const PreviewState &state)
 {
-    if (m_exposure == ev)
+    if (m_preview.exposure == state.exposure)
         return;
-    m_exposure = ev;
+    m_preview = state;
     update();
 }
 
@@ -197,7 +197,7 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
     if (drawable) {
         const QMatrix4x4 mvp = computeMvp(target);
         u->updateDynamicBuffer(m_ubuf.get(), 0, 64, mvp.constData());
-        u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(float), &m_exposure);
+        u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(float), &m_preview.exposure);
     }
 
     const QColor clearColor(17, 17, 19); // matches the app's dark canvas

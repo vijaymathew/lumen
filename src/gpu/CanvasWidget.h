@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/PreviewState.h"
+
 #include <QRhiWidget>
 #include <rhi/qrhi.h>
 
@@ -27,8 +29,9 @@ public:
     // Swaps in a new image. The upload happens lazily on the next render.
     void setImage(const QImage &image);
 
-    // Live exposure preview, in EV stops (applied in the fragment shader).
-    void setExposure(float ev);
+    // Sets the preview parameters accumulated from the edit graph; applied live
+    // in the fragment shader.
+    void setPreviewState(const PreviewState &state);
 
     // Resets zoom/pan so the image is fit-to-window and centred.
     void resetView();
@@ -65,6 +68,6 @@ private:
     QPointF m_pan{0.0, 0.0};
     QPointF m_lastMousePos;
 
-    // Preview adjustments fed to the shader.
-    float m_exposure = 0.0f; // EV stops
+    // Preview adjustments (from the edit graph) fed to the shader.
+    PreviewState m_preview;
 };

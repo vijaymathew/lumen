@@ -70,7 +70,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_exposurePanel = new ExposurePanel(this);
     connect(m_exposurePanel, &ExposurePanel::exposureChanged, this, [this](double ev) {
         m_tune->setExposure(static_cast<float>(ev)); // update the model node
-        m_canvas->setExposure(static_cast<float>(ev)); // live GPU preview
+        // The preview is driven by walking the graph, not the node directly.
+        m_canvas->setPreviewState(m_graph.previewState());
     });
     connect(m_exposurePanel, &ExposurePanel::closed, this, &MainWindow::closeExposureTool);
 
@@ -141,8 +142,9 @@ bool MainWindow::openPath(const QString &path)
         return false;
     }
 
-    m_graph.setSource(source);          // full-res source for export
+    m_graph.setSource(source);             // full-res source for export
     m_canvas->setImage(source.toQImage()); // unedited image for the GPU preview
+    m_canvas->setPreviewState(m_graph.previewState()); // apply any existing edits
     m_sourcePath = path;
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
     return true;

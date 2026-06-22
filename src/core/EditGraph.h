@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Image.h"
+#include "core/PreviewState.h"
 
 #include <QString>
 
@@ -48,8 +49,13 @@ public:
 
     // Walks the graph and returns the final image, recomputing only what is
     // dirty and reusing cache otherwise. Returns the source if there are no
-    // nodes, or a null Image if no source is set.
+    // nodes, or a null Image if no source is set. (Full-res libvips export path.)
     Image result();
+
+    // Accumulates the GPU preview parameters by walking enabled nodes. This is
+    // the GPU (display) path counterpart to result(). Cheap — call it on any
+    // edit and push the result to the canvas.
+    PreviewState previewState() const;
 
 private:
     int indexOf(const QString &id) const;

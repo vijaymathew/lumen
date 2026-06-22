@@ -104,6 +104,16 @@ Image EditGraph::result()
     return current;
 }
 
+PreviewState EditGraph::previewState() const
+{
+    PreviewState state;
+    for (const auto &node : m_nodes) {
+        if (node->isEnabled())
+            node->contributeToPreview(state);
+    }
+    return state;
+}
+
 int EditGraph::indexOf(const QString &id) const
 {
     for (int i = 0; i < static_cast<int>(m_nodes.size()); ++i) {
