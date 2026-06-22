@@ -2,10 +2,14 @@
 
 #include <QMainWindow>
 
+#include <memory>
+
+#include "core/TuneNode.h"
 #include "input/InputController.h"
 
 class CanvasWidget;
 class CommandPalette;
+class ExposurePanel;
 class QLabel;
 
 // MainWindow is the immersive shell: a fullscreen canvas with a "/"-triggered
@@ -33,8 +37,16 @@ private:
     void showHint(const QString &text);
     void layoutOverlays();
 
+    void openExposureTool();
+    void closeExposureTool();
+
     InputController m_input;
     CanvasWidget *m_canvas = nullptr;
     CommandPalette *m_palette = nullptr;
+    ExposurePanel *m_exposurePanel = nullptr;
     QLabel *m_hint = nullptr;
+
+    // Exposure model node (the GPU preview reads its value; the libvips export
+    // path will walk it in a later phase).
+    std::unique_ptr<TuneNode> m_tune;
 };

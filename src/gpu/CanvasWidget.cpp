@@ -50,6 +50,14 @@ void CanvasWidget::resetView()
     update();
 }
 
+void CanvasWidget::setExposure(float ev)
+{
+    if (m_exposure == ev)
+        return;
+    m_exposure = ev;
+    update();
+}
+
 void CanvasWidget::initialize(QRhiCommandBuffer *cb)
 {
     QRhi *r = rhi();
@@ -77,8 +85,9 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
     }
 
     if (!m_ubuf) {
-        // One mat4 (64 bytes).
-        m_ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 64));
+        // std140 layout: mat4 mvp (64 bytes) + float exposure at offset 64.
+        // Rounded up to a 16-byte multiple → 80 bytes.
+        m_ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 80));
         m_ubuf->create();
     }
 
@@ -164,7 +173,10 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
             m_srb.reset(r->newShaderResourceBindings());
             m_srb->setBindings({
                 QRhiShaderResourceBinding::uniformBuffer(
-                    0, QRhiShaderResourceBinding::VertexStage, m_ubuf.get()),
+                    0,
+                    QRhiShaderResourceBinding::VertexStage
+                        | QRhiShaderResourceBinding::FragmentStage,
+                    m_ubuf.get()),
                 QRhiShaderResourceBinding::sampledTexture(
                     1, QRhiShaderResourceBinding::FragmentStage,
                     m_texture.get(), m_sampler.get()),
@@ -185,6 +197,7 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
     if (drawable) {
         const QMatrix4x4 mvp = computeMvp(target);
         u->updateDynamicBuffer(m_ubuf.get(), 0, 64, mvp.constData());
+        u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(float), &m_exposure);
     }
 
     const QColor clearColor(17, 17, 19); // matches the app's dark canvas

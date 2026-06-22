@@ -27,6 +27,9 @@ public:
     // Swaps in a new image. The upload happens lazily on the next render.
     void setImage(const QImage &image);
 
+    // Live exposure preview, in EV stops (applied in the fragment shader).
+    void setExposure(float ev);
+
     // Resets zoom/pan so the image is fit-to-window and centred.
     void resetView();
 
@@ -61,4 +64,7 @@ private:
     float m_zoom = 1.0f;
     QPointF m_pan{0.0, 0.0};
     QPointF m_lastMousePos;
+
+    // Preview adjustments fed to the shader.
+    float m_exposure = 0.0f; // EV stops
 };

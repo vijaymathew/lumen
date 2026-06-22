@@ -52,6 +52,8 @@ add_library(lumen_core STATIC
     src/core/EditNode.cpp
     src/core/EditGraph.h
     src/core/EditGraph.cpp
+    src/core/TuneNode.h
+    src/core/TuneNode.cpp
 )
 target_include_directories(lumen_core PUBLIC src)
 target_link_libraries(lumen_core PUBLIC Qt6::Core Qt6::Gui PkgConfig::VIPS)
@@ -67,6 +69,8 @@ qt_add_executable(lumen
     src/input/InputController.cpp
     src/input/CommandPalette.h
     src/input/CommandPalette.cpp
+    src/ui/ExposurePanel.h
+    src/ui/ExposurePanel.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
 )
@@ -115,4 +119,9 @@ if(BUILD_TESTING)
     target_link_libraries(edit_graph_test PRIVATE lumen_core)
     target_compile_options(edit_graph_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME edit_graph_test COMMAND edit_graph_test)
+
+    add_executable(tune_node_test tests/tune_node_test.cpp)
+    target_link_libraries(tune_node_test PRIVATE lumen_core)
+    target_compile_options(tune_node_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME tune_node_test COMMAND tune_node_test)
 endif()

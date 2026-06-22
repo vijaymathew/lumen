@@ -3,6 +3,7 @@
 #include "core/ImageBuffer.h"
 #include "gpu/CanvasWidget.h"
 #include "input/CommandPalette.h"
+#include "ui/ExposurePanel.h"
 
 #include <QFileDialog>
 #include <QFileInfo>
@@ -14,6 +15,7 @@
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
+    , m_tune(std::make_unique<TuneNode>())
 {
     setWindowTitle(QStringLiteral("Lumen"));
 
@@ -27,6 +29,13 @@ MainWindow::MainWindow(QWidget *parent)
         m_input.setMode(InputController::Mode::Browse);
         m_canvas->setFocus();
     });
+
+    m_exposurePanel = new ExposurePanel(this);
+    connect(m_exposurePanel, &ExposurePanel::exposureChanged, this, [this](double ev) {
+        m_tune->setExposure(static_cast<float>(ev)); // update the model node
+        m_canvas->setExposure(static_cast<float>(ev)); // live GPU preview
+    });
+    connect(m_exposurePanel, &ExposurePanel::closed, this, &MainWindow::closeExposureTool);
 
     // Dismissible hint bar, bottom-centre over the canvas.
     m_hint = new QLabel(this);
@@ -54,6 +63,7 @@ void MainWindow::buildCommands()
     // ids consumed by runCommand(). Editing tools are placeholders for now.
     m_palette->setCommands({
         {QStringLiteral("open"), QStringLiteral("Open image…")},
+        {QStringLiteral("exposure"), QStringLiteral("Exposure")},
         {QStringLiteral("reset-view"), QStringLiteral("Reset view")},
         {QStringLiteral("fullscreen"), QStringLiteral("Toggle fullscreen")},
         {QStringLiteral("curves"), QStringLiteral("Curves")},
@@ -68,6 +78,8 @@ void MainWindow::runCommand(const QString &id)
 {
     if (id == QLatin1String("open")) {
         openImageDialog();
+    } else if (id == QLatin1String("exposure")) {
+        openExposureTool();
     } else if (id == QLatin1String("reset-view")) {
         m_canvas->resetView();
     } else if (id == QLatin1String("fullscreen")) {
@@ -111,6 +123,20 @@ void MainWindow::toggleFullScreen()
         showFullScreen();
 }
 
+void MainWindow::openExposureTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    layoutOverlays();
+    m_exposurePanel->reveal(m_tune->exposure());
+}
+
+void MainWindow::closeExposureTool()
+{
+    m_exposurePanel->hide();
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
 void MainWindow::showHint(const QString &text)
 {
     m_hint->setText(text);
@@ -126,8 +152,14 @@ void MainWindow::layoutOverlays()
     m_palette->resize(pw, ph);
     m_palette->move((width() - pw) / 2, height() / 8);
 
-    // Hint bar: bottom-centre.
-    m_hint->move((width() - m_hint->width()) / 2, height() - m_hint->height() - 18);
+    // Exposure tool panel: full-width strip docked at the bottom.
+    const int panelH = 64;
+    m_exposurePanel->setGeometry(0, height() - panelH, width(), panelH);
+
+    // Hint bar: bottom-centre, lifted above the tool panel when it's visible.
+    const int hintBottom = m_exposurePanel->isVisible() ? panelH + 14 : 18;
+    m_hint->move((width() - m_hint->width()) / 2,
+                 height() - m_hint->height() - hintBottom);
 }
 
 void MainWindow::resizeEvent(QResizeEvent *e)

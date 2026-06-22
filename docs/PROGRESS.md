@@ -45,9 +45,9 @@ plain Qt widgets.
 |---|---|---|
 | `EditNode` base + `EditGraph` | ✅ | `Image` (RAII libvips wrapper), abstract `EditNode`, ordered `EditGraph`; in headless `lumen_core` lib |
 | Dirty-flag / cache invalidation | ✅ | Lazy eval + per-node cache + downstream dirty propagation; unit-tested (`edit_graph_test`) |
-| `TuneNode` (exposure) — preview path | ⬜ | GLSL/RHI shader on downsampled image |
-| `TuneNode` — libvips export path | ⬜ | Full-res; first concrete `EditNode` |
-| Wire graph into the display pipeline | ⬜ | `MainWindow`/canvas currently bypass the graph |
+| `TuneNode` (exposure) — preview path | ✅ | `TuneNode` model + exposure uniform in fragment shader; bottom-docked slider; verified on-screen (+2 EV brightens) |
+| `TuneNode` — libvips export path | 🟡 | `TuneNode::apply()` implemented (matches preview, unit-tested); no save/export UI or full-res graph walk yet |
+| Wire graph into the display pipeline | 🟡 | Exposure flows node→preview; general graph-walk→shader-chain still to do |
 | Global undo/redo over the graph | ⬜ | Distinct from per-tool session undo |
 | Cursor-centred zoom | ⬜ | Carried over from Phase 1 |
 
