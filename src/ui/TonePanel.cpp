@@ -1,0 +1,182 @@
+#include "ui/TonePanel.h"
+
+#include "core/TuneNode.h"
+
+#include <QHBoxLayout>
+#include <QKeyEvent>
+#include <QLabel>
+#include <QMouseEvent>
+#include <QSlider>
+#include <QVBoxLayout>
+
+#include <algorithm>
+#include <cmath>
+
+namespace {
+// Exposure works in integer hundredths of an EV stop; contrast/saturation in
+// whole slider units.
+constexpr int kExposureScale = 100;
+constexpr int kPanelWidth = 248;
+} // namespace
+
+TonePanel::TonePanel(QWidget *parent)
+    : QWidget(parent)
+{
+    setObjectName(QStringLiteral("tonePanel"));
+    // A bare QWidget needs this to paint its stylesheet background.
+    setAttribute(Qt::WA_StyledBackground, true);
+    setFixedWidth(kPanelWidth);
+
+    auto *title = new QLabel(QStringLiteral("Tone"), this);
+    title->setObjectName(QStringLiteral("toolTitle"));
+
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(16, 14, 16, 16);
+    layout->setSpacing(10);
+    layout->addWidget(title);
+
+    m_exposure = addRow(QStringLiteral("Exposure"),
+                        static_cast<int>(TuneNode::kMinExposure * kExposureScale),
+                        static_cast<int>(TuneNode::kMaxExposure * kExposureScale),
+                        &m_exposureValue);
+    m_contrast = addRow(QStringLiteral("Contrast"),
+                        static_cast<int>(TuneNode::kMinAmount),
+                        static_cast<int>(TuneNode::kMaxAmount), &m_contrastValue);
+    m_saturation = addRow(QStringLiteral("Saturation"),
+                          static_cast<int>(TuneNode::kMinAmount),
+                          static_cast<int>(TuneNode::kMaxAmount), &m_saturationValue);
+
+    setStyleSheet(QStringLiteral(R"(
+        #tonePanel {
+            background: #1c1c1f;
+            border: 1px solid #38383d;
+            border-radius: 10px;
+        }
+        #toolTitle { color: #e8e8ea; font-size: 13px; }
+        #rowName { color: #b4b4b8; font-size: 12px; }
+        #rowValue { color: #d6d6d9; font-size: 12px; }
+    )"));
+
+    hide();
+}
+
+QSlider *TonePanel::addRow(const QString &name, int min, int max, QLabel **valueOut)
+{
+    auto *header = new QHBoxLayout;
+    header->setContentsMargins(0, 0, 0, 0);
+    auto *nameLabel = new QLabel(name, this);
+    nameLabel->setObjectName(QStringLiteral("rowName"));
+    auto *valueLabel = new QLabel(this);
+    valueLabel->setObjectName(QStringLiteral("rowValue"));
+    valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    header->addWidget(nameLabel);
+    header->addStretch(1);
+    header->addWidget(valueLabel);
+
+    auto *slider = new QSlider(Qt::Horizontal, this);
+    slider->setRange(min, max);
+    slider->installEventFilter(this);
+    connect(slider, &QSlider::valueChanged, this, &TonePanel::onSliderChanged);
+
+    auto *layout = static_cast<QVBoxLayout *>(this->layout());
+    layout->addLayout(header);
+    layout->addWidget(slider);
+
+    *valueOut = valueLabel;
+    return slider;
+}
+
+ToneValues TonePanel::currentValues() const
+{
+    ToneValues v;
+    v.exposure = static_cast<float>(m_exposure->value()) / kExposureScale;
+    v.contrast = static_cast<float>(m_contrast->value());
+    v.saturation = static_cast<float>(m_saturation->value());
+    return v;
+}
+
+void TonePanel::refreshLabels()
+{
+    const ToneValues v = currentValues();
+    m_exposureValue->setText(QStringLiteral("%1%2 EV")
+                                 .arg(v.exposure >= 0 ? QStringLiteral("+") : QString())
+                                 .arg(v.exposure, 0, 'f', 2));
+    const auto signedInt = [](float a) {
+        return QStringLiteral("%1%2").arg(a > 0 ? QStringLiteral("+") : QString())
+            .arg(static_cast<int>(a));
+    };
+    m_contrastValue->setText(signedInt(v.contrast));
+    m_saturationValue->setText(signedInt(v.saturation));
+}
+
+void TonePanel::reveal(const ToneValues &values)
+{
+    const QSignalBlocker b1(m_exposure);
+    const QSignalBlocker b2(m_contrast);
+    const QSignalBlocker b3(m_saturation);
+    m_exposure->setValue(static_cast<int>(std::lround(values.exposure * kExposureScale)));
+    m_contrast->setValue(static_cast<int>(std::lround(values.contrast)));
+    m_saturation->setValue(static_cast<int>(std::lround(values.saturation)));
+    refreshLabels();
+
+    adjustSize(); // size to content so nothing is clipped
+    show();
+    raise();
+    m_exposure->setFocus(Qt::ShortcutFocusReason);
+}
+
+void TonePanel::onSliderChanged()
+{
+    refreshLabels();
+    emit valuesChanged(currentValues());
+}
+
+void TonePanel::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton) {
+        m_dragging = true;
+        m_dragOffset = event->pos();
+        setCursor(Qt::ClosedHandCursor);
+    }
+}
+
+void TonePanel::mouseMoveEvent(QMouseEvent *event)
+{
+    if (!m_dragging || !parentWidget())
+        return;
+
+    const QPoint cursorInParent =
+        parentWidget()->mapFromGlobal(event->globalPosition().toPoint());
+    QPoint topLeft = cursorInParent - m_dragOffset;
+
+    const QRect bounds = parentWidget()->rect();
+    topLeft.setX(std::clamp(topLeft.x(), 0, bounds.width() - width()));
+    topLeft.setY(std::clamp(topLeft.y(), 0, bounds.height() - height()));
+    move(topLeft);
+}
+
+void TonePanel::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton) {
+        m_dragging = false;
+        unsetCursor();
+    }
+}
+
+bool TonePanel::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::KeyPress
+        && (watched == m_exposure || watched == m_contrast || watched == m_saturation)) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        switch (ke->key()) {
+        case Qt::Key_Escape:
+        case Qt::Key_Return:
+        case Qt::Key_Enter:
+            emit closed();
+            return true;
+        default:
+            break;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}

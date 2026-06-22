@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Image.h"
+#include "core/Lut.h"
 #include "core/PreviewState.h"
 
 #include <QJsonArray>
@@ -57,6 +58,10 @@ public:
     // the GPU (display) path counterpart to result(). Cheap — call it on any
     // edit and push the result to the canvas.
     PreviewState previewState() const;
+
+    // Composes the per-channel tone-curve LUTs of all enabled curve nodes
+    // (identity if none). The canvas applies these after the PreviewState ops.
+    ChannelLuts previewLut() const;
 
     // --- Undo/redo ---------------------------------------------------------
     // History is a stack of graph snapshots. Call commit() to record the current

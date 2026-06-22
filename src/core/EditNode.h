@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Image.h"
+#include "core/Lut.h"
 #include "core/PreviewState.h"
 
 #include <QJsonObject>
@@ -45,6 +46,11 @@ public:
     // contribution; pointwise tone nodes override it. (The graph only calls this
     // for enabled nodes.)
     virtual void contributeToPreview(PreviewState &) const {}
+
+    // Composes this node's per-channel tone curves into the running preview LUTs
+    // (luts[c][i] := myLut[c][luts[c][i]]). Default is no-op; curve nodes
+    // override it.
+    virtual void contributeToPreviewLut(ChannelLuts &) const {}
 
     // Serialises / restores this node's parameters (for undo/redo, and later
     // project save/load). Subclasses extend the base, which handles `enabled`.

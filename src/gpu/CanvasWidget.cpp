@@ -54,9 +54,20 @@ void CanvasWidget::resetView()
 
 void CanvasWidget::setPreviewState(const PreviewState &state)
 {
-    if (m_preview.exposure == state.exposure)
+    if (m_preview.exposure == state.exposure
+        && m_preview.contrast == state.contrast
+        && m_preview.saturation == state.saturation)
         return;
     m_preview = state;
+    update();
+}
+
+void CanvasWidget::setCurveLuts(const ChannelLuts &luts)
+{
+    if (m_luts == luts)
+        return;
+    m_luts = luts;
+    m_lutDirty = true;
     update();
 }
 
@@ -70,10 +81,13 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
         m_srb.reset();
         m_texture.reset();
         m_sampler.reset();
+        m_lutTexture.reset();
+        m_lutSampler.reset();
         m_ubuf.reset();
         m_vbuf.reset();
         m_textureSize = {};
         m_textureDirty = !m_pendingImage.isNull();
+        m_lutDirty = true;
         m_rhi = r;
     }
 
@@ -98,6 +112,20 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
                                       QRhiSampler::None, QRhiSampler::ClampToEdge,
                                       QRhiSampler::ClampToEdge));
         m_sampler->create();
+    }
+
+    if (!m_lutSampler) {
+        m_lutSampler.reset(r->newSampler(QRhiSampler::Linear, QRhiSampler::Linear,
+                                         QRhiSampler::None, QRhiSampler::ClampToEdge,
+                                         QRhiSampler::ClampToEdge));
+        m_lutSampler->create();
+    }
+
+    if (!m_lutTexture) {
+        // 256x1 RGBA tone-curve LUT: R/G/B channels hold the per-channel curves.
+        m_lutTexture.reset(r->newTexture(QRhiTexture::RGBA8, QSize(256, 1)));
+        m_lutTexture->create();
+        m_lutDirty = true;
     }
 }
 
@@ -176,6 +204,9 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
                 QRhiShaderResourceBinding::sampledTexture(
                     1, QRhiShaderResourceBinding::FragmentStage,
                     m_texture.get(), m_sampler.get()),
+                QRhiShaderResourceBinding::sampledTexture(
+                    2, QRhiShaderResourceBinding::FragmentStage,
+                    m_lutTexture.get(), m_lutSampler.get()),
             });
             m_srb->create();
         }
@@ -186,6 +217,21 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         m_textureDirty = false;
     }
 
+    if (m_lutDirty && m_lutTexture) {
+        // Interleave the three LUTs into RGBA texels (alpha unused).
+        QByteArray bytes(256 * 4, char(0));
+        for (int i = 0; i < 256; ++i) {
+            bytes[i * 4 + 0] = static_cast<char>(m_luts[0][i]);
+            bytes[i * 4 + 1] = static_cast<char>(m_luts[1][i]);
+            bytes[i * 4 + 2] = static_cast<char>(m_luts[2][i]);
+            bytes[i * 4 + 3] = char(255);
+        }
+        QRhiTextureSubresourceUploadDescription sub(bytes);
+        QRhiTextureUploadEntry entry(0, 0, sub);
+        u->uploadTexture(m_lutTexture.get(), QRhiTextureUploadDescription(entry));
+        m_lutDirty = false;
+    }
+
     ensurePipeline();
 
     const QSize target = renderTarget()->pixelSize();
@@ -193,7 +239,10 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
     if (drawable) {
         const QMatrix4x4 mvp = computeMvp(target);
         u->updateDynamicBuffer(m_ubuf.get(), 0, 64, mvp.constData());
-        u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(float), &m_preview.exposure);
+        // PreviewState's floats are contiguous and match the shader block order.
+        static_assert(sizeof(PreviewState) == 3 * sizeof(float),
+                      "PreviewState must be 3 tightly-packed floats");
+        u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(PreviewState), &m_preview.exposure);
     }
 
     const QColor clearColor(17, 17, 19); // matches the app's dark canvas
