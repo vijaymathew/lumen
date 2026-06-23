@@ -320,7 +320,7 @@ void inpaintCriminisi(uint8_t *img, int w, int h, int bands,
         int bqx = -1, bqy = -1;
         const int wx0 = std::max(hp, bpx - searchR), wx1 = std::min(w - 1 - hp, bpx + searchR);
         const int wy0 = std::max(hp, bpy - searchR), wy1 = std::min(h - 1 - hp, bpy + searchR);
-        for (int qy = wy0; qy <= wy1; ++qy) {
+        for (int qy = wy0; qy <= wy1 && bestSSD != 0; ++qy) {
             for (int qx = wx0; qx <= wx1; ++qx) {
                 long long ssd = 0;
                 bool ok = true;
@@ -352,6 +352,8 @@ void inpaintCriminisi(uint8_t *img, int w, int h, int bands,
                     bestSSD = ssd;
                     bqx = qx;
                     bqy = qy;
+                    if (bestSSD == 0) // exact match — can't do better
+                        break;
                 }
             }
         }

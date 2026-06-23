@@ -1,8 +1,11 @@
 #pragma once
 
+#include <QFutureWatcher>
 #include <QImage>
 #include <QMainWindow>
 #include <QPointF>
+
+#include <atomic>
 
 #include "core/CurvesNode.h"
 #include "core/EditGraph.h"
@@ -119,4 +122,9 @@ private:
     bool m_brushHasLast = false;
     bool m_healPainting = false;      // a heal stroke is in progress (red overlay)
     bool m_adjustHardness = false;    // s/h + wheel target: false=size, true=hardness
+
+    // The heal (inpaint) preview runs off the UI thread so Detailed mode never
+    // freezes the app; only the latest request's result is applied.
+    QFutureWatcher<QImage> m_healWatcher;
+    std::atomic<quint64> m_healGen{0};
 };

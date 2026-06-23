@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 
+#include "core/HealNode.h"
 #include "core/Image.h"
 #include "core/SelectiveMask.h"
 #include "gpu/CanvasWidget.h"
@@ -24,6 +25,7 @@
 #include <QMessageBox>
 #include <QShortcut>
 #include <QStandardPaths>
+#include <QtConcurrent>
 
 #include <algorithm>
 
@@ -212,6 +214,18 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_canvas, &CanvasWidget::brushPoint, this, &MainWindow::brushAt);
     connect(m_canvas, &CanvasWidget::brushStrokeEnded, this, &MainWindow::endBrushStroke);
     connect(m_canvas, &CanvasWidget::brushAdjustRequested, this, &MainWindow::adjustBrush);
+
+    // Background heal preview finished: apply the result (the watcher only
+    // delivers the latest request's future).
+    connect(&m_healWatcher, &QFutureWatcher<QImage>::finished, this, [this] {
+        if (!m_healWatcher.future().isValid())
+            return;
+        const QImage healed = m_healWatcher.result();
+        if (!healed.isNull())
+            m_canvas->setImage(healed);
+        if (m_healPanel->isVisible())
+            showHint(QStringLiteral("Healed"));
+    });
 
     m_healPanel = new HealPanel(this);
     connect(m_healPanel, &HealPanel::settingsChanged, this,
@@ -550,10 +564,30 @@ void MainWindow::refreshBaseImage()
 {
     // The GPU preview base is the source healed by the heal node; the shader
     // then applies the pointwise/LUT ops on top (heal is first in the graph).
-    if (m_heal && !m_heal->healMask().isEmpty() && !m_graph.source().isNull())
-        m_canvas->setImage(m_heal->apply(m_graph.source()).toQImage());
-    else if (!m_sourceQImage.isNull())
-        m_canvas->setImage(m_sourceQImage);
+    if (!m_heal || m_heal->healMask().isEmpty() || m_graph.source().isNull()) {
+        if (!m_sourceQImage.isNull())
+            m_canvas->setImage(m_sourceQImage);
+        return;
+    }
+
+    // Inpainting (esp. Detailed/Criminisi) is expensive, so run it off the UI
+    // thread; the latest request wins (m_healGen guards stale results, and the
+    // watcher only delivers its current future).
+    const quint64 gen = ++m_healGen;
+    const Image src = m_graph.source();
+    const MaskBuffer mask = m_heal->healMask();
+    const bool hq = m_heal->highQuality();
+    if (m_healPanel->isVisible())
+        showHint(QStringLiteral("Healing…"));
+
+    m_healWatcher.setFuture(QtConcurrent::run([this, gen, src, mask, hq]() -> QImage {
+        if (gen != m_healGen)
+            return QImage(); // superseded before we even started
+        HealNode worker;
+        worker.setHealMask(mask);
+        worker.setHighQuality(hq);
+        return worker.apply(src).toQImage();
+    }));
 }
 
 void MainWindow::recomputeSelectiveMask()

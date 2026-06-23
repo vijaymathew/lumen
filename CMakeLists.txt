@@ -23,7 +23,7 @@ endif()
 # linking Qt6::GuiPrivate, but some binary Qt builds (e.g. aqtinstall) ship the
 # private headers without the GuiPrivate CMake package — so it's optional here
 # and we fall back to adding the include paths by hand below.
-find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets ShaderTools
+find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets ShaderTools Concurrent
                        OPTIONAL_COMPONENTS GuiPrivate)
 
 qt_standard_project_setup()
@@ -106,6 +106,7 @@ qt_add_executable(lumen
 target_link_libraries(lumen PRIVATE
     lumen_core
     Qt6::Widgets
+    Qt6::Concurrent
 )
 
 # Access to the private QRhi headers (rhi/qrhi.h).
