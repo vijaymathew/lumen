@@ -2,6 +2,10 @@
 
 #include "core/GuidedFilter.h"
 
+#include <QBuffer>
+#include <QByteArray>
+#include <QImage>
+
 #include <algorithm>
 #include <cmath>
 
@@ -14,6 +18,44 @@ float smoothstep(float e0, float e1, float x)
     return t * t * (3.0f - 2.0f * t);
 }
 } // namespace
+
+QString encodeMaskPng(const MaskBuffer &m)
+{
+    if (m.isEmpty())
+        return {};
+    QImage img(m.width, m.height, QImage::Format_Grayscale8);
+    for (int y = 0; y < m.height; ++y) {
+        uchar *line = img.scanLine(y);
+        for (int x = 0; x < m.width; ++x)
+            line[x] = static_cast<uchar>(std::clamp(
+                std::lround(m.data[static_cast<size_t>(y) * m.width + x] * 255.0f), 0L, 255L));
+    }
+    QByteArray bytes;
+    QBuffer buf(&bytes);
+    buf.open(QIODevice::WriteOnly);
+    img.save(&buf, "PNG");
+    return QString::fromLatin1(bytes.toBase64());
+}
+
+MaskBuffer decodeMaskPng(const QString &s)
+{
+    MaskBuffer m;
+    if (s.isEmpty())
+        return m;
+    QImage img;
+    if (!img.loadFromData(QByteArray::fromBase64(s.toLatin1()), "PNG"))
+        return m;
+    img = img.convertToFormat(QImage::Format_Grayscale8);
+    m.width = img.width();
+    m.height = img.height();
+    m.data.resize(static_cast<size_t>(m.width) * m.height);
+    for (int y = 0; y < m.height; ++y) {
+        const uchar *line = img.constScanLine(y);
+        for (int x = 0; x < m.width; ++x)
+            m.data[static_cast<size_t>(y) * m.width + x] = line[x] / 255.0f;
+    }
+    return m;
+}
 
 MaskBuffer colorAffinityMask(const uint8_t *rgba, int width, int height, int bands,
                              float tr, float tg, float tb, float range)

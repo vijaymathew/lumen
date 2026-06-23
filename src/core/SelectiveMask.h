@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QString>
+
 #include <cstdint>
 #include <vector>
 
@@ -11,6 +13,11 @@ struct MaskBuffer {
 
     bool isEmpty() const { return data.empty(); }
 };
+
+// Mask <-> base64 PNG, for persisting a bulky painted mask in node state.
+// Empty mask <-> empty string.
+QString encodeMaskPng(const MaskBuffer &mask);
+MaskBuffer decodeMaskPng(const QString &base64Png);
 
 // Colour-affinity mask: per-pixel falloff by colour distance to `target`
 // ([0,1] RGB), refined with a guided filter (guide = luminance) so the mask

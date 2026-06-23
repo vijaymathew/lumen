@@ -1,10 +1,13 @@
 #include "ui/MainWindow.h"
 
+#include "core/HealNode.h"
 #include "core/Image.h"
 #include "core/SelectiveMask.h"
 #include "gpu/CanvasWidget.h"
 #include "input/CommandPalette.h"
 #include "ui/CurvesPanel.h"
+#include "ui/ExportDialog.h"
+#include "ui/HealPanel.h"
 #include "ui/LooksPanel.h"
 #include "ui/SelectivePanel.h"
 #include "ui/TonePanel.h"
@@ -23,6 +26,8 @@
 #include <QMessageBox>
 #include <QShortcut>
 #include <QStandardPaths>
+#include <QTimer>
+#include <QtConcurrent>
 
 #include <algorithm>
 
@@ -47,6 +52,133 @@ protected:
     }
 };
 
+// A small "Healing…" badge with an animated spinner, shown while a background
+// inpaint is running. Mouse-transparent.
+class BusyBadge : public QWidget {
+public:
+    explicit BusyBadge(QWidget *parent) : QWidget(parent)
+    {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_NoSystemBackground);
+        setFixedSize(132, 32);
+        m_spin.setInterval(70);
+        connect(&m_spin, &QTimer::timeout, this, [this] {
+            m_angle = (m_angle + 30) % 360;
+            update();
+        });
+        // Only show once the heal has run longer than this, so quick heals
+        // (small blemishes) don't flash the badge.
+        m_delay.setSingleShot(true);
+        m_delay.setInterval(150);
+        connect(&m_delay, &QTimer::timeout, this, [this] {
+            show();
+            raise();
+            m_spin.start();
+        });
+        hide();
+    }
+
+    void start()
+    {
+        if (isVisible() || m_delay.isActive())
+            return;
+        m_delay.start();
+    }
+    void stop()
+    {
+        m_delay.stop(); // cancel a pending show if the heal finished in time
+        m_spin.stop();
+        hide();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(20, 20, 22, 220));
+        p.drawRoundedRect(rect(), 8, 8);
+
+        // Spinner: a dozen fading ticks rotating clockwise.
+        const QPointF c(18, height() / 2.0);
+        p.translate(c);
+        p.rotate(m_angle);
+        for (int i = 0; i < 12; ++i) {
+            p.setPen(QPen(QColor(255, 255, 255, 40 + i * 16), 2.0, Qt::SolidLine,
+                          Qt::RoundCap));
+            p.drawLine(QPointF(0, -4.5), QPointF(0, -8.0));
+            p.rotate(30);
+        }
+        p.resetTransform();
+
+        p.setPen(QColor(0xe8, 0xe8, 0xea));
+        p.drawText(QRect(34, 0, width() - 40, height()),
+                   Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("Healing…"));
+    }
+
+private:
+    QTimer m_spin;  // animation
+    QTimer m_delay; // show-after delay
+    int m_angle = 0;
+};
+
+// A transparent overlay that draws the brush cursor: an outer ring (size) and a
+// fainter inner ring (hardness core). Mouse-transparent so the canvas below
+// still receives events.
+class BrushRing : public QWidget {
+public:
+    explicit BrushRing(QWidget *parent) : QWidget(parent)
+    {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_NoSystemBackground);
+        hide();
+    }
+
+    void setRing(QPointF center, qreal outer, qreal inner, bool visible)
+    {
+        m_center = center;
+        m_outer = outer;
+        m_inner = inner;
+        if (!visible || outer <= 0.5) {
+            if (isVisible())
+                hide();
+            return;
+        }
+        if (!isVisible())
+            show();
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        if (m_outer <= 0.5)
+            return;
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        // Dark halo then a light ring, so it reads on any image.
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor(0, 0, 0, 160), 3.0));
+        p.drawEllipse(m_center, m_outer, m_outer);
+        p.setPen(QPen(QColor(255, 255, 255, 230), 1.3));
+        p.drawEllipse(m_center, m_outer, m_outer);
+        if (m_inner > 1.0 && m_inner < m_outer - 0.5) {
+            p.setPen(QPen(QColor(255, 255, 255, 110), 1.0, Qt::DashLine));
+            p.drawEllipse(m_center, m_inner, m_inner);
+        }
+        // Centre dot.
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(255, 255, 255, 200));
+        p.drawEllipse(m_center, 1.3, 1.3);
+    }
+
+private:
+    QPointF m_center;
+    qreal m_outer = 0;
+    qreal m_inner = 0;
+};
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -54,9 +186,10 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setWindowTitle(QStringLiteral("Lumen"));
 
-    // The graph owns the nodes; we keep raw pointers to drive them. Order is
-    // tune -> curves -> lut (the shader applies tone ops, then the curve LUT,
-    // then the 3D look LUT, to match).
+    // The graph owns the nodes; we keep raw pointers to drive them. Heal is
+    // first (it edits source pixels, baked into the preview base), then the
+    // pointwise/LUT ops the shader replicates: tune -> curves -> lut -> selective.
+    m_heal = static_cast<HealNode *>(m_graph.addNode(std::make_unique<HealNode>()));
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
     m_lutNode = static_cast<LutNode *>(m_graph.addNode(std::make_unique<LutNode>()));
@@ -64,6 +197,18 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_canvas = new CanvasWidget(this);
     setCentralWidget(m_canvas);
+
+    // Brush cursor ring overlay (a MainWindow child over the canvas, like the
+    // scrim, so it composites reliably above the RHI content).
+    auto *brushRing = new BrushRing(this);
+    m_brushRing = brushRing;
+    connect(m_canvas, &CanvasWidget::brushCursorMoved, this,
+            [this, brushRing](QPointF pos, qreal outer, qreal inner, bool visible) {
+                const QPoint inWindow = m_canvas->mapTo(this, pos.toPoint());
+                brushRing->setRing(inWindow, outer, inner, visible);
+            });
+
+    m_healBusy = new BusyBadge(this);
 
     // Created before the palette so the palette stacks above it.
     m_scrim = new Scrim(this);
@@ -109,8 +254,12 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_selectivePanel, &SelectivePanel::valuesChanged, this,
             [this](const SelectiveValues &v) {
                 m_selective->setValues(v);
-                m_canvas->setBrushMode(v.maskMode == 2);
-                if (v.maskMode == 2 && m_brushMask.isEmpty())
+                const bool brush = v.maskMode == 2;
+                m_brushTarget = brush ? BrushTarget::Selective : BrushTarget::None;
+                if (brush)
+                    m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f);
+                m_canvas->setBrushMode(brush);
+                if (brush && m_brushMask.isEmpty())
                     initBrushMask();
                 recomputeSelectiveMask();
                 updatePreview();
@@ -127,6 +276,7 @@ MainWindow::MainWindow(QWidget *parent)
                 m_brushSize = size;
                 m_brushHardness = hardness;
                 m_brushAdd = add;
+                m_canvas->setBrushCursor(size, hardness / 100.0f);
             });
     connect(m_selectivePanel, &SelectivePanel::brushClearRequested, this, [this] {
         if (m_brushMask.isEmpty())
@@ -137,7 +287,42 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_canvas, &CanvasWidget::brushStrokeBegan, this, &MainWindow::beginBrushStroke);
     connect(m_canvas, &CanvasWidget::brushPoint, this, &MainWindow::brushAt);
-    connect(m_canvas, &CanvasWidget::brushStrokeEnded, this, [this] { m_brushHasLast = false; });
+    connect(m_canvas, &CanvasWidget::brushStrokeEnded, this, &MainWindow::endBrushStroke);
+    connect(m_canvas, &CanvasWidget::brushAdjustRequested, this, &MainWindow::adjustBrush);
+
+    // Background heal preview finished: apply the result (the watcher only
+    // delivers the latest request's future).
+    connect(&m_healWatcher, &QFutureWatcher<QImage>::finished, this, [this] {
+        static_cast<BusyBadge *>(m_healBusy)->stop();
+        if (!m_healWatcher.future().isValid())
+            return;
+        const QImage healed = m_healWatcher.result();
+        if (!healed.isNull())
+            m_canvas->setImage(healed, /*keepView=*/true); // preserve zoom/pan
+    });
+
+    m_healPanel = new HealPanel(this);
+    connect(m_healPanel, &HealPanel::settingsChanged, this,
+            [this](int size, int hardness, bool add) {
+                m_brushSize = size;
+                m_brushHardness = hardness;
+                m_brushAdd = add;
+                m_canvas->setBrushCursor(size, hardness / 100.0f);
+            });
+    connect(m_healPanel, &HealPanel::clearRequested, this, [this] {
+        if (m_brushMask.isEmpty())
+            return;
+        m_brushUndo.push_back(m_brushMask.data); // clear is undoable
+        std::fill(m_brushMask.data.begin(), m_brushMask.data.end(), 0.0f);
+        m_heal->setHealMask(m_brushMask);
+        refreshBaseImage();
+        updatePreview();
+    });
+    connect(m_healPanel, &HealPanel::qualityChanged, this, [this](bool hq) {
+        m_heal->setHighQuality(hq);
+        refreshBaseImage(); // re-heal the current mask at the new quality
+        updatePreview();
+    });
 
     // Dismissible hint bar, bottom-centre over the canvas.
     m_hint = new QLabel(this);
@@ -195,6 +380,8 @@ void MainWindow::runCommand(const QString &id)
         openLooksTool();
     } else if (id == QLatin1String("selective")) {
         openSelectiveTool();
+    } else if (id == QLatin1String("heal")) {
+        openHealTool();
     } else if (id == QLatin1String("undo")) {
         doUndo();
     } else if (id == QLatin1String("redo")) {
@@ -222,7 +409,7 @@ bool MainWindow::openPath(const QString &path)
 
     m_sourceQImage = source.toQImage();
     m_graph.setSource(source);            // full-res source for export
-    m_canvas->setImage(m_sourceQImage);   // unedited image for the GPU preview
+    refreshBaseImage(false);              // new image → fit the view
     recomputeSelectiveMask();
     updatePreview();        // apply any existing edits
     m_graph.resetHistory(); // fresh undo timeline for this image
@@ -249,22 +436,33 @@ void MainWindow::exportImage()
         return;
     }
 
-    // Suggest "<name>-edited.<ext>" next to the original.
-    const QFileInfo src(m_sourcePath);
-    const QString suffix = src.suffix().isEmpty() ? QStringLiteral("jpg") : src.suffix();
-    const QString suggested = src.dir().filePath(
-        src.completeBaseName() + QStringLiteral("-edited.") + suffix);
+    // 1. Choose format + quality.
+    ExportDialog dlg(this);
+    dlg.setSelection(m_exportExt, m_exportQuality);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    m_exportExt = dlg.extension();
+    const int quality = dlg.quality();
+    if (quality >= 0)
+        m_exportQuality = quality;
 
-    const QString path = QFileDialog::getSaveFileName(
-        this, QStringLiteral("Export image"), suggested,
-        QStringLiteral("Images (*.jpg *.jpeg *.png *.tif *.tiff *.webp)"));
+    // 2. Choose the path, defaulting to "<name>-edited.<ext>" next to the source.
+    const QFileInfo src(m_sourcePath);
+    const QString suggested = src.dir().filePath(
+        src.completeBaseName() + QStringLiteral("-edited.") + m_exportExt);
+    const QString filter =
+        QStringLiteral("%1 (*.%2)").arg(m_exportExt.toUpper(), m_exportExt);
+    QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Export image"),
+                                                suggested, filter);
     if (path.isEmpty())
         return;
+    if (QFileInfo(path).suffix().isEmpty())
+        path += QStringLiteral(".") + m_exportExt;
 
-    // Walk the graph at full resolution, then write via libvips.
+    // 3. Walk the graph at full resolution, then write via libvips.
     const Image result = m_graph.result();
     QString error;
-    if (!result.saveToFile(path, &error)) {
+    if (!result.saveToFile(path, quality, &error)) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Export failed: %1").arg(error));
         return;
@@ -284,6 +482,13 @@ void MainWindow::updatePreview()
 {
     PreviewState ps = m_graph.previewState();
     ps.selMaskView = static_cast<float>(m_maskView); // preview-only overlay
+    if (m_healPainting) {
+        // Show the in-progress heal stroke as a red overlay (the mask texture),
+        // without any selective adjustment.
+        ps.selEnabled = 0.0f;
+        ps.selMaskMode = 1.0f;
+        ps.selMaskView = 1.0f;
+    }
     m_canvas->setPreviewState(ps);
     m_canvas->setCurveLuts(m_graph.previewLut());
     m_canvas->setLut3D(m_graph.previewLook());
@@ -376,8 +581,11 @@ void MainWindow::openSelectiveTool()
     m_brushUndo.clear();
     m_brushHasLast = false;
     const bool brush = m_selective->values().maskMode == 2;
+    m_brushTarget = brush ? BrushTarget::Selective : BrushTarget::None;
     if (brush && m_brushMask.isEmpty())
         initBrushMask();
+    if (brush)
+        m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f);
     m_canvas->setBrushMode(brush);
 
     recomputeSelectiveMask();
@@ -389,6 +597,7 @@ void MainWindow::closeSelectiveTool()
     m_selectivePanel->hide();
     m_canvas->setColorPickMode(false);
     m_canvas->setBrushMode(false);
+    m_brushTarget = BrushTarget::None;
     // Commit the painted mask into the node (one global undo step).
     if (m_selective->values().maskMode == 2)
         m_selective->setBrushMask(m_brushMask);
@@ -398,6 +607,72 @@ void MainWindow::closeSelectiveTool()
     m_graph.commit();
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
+}
+
+void MainWindow::openHealTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_healPanel->adjustSize();
+    const int margin = 18;
+    m_healPanel->move(width() - m_healPanel->width() - margin, margin);
+    m_healPanel->reveal(m_brushSize, m_brushHardness, m_brushAdd, m_heal->highQuality());
+
+    // Restore the heal session from the node (may be empty).
+    m_brushMask = m_heal->healMask();
+    m_brushUndo.clear();
+    m_brushHasLast = false;
+    if (m_brushMask.isEmpty())
+        initBrushMask();
+    m_brushTarget = BrushTarget::Heal;
+    m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f);
+    m_canvas->setBrushMode(true);
+    refreshBaseImage();
+    updatePreview();
+}
+
+void MainWindow::closeHealTool()
+{
+    m_healPanel->hide();
+    m_canvas->setBrushMode(false);
+    m_brushTarget = BrushTarget::None;
+    m_healPainting = false;
+    m_heal->setHealMask(m_brushMask); // commit (one global undo step)
+    m_brushUndo.clear();
+    refreshBaseImage();
+    updatePreview();
+    m_graph.commit();
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::refreshBaseImage(bool keepView)
+{
+    // The GPU preview base is the source healed by the heal node; the shader
+    // then applies the pointwise/LUT ops on top (heal is first in the graph).
+    if (!m_heal || m_heal->healMask().isEmpty() || m_graph.source().isNull()) {
+        if (!m_sourceQImage.isNull())
+            m_canvas->setImage(m_sourceQImage, keepView);
+        return;
+    }
+
+    // Inpainting (esp. Detailed/Criminisi) is expensive, so run it off the UI
+    // thread; the latest request wins (m_healGen guards stale results, and the
+    // watcher only delivers its current future).
+    const quint64 gen = ++m_healGen;
+    const Image src = m_graph.source();
+    const MaskBuffer mask = m_heal->healMask();
+    const bool hq = m_heal->highQuality();
+    static_cast<BusyBadge *>(m_healBusy)->start();
+    layoutOverlays(); // position the badge
+
+    m_healWatcher.setFuture(QtConcurrent::run([this, gen, src, mask, hq]() -> QImage {
+        if (gen != m_healGen)
+            return QImage(); // superseded before we even started
+        HealNode worker;
+        worker.setHealMask(mask);
+        worker.setHighQuality(hq);
+        return worker.apply(src).toQImage();
+    }));
 }
 
 void MainWindow::recomputeSelectiveMask()
@@ -448,6 +723,7 @@ void MainWindow::beginBrushStroke()
     m_brushUndo.push_back(m_brushMask.data); // snapshot for session undo
     if (m_brushUndo.size() > 50)
         m_brushUndo.erase(m_brushUndo.begin());
+    m_strokeBaseMask = m_brushMask.data; // for the heal overlay (current stroke only)
     m_brushHasLast = false;
 }
 
@@ -478,7 +754,38 @@ void MainWindow::brushAt(const QPointF &norm)
     stampBrush(m_brushMask, cx, cy, radius, hardness, m_brushAdd);
     m_lastBrushPoint = QPointF(cx, cy);
     m_brushHasLast = true;
-    m_canvas->setSelectiveMask(m_brushMask);
+
+    // Live feedback. The selective brush shows the whole mask (you're building a
+    // selection). The heal brush shows only the CURRENT stroke as a red overlay
+    // (it inpaints on stroke end) — so already-healed spots aren't re-tinted.
+    if (m_brushTarget == BrushTarget::Heal) {
+        MaskBuffer strokeOnly;
+        strokeOnly.width = w;
+        strokeOnly.height = h;
+        strokeOnly.data.resize(m_brushMask.data.size());
+        for (size_t i = 0; i < strokeOnly.data.size(); ++i) {
+            const float base = i < m_strokeBaseMask.size() ? m_strokeBaseMask[i] : 0.0f;
+            strokeOnly.data[i] = std::clamp(m_brushMask.data[i] - base, 0.0f, 1.0f);
+        }
+        m_canvas->setSelectiveMask(strokeOnly);
+        m_healPainting = true;
+        updatePreview();
+    } else {
+        m_canvas->setSelectiveMask(m_brushMask);
+    }
+}
+
+void MainWindow::endBrushStroke()
+{
+    m_brushHasLast = false;
+    if (m_brushTarget != BrushTarget::Heal)
+        return;
+    // Inpaint and show the result; restore the selective texture afterwards.
+    m_healPainting = false;
+    m_heal->setHealMask(m_brushMask);
+    refreshBaseImage();
+    recomputeSelectiveMask();
+    updatePreview();
 }
 
 bool MainWindow::brushSessionUndo()
@@ -487,7 +794,14 @@ bool MainWindow::brushSessionUndo()
         return false;
     m_brushMask.data = m_brushUndo.back();
     m_brushUndo.pop_back();
-    m_canvas->setSelectiveMask(m_brushMask);
+    if (m_brushTarget == BrushTarget::Heal) {
+        m_heal->setHealMask(m_brushMask);
+        refreshBaseImage();
+        recomputeSelectiveMask();
+        updatePreview();
+    } else {
+        m_canvas->setSelectiveMask(m_brushMask);
+    }
     return true;
 }
 
@@ -522,6 +836,8 @@ void MainWindow::closeActiveTool()
         closeLooksTool();
     else if (m_selectivePanel->isVisible())
         closeSelectiveTool();
+    else if (m_healPanel->isVisible())
+        closeHealTool();
     else {
         m_input.setMode(InputController::Mode::Browse);
         m_canvas->setFocus();
@@ -531,8 +847,7 @@ void MainWindow::closeActiveTool()
 void MainWindow::doUndo()
 {
     // While brush-painting, Ctrl+Z is a per-stroke session undo.
-    if (m_selectivePanel->isVisible() && m_selective->values().maskMode == 2
-        && brushSessionUndo())
+    if (m_brushTarget != BrushTarget::None && brushSessionUndo())
         return;
     if (m_graph.undo())
         afterHistoryChange();
@@ -546,7 +861,13 @@ void MainWindow::doRedo()
 
 void MainWindow::afterHistoryChange()
 {
+    // Heal edits the base; rebuild it so undo/redo of a heal is visible.
+    refreshBaseImage();
     updatePreview();
+    if (m_healPanel->isVisible()) {
+        m_brushMask = m_heal->healMask(); // sync session to restored state
+        m_brushUndo.clear();
+    }
     // If a tool is open, reseed its control from the restored state.
     if (m_tonePanel->isVisible())
         m_tonePanel->reveal({m_tune->exposure(), m_tune->contrast(), m_tune->saturation()});
@@ -577,6 +898,10 @@ void MainWindow::layoutOverlays()
 {
     // Scrim covers the whole window, behind the palette.
     m_scrim->setGeometry(rect());
+    m_brushRing->setGeometry(rect());
+
+    // Busy badge: top-centre of the canvas.
+    m_healBusy->move((width() - m_healBusy->width()) / 2, 16);
 
     // Palette: fixed width, near the top-centre.
     const int pw = 360;
@@ -598,6 +923,7 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_curvesPanel);
     clampIntoView(m_looksPanel);
     clampIntoView(m_selectivePanel);
+    clampIntoView(m_healPanel);
 
     // Hint bar: bottom-centre.
     m_hint->move((width() - m_hint->width()) / 2, height() - m_hint->height() - 18);
@@ -640,9 +966,45 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
             openCommandPalette();
             return;
         }
+        // Hold s / h and use the wheel to change brush size / hardness.
+        if (m_brushTarget != BrushTarget::None && !e->isAutoRepeat()
+            && (e->key() == Qt::Key_S || e->key() == Qt::Key_H)) {
+            m_adjustHardness = (e->key() == Qt::Key_H);
+            m_canvas->setBrushAdjusting(true);
+            return;
+        }
         break;
     default:
         break;
     }
     QMainWindow::keyPressEvent(e);
+}
+
+void MainWindow::keyReleaseEvent(QKeyEvent *e)
+{
+    if (!e->isAutoRepeat() && (e->key() == Qt::Key_S || e->key() == Qt::Key_H)) {
+        m_canvas->setBrushAdjusting(false);
+        return;
+    }
+    QMainWindow::keyReleaseEvent(e);
+}
+
+void MainWindow::adjustBrush(int steps)
+{
+    if (m_brushTarget == BrushTarget::None)
+        return;
+    if (m_adjustHardness)
+        m_brushHardness = std::clamp(m_brushHardness + steps * 5, 1, 100);
+    else
+        m_brushSize = std::clamp(m_brushSize + steps * 4, 1, 100);
+    m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f); // live ring
+    syncBrushPanel();
+}
+
+void MainWindow::syncBrushPanel()
+{
+    if (m_brushTarget == BrushTarget::Heal)
+        m_healPanel->setBrushParams(m_brushSize, m_brushHardness);
+    else if (m_brushTarget == BrushTarget::Selective)
+        m_selectivePanel->setBrushParams(m_brushSize, m_brushHardness);
 }

@@ -1,11 +1,15 @@
 #pragma once
 
+#include <QFutureWatcher>
 #include <QImage>
 #include <QMainWindow>
 #include <QPointF>
 
+#include <atomic>
+
 #include "core/CurvesNode.h"
 #include "core/EditGraph.h"
+#include "core/HealNode.h"
 #include "core/LutNode.h"
 #include "core/SelectiveMask.h"
 #include "core/SelectiveNode.h"
@@ -17,6 +21,7 @@
 class CanvasWidget;
 class CommandPalette;
 class CurvesPanel;
+class HealPanel;
 class LooksPanel;
 class SelectivePanel;
 class TonePanel;
@@ -40,6 +45,7 @@ protected:
     // Central key handling: catches keys via propagation no matter which child
     // widget has focus, so the active tool can always be closed.
     void keyPressEvent(QKeyEvent *e) override;
+    void keyReleaseEvent(QKeyEvent *e) override;
 
 private:
     void buildCommands();
@@ -61,10 +67,18 @@ private:
     void closeSelectiveTool();
     void recomputeSelectiveMask();
     void onColorPicked(const QPointF &imageNormalized);
+    void openHealTool();
+    void closeHealTool();
+    // base texture = source healed by the heal node. keepView preserves zoom/pan
+    // (true for in-place heal updates; false only when loading a new image).
+    void refreshBaseImage(bool keepView = true);
     void initBrushMask();
     void beginBrushStroke();
     void brushAt(const QPointF &imageNormalized);
+    void endBrushStroke();
     bool brushSessionUndo(); // returns true if it handled the undo
+    void adjustBrush(int steps); // s/h + wheel
+    void syncBrushPanel();       // reflect m_brushSize/Hardness into the open panel
     void closeActiveTool();
     void updatePreview(); // push tone state + curve LUT + look to the canvas
     void exportImage();
@@ -75,12 +89,15 @@ private:
 
     InputController m_input;
     CanvasWidget *m_canvas = nullptr;
-    QWidget *m_scrim = nullptr; // dims the image behind the command palette
+    QWidget *m_scrim = nullptr;     // dims the image behind the command palette
+    QWidget *m_brushRing = nullptr; // on-canvas brush size/hardness cursor
+    QWidget *m_healBusy = nullptr;  // animated "Healing…" badge during async heal
     CommandPalette *m_palette = nullptr;
     TonePanel *m_tonePanel = nullptr;
     CurvesPanel *m_curvesPanel = nullptr;
     LooksPanel *m_looksPanel = nullptr;
     SelectivePanel *m_selectivePanel = nullptr;
+    HealPanel *m_healPanel = nullptr;
     QLabel *m_hint = nullptr;
 
     // The non-destructive edit graph. The GPU preview reads the tune node's
@@ -90,16 +107,30 @@ private:
     CurvesNode *m_curves = nullptr;      // owned by m_graph
     LutNode *m_lutNode = nullptr;        // owned by m_graph
     SelectiveNode *m_selective = nullptr; // owned by m_graph
+    HealNode *m_heal = nullptr;          // owned by m_graph (first in the chain)
     QString m_sourcePath;                // for a sensible default export name
+    QString m_exportExt = QStringLiteral("jpg"); // remembered export format
+    int m_exportQuality = 90;                    // remembered export quality
     QImage m_sourceQImage;               // for colour sampling + preview mask
     int m_maskView = 0;                  // selective mask overlay (preview-only)
 
-    // Brush-paint session.
+    // Shared brush-paint session (used by the selective brush and the heal
+    // brush, one at a time).
+    enum class BrushTarget { None, Selective, Heal };
+    BrushTarget m_brushTarget = BrushTarget::None;
     MaskBuffer m_brushMask;
+    std::vector<float> m_strokeBaseMask;         // mask at the current stroke's start
     std::vector<std::vector<float>> m_brushUndo; // per-stroke snapshots
     int m_brushSize = 30;
     int m_brushHardness = 50;
     bool m_brushAdd = true;
     QPointF m_lastBrushPoint;
     bool m_brushHasLast = false;
+    bool m_healPainting = false;      // a heal stroke is in progress (red overlay)
+    bool m_adjustHardness = false;    // s/h + wheel target: false=size, true=hardness
+
+    // The heal (inpaint) preview runs off the UI thread so Detailed mode never
+    // freezes the app; only the latest request's result is applied.
+    QFutureWatcher<QImage> m_healWatcher;
+    std::atomic<quint64> m_healGen{0};
 };

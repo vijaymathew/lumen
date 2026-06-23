@@ -33,6 +33,11 @@ public:
     // libvips. On failure returns a null Image and sets *error (if provided).
     static Image fromFile(const QString &path, QString *error = nullptr);
 
+    // Builds an Image from an interleaved 8-bit buffer (`bands` per pixel),
+    // tagged sRGB so it round-trips through toQImage without colour mangling.
+    // Copies the data. Used by nodes that edit pixels in a raw buffer.
+    static Image fromInterleaved(const void *data, int width, int height, int bands);
+
     Image(const Image &other);
     Image &operator=(const Image &other);
     Image(Image &&other) noexcept;
@@ -49,7 +54,14 @@ public:
     // Writes to `path` (format chosen from the extension) via libvips. A
     // trailing alpha channel is dropped so formats like JPEG work. Returns false
     // and sets *error on failure.
-    bool saveToFile(const QString &path, QString *error = nullptr) const;
+    bool saveToFile(const QString &path, QString *error = nullptr) const
+    {
+        return saveToFile(path, -1, error);
+    }
+
+    // As above, but `quality` (0-100) is applied to lossy formats (JPEG/WebP);
+    // ignored for lossless formats. quality < 0 uses the encoder default.
+    bool saveToFile(const QString &path, int quality, QString *error = nullptr) const;
 
     // Raw handle for node implementations (only meaningful in vips-aware TUs).
     _VipsImage *handle() const { return m_image; }

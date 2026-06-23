@@ -21,6 +21,8 @@ public:
 
     void reveal(const SelectiveValues &values);
     void setTargetColor(const QColor &color); // after picking from the image
+    // Reflect externally-changed brush size/hardness (s/h + wheel) silently.
+    void setBrushParams(int size, int hardness);
 
 signals:
     void valuesChanged(const SelectiveValues &values);

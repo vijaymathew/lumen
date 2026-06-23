@@ -5,6 +5,10 @@
 
 #include "core/Image.h"
 
+#include <QFileInfo>
+
+#include <algorithm>
+
 namespace {
 
 // Returns a new sRGB / 8-bit / 4-band (RGBA) image that the caller owns, or
@@ -122,6 +126,29 @@ int Image::height() const
     return m_image ? m_image->Ysize : 0;
 }
 
+Image Image::fromInterleaved(const void *data, int width, int height, int bands)
+{
+    if (!data || width <= 0 || height <= 0 || bands < 1)
+        return Image();
+
+    VipsImage *raw = vips_image_new_from_memory_copy(
+        data, static_cast<size_t>(width) * height * bands, width, height, bands,
+        VIPS_FORMAT_UCHAR);
+    if (!raw)
+        return Image();
+
+    // new_from_memory guesses interpretation from band count (4 bands ->
+    // MULTIBAND), which would make a later vips_colourspace(->sRGB) scramble the
+    // channels. Tag it sRGB so the buffer round-trips faithfully.
+    VipsImage *tagged = nullptr;
+    if (vips_copy(raw, &tagged, "interpretation", VIPS_INTERPRETATION_sRGB, nullptr)) {
+        g_object_unref(raw);
+        return Image();
+    }
+    g_object_unref(raw);
+    return Image::adopt(tagged);
+}
+
 Image Image::fromFile(const QString &path, QString *error)
 {
     const QByteArray utf8 = path.toUtf8();
@@ -173,7 +200,7 @@ QImage Image::toQImage() const
                   [](void *p) { g_free(p); }, buf);
 }
 
-bool Image::saveToFile(const QString &path, QString *error) const
+bool Image::saveToFile(const QString &path, int quality, QString *error) const
 {
     if (!m_image) {
         if (error)
@@ -181,7 +208,16 @@ bool Image::saveToFile(const QString &path, QString *error) const
         return false;
     }
 
-    const QByteArray utf8 = path.toUtf8();
+    // libvips chooses the saver from the extension and parses per-format options
+    // appended as filename[opt=val]. Apply quality to the lossy savers only.
+    QString target = path;
+    if (quality >= 0) {
+        const QString suffix = QFileInfo(path).suffix().toLower();
+        if (suffix == QLatin1String("jpg") || suffix == QLatin1String("jpeg")
+            || suffix == QLatin1String("webp"))
+            target = QStringLiteral("%1[Q=%2]").arg(path).arg(std::clamp(quality, 0, 100));
+    }
+    const QByteArray utf8 = target.toUtf8();
 
     // Drop a trailing alpha band so formats without alpha (e.g. JPEG) succeed.
     VipsImage *out = m_image;

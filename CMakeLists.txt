@@ -23,7 +23,7 @@ endif()
 # linking Qt6::GuiPrivate, but some binary Qt builds (e.g. aqtinstall) ship the
 # private headers without the GuiPrivate CMake package — so it's optional here
 # and we fall back to adding the include paths by hand below.
-find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets ShaderTools
+find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets ShaderTools Concurrent
                        OPTIONAL_COMPONENTS GuiPrivate)
 
 qt_standard_project_setup()
@@ -69,6 +69,10 @@ add_library(lumen_core STATIC
     src/core/GuidedFilter.cpp
     src/core/SelectiveMask.h
     src/core/SelectiveMask.cpp
+    src/core/Inpaint.h
+    src/core/Inpaint.cpp
+    src/core/HealNode.h
+    src/core/HealNode.cpp
 )
 target_include_directories(lumen_core PUBLIC src)
 target_link_libraries(lumen_core PUBLIC Qt6::Core Qt6::Gui PkgConfig::VIPS)
@@ -93,6 +97,10 @@ qt_add_executable(lumen
     src/ui/LooksPanel.cpp
     src/ui/SelectivePanel.h
     src/ui/SelectivePanel.cpp
+    src/ui/HealPanel.h
+    src/ui/HealPanel.cpp
+    src/ui/ExportDialog.h
+    src/ui/ExportDialog.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
 )
@@ -100,6 +108,7 @@ qt_add_executable(lumen
 target_link_libraries(lumen PRIVATE
     lumen_core
     Qt6::Widgets
+    Qt6::Concurrent
 )
 
 # Access to the private QRhi headers (rhi/qrhi.h).
@@ -187,4 +196,9 @@ if(BUILD_TESTING)
     target_link_libraries(guided_filter_test PRIVATE lumen_core)
     target_compile_options(guided_filter_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME guided_filter_test COMMAND guided_filter_test)
+
+    add_executable(heal_test tests/heal_test.cpp)
+    target_link_libraries(heal_test PRIVATE lumen_core)
+    target_compile_options(heal_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME heal_test COMMAND heal_test)
 endif()

@@ -321,6 +321,16 @@ void SelectivePanel::cycleMaskView()
     emit maskViewChanged(m_maskViewMode);
 }
 
+void SelectivePanel::setBrushParams(int size, int hardness)
+{
+    const QSignalBlocker b1(m_brushSize);
+    const QSignalBlocker b2(m_brushHardness);
+    m_brushSize->setValue(size);
+    m_brushHardness->setValue(hardness);
+    m_brushSizeValue->setText(QString::number(size));
+    m_brushHardnessValue->setText(QString::number(hardness));
+}
+
 void SelectivePanel::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::LeftButton) {
