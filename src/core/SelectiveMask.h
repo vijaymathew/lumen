@@ -12,6 +12,8 @@ struct MaskBuffer {
     std::vector<float> data;
 
     bool isEmpty() const { return data.empty(); }
+
+    friend bool operator==(const MaskBuffer &, const MaskBuffer &) = default;
 };
 
 // Mask <-> base64 PNG, for persisting a bulky painted mask in node state.

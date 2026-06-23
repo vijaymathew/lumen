@@ -69,6 +69,8 @@ add_library(lumen_core STATIC
     src/core/GuidedFilter.cpp
     src/core/SelectiveMask.h
     src/core/SelectiveMask.cpp
+    src/core/MaskSpec.h
+    src/core/MaskSpec.cpp
     src/core/Inpaint.h
     src/core/Inpaint.cpp
     src/core/HealNode.h
@@ -196,6 +198,11 @@ if(BUILD_TESTING)
     target_link_libraries(guided_filter_test PRIVATE lumen_core)
     target_compile_options(guided_filter_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME guided_filter_test COMMAND guided_filter_test)
+
+    add_executable(mask_test tests/mask_test.cpp)
+    target_link_libraries(mask_test PRIVATE lumen_core)
+    target_compile_options(mask_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME mask_test COMMAND mask_test)
 
     add_executable(heal_test tests/heal_test.cpp)
     target_link_libraries(heal_test PRIVATE lumen_core)
