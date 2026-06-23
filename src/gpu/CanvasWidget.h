@@ -91,10 +91,12 @@ protected:
 
 private:
     void ensurePipeline();
+    void ensureOffscreen(); // offscreen target sized to the image
     void buildSrb();
     void emitBrushCursor(QPointF widgetPos);
     QPointF imageNormalizedAt(const QPointF &widgetPos);
     QMatrix4x4 computeMvp(const QSize &targetPixels);
+    QMatrix4x4 fillMvp(const QSize &targetPixels); // maps the quad to fill target
     // Multiplies zoom by `factor`, keeping the image point under the cursor fixed.
     void zoomAt(float factor, const QPointF &cursorDevicePx);
 
@@ -112,8 +114,17 @@ private:
     std::unique_ptr<QRhiSampler> m_selMaskSampler;
     std::unique_ptr<QRhiTexture> m_selMaskTexture; // selective mask (R8)
     std::unique_ptr<QRhiShaderResourceBindings> m_srb;
-    std::unique_ptr<QRhiGraphicsPipeline> m_pipeline;
+    std::unique_ptr<QRhiGraphicsPipeline> m_pipeline; // adjustment pass (offscreen)
     bool m_srbDirty = true;
+
+    // Offscreen target the adjustment chain renders into; the present pass then
+    // draws it to the screen with the zoom/pan transform (multi-pass framework).
+    std::unique_ptr<QRhiTexture> m_offscreenTex;
+    std::unique_ptr<QRhiTextureRenderTarget> m_offscreenRt;
+    std::unique_ptr<QRhiRenderPassDescriptor> m_offscreenRpd;
+    std::unique_ptr<QRhiBuffer> m_presentUbuf;
+    std::unique_ptr<QRhiShaderResourceBindings> m_presentSrb;
+    std::unique_ptr<QRhiGraphicsPipeline> m_presentPipeline;
 
     // Pending image waiting to be uploaded to m_texture.
     QImage m_pendingImage;

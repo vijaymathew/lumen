@@ -122,6 +122,12 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
         m_lut3dSampler.reset();
         m_selMaskTexture.reset();
         m_selMaskSampler.reset();
+        m_presentPipeline.reset();
+        m_presentSrb.reset();
+        m_presentUbuf.reset();
+        m_offscreenRt.reset();
+        m_offscreenRpd.reset();
+        m_offscreenTex.reset();
         m_ubuf.reset();
         m_vbuf.reset();
         m_textureSize = {};
@@ -143,10 +149,15 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
     }
 
     if (!m_ubuf) {
-        // std140: mat4 mvp (64) + PreviewState's 13 floats (52) at offset 64.
+        // std140: mat4 mvp (64) + PreviewState's floats at offset 64.
         // Rounded up to a 16-byte multiple → 128 bytes.
         m_ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 128));
         m_ubuf->create();
+    }
+
+    if (!m_presentUbuf) {
+        m_presentUbuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 64));
+        m_presentUbuf->create();
     }
 
     if (!m_sampler) {
@@ -253,28 +264,86 @@ void CanvasWidget::setSelectiveMask(const MaskBuffer &mask)
 
 void CanvasWidget::ensurePipeline()
 {
-    if (m_pipeline || !m_srb)
-        return;
+    if (m_pipeline && m_presentPipeline)
+        return; // both built
+    if (!m_srb || !m_offscreenRpd || !m_presentSrb)
+        return; // offscreen target / bindings not ready yet
 
     QRhi *r = rhi();
-    m_pipeline.reset(r->newGraphicsPipeline());
-    m_pipeline->setTopology(QRhiGraphicsPipeline::TriangleStrip);
-    m_pipeline->setShaderStages({
-        {QRhiShaderStage::Vertex, loadShader(QStringLiteral(":/shaders/texture.vert.qsb"))},
-        {QRhiShaderStage::Fragment, loadShader(QStringLiteral(":/shaders/texture.frag.qsb"))},
-    });
-
     QRhiVertexInputLayout layout;
     layout.setBindings({{4 * sizeof(float)}});
     layout.setAttributes({
         {0, 0, QRhiVertexInputAttribute::Float2, 0},
         {0, 1, QRhiVertexInputAttribute::Float2, 2 * sizeof(float)},
     });
+
+    // Adjustment pass: the full chain, rendered into the offscreen target (no
+    // MSAA, identity-fill transform).
+    m_pipeline.reset(r->newGraphicsPipeline());
+    m_pipeline->setTopology(QRhiGraphicsPipeline::TriangleStrip);
+    m_pipeline->setShaderStages({
+        {QRhiShaderStage::Vertex, loadShader(QStringLiteral(":/shaders/texture.vert.qsb"))},
+        {QRhiShaderStage::Fragment, loadShader(QStringLiteral(":/shaders/texture.frag.qsb"))},
+    });
     m_pipeline->setVertexInputLayout(layout);
     m_pipeline->setShaderResourceBindings(m_srb.get());
-    m_pipeline->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
-    m_pipeline->setSampleCount(renderTarget()->sampleCount());
+    m_pipeline->setRenderPassDescriptor(m_offscreenRpd.get());
+    m_pipeline->setSampleCount(1);
     m_pipeline->create();
+
+    // Present pass: draws the offscreen result to the screen with zoom/pan.
+    m_presentPipeline.reset(r->newGraphicsPipeline());
+    m_presentPipeline->setTopology(QRhiGraphicsPipeline::TriangleStrip);
+    m_presentPipeline->setShaderStages({
+        {QRhiShaderStage::Vertex, loadShader(QStringLiteral(":/shaders/present.vert.qsb"))},
+        {QRhiShaderStage::Fragment, loadShader(QStringLiteral(":/shaders/present.frag.qsb"))},
+    });
+    m_presentPipeline->setVertexInputLayout(layout);
+    m_presentPipeline->setShaderResourceBindings(m_presentSrb.get());
+    m_presentPipeline->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
+    m_presentPipeline->setSampleCount(renderTarget()->sampleCount());
+    m_presentPipeline->create();
+}
+
+void CanvasWidget::ensureOffscreen()
+{
+    if (m_textureSize.isEmpty())
+        return;
+    if (m_offscreenTex && m_offscreenTex->pixelSize() == m_textureSize)
+        return;
+
+    QRhi *r = rhi();
+    m_offscreenTex.reset(r->newTexture(QRhiTexture::RGBA8, m_textureSize, 1,
+                                       QRhiTexture::RenderTarget));
+    m_offscreenTex->create();
+
+    QRhiTextureRenderTargetDescription rtDesc(QRhiColorAttachment(m_offscreenTex.get()));
+    m_offscreenRt.reset(r->newTextureRenderTarget(rtDesc));
+    m_offscreenRpd.reset(m_offscreenRt->newCompatibleRenderPassDescriptor());
+    m_offscreenRt->setRenderPassDescriptor(m_offscreenRpd.get());
+    m_offscreenRt->create();
+
+    // Present samples the offscreen result.
+    m_presentSrb.reset(r->newShaderResourceBindings());
+    m_presentSrb->setBindings({
+        QRhiShaderResourceBinding::uniformBuffer(
+            0, QRhiShaderResourceBinding::VertexStage, m_presentUbuf.get()),
+        QRhiShaderResourceBinding::sampledTexture(
+            1, QRhiShaderResourceBinding::FragmentStage, m_offscreenTex.get(), m_sampler.get()),
+    });
+    m_presentSrb->create();
+
+    m_pipeline.reset();        // adjustment pipeline depends on the offscreen rpd
+    m_presentPipeline.reset(); // and the present pipeline on the present srb
+}
+
+QMatrix4x4 CanvasWidget::fillMvp(const QSize &target)
+{
+    QMatrix4x4 proj;
+    proj.ortho(0.0f, target.width(), target.height(), 0.0f, -1.0f, 1.0f);
+    QMatrix4x4 model;
+    model.scale(target.width(), target.height());
+    return rhi()->clipSpaceCorrMatrix() * proj * model;
 }
 
 QMatrix4x4 CanvasWidget::computeMvp(const QSize &targetPixels)
@@ -377,32 +446,47 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         m_lut3dDirty = false;
     }
 
+    ensureOffscreen();
     ensurePipeline();
 
     const QSize target = renderTarget()->pixelSize();
-    const bool drawable = m_pipeline && m_srb && m_texture;
+    const QColor clearColor(17, 17, 19); // matches the app's dark canvas
+    const QRhiCommandBuffer::VertexInput vbufBinding(m_vbuf.get(), 0);
+    const bool drawable = m_pipeline && m_presentPipeline && m_srb && m_presentSrb
+                       && m_texture && m_offscreenRt;
+
     if (drawable) {
-        const QMatrix4x4 mvp = computeMvp(target);
-        u->updateDynamicBuffer(m_ubuf.get(), 0, 64, mvp.constData());
-        // PreviewState's floats are contiguous and match the shader block order.
+        // Adjustment uniforms: a fixed fill transform for the offscreen target.
+        const QMatrix4x4 fill = fillMvp(m_textureSize);
+        u->updateDynamicBuffer(m_ubuf.get(), 0, 64, fill.constData());
         static_assert(sizeof(PreviewState) == 14 * sizeof(float),
                       "PreviewState must be 14 tightly-packed floats");
         u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(PreviewState), &m_preview.exposure);
-    }
+        // Present transform: zoom/pan onto the screen.
+        const QMatrix4x4 mvp = computeMvp(target);
+        u->updateDynamicBuffer(m_presentUbuf.get(), 0, 64, mvp.constData());
 
-    const QColor clearColor(17, 17, 19); // matches the app's dark canvas
-    cb->beginPass(renderTarget(), clearColor, {1.0f, 0}, u);
-
-    if (drawable) {
+        // Pass 1: render the adjustment chain into the offscreen texture.
+        cb->beginPass(m_offscreenRt.get(), QColor(0, 0, 0, 0), {1.0f, 0}, u);
         cb->setGraphicsPipeline(m_pipeline.get());
-        cb->setViewport({0, 0, float(target.width()), float(target.height())});
+        cb->setViewport({0, 0, float(m_textureSize.width()), float(m_textureSize.height())});
         cb->setShaderResources(m_srb.get());
-        const QRhiCommandBuffer::VertexInput vbufBinding(m_vbuf.get(), 0);
         cb->setVertexInput(0, 1, &vbufBinding);
         cb->draw(4);
-    }
+        cb->endPass();
 
-    cb->endPass();
+        // Pass 2: present it to the screen.
+        cb->beginPass(renderTarget(), clearColor, {1.0f, 0});
+        cb->setGraphicsPipeline(m_presentPipeline.get());
+        cb->setViewport({0, 0, float(target.width()), float(target.height())});
+        cb->setShaderResources(m_presentSrb.get());
+        cb->setVertexInput(0, 1, &vbufBinding);
+        cb->draw(4);
+        cb->endPass();
+    } else {
+        cb->beginPass(renderTarget(), clearColor, {1.0f, 0}, u);
+        cb->endPass();
+    }
 }
 
 void CanvasWidget::setColorPickMode(bool on)

@@ -137,6 +137,8 @@ qt_add_shaders(lumen "lumen_shaders"
     FILES
         src/gpu/shaders/texture.vert
         src/gpu/shaders/texture.frag
+        src/gpu/shaders/present.vert
+        src/gpu/shaders/present.frag
 )
 
 if(APPLE)
