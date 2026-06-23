@@ -22,6 +22,7 @@ class CanvasWidget;
 class CommandPalette;
 class CurvesPanel;
 class HealPanel;
+class LayersPanel;
 class LooksPanel;
 class SelectivePanel;
 class TonePanel;
@@ -56,6 +57,15 @@ private:
     void layoutOverlays();
 
     void openCommandPalette();
+    void openLayersTool();
+    void refreshLayersPanel();
+    void addAdjustmentLayer();
+    void deleteActiveLayer();
+    void selectLayer(int index);
+    // The active layer's tone/curves/look nodes (tools edit the active layer).
+    TuneNode *activeTune() const;
+    CurvesNode *activeCurves() const;
+    LutNode *activeLut() const;
     void openToneTool();
     void closeToneTool();
     void openCurvesTool();
@@ -98,6 +108,7 @@ private:
     LooksPanel *m_looksPanel = nullptr;
     SelectivePanel *m_selectivePanel = nullptr;
     HealPanel *m_healPanel = nullptr;
+    LayersPanel *m_layersPanel = nullptr;
     QLabel *m_hint = nullptr;
 
     // The non-destructive edit graph. The GPU preview reads the tune node's

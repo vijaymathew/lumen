@@ -45,6 +45,7 @@ public:
     int nodeCount() const { return static_cast<int>(m_nodes.size()); }
     EditNode *nodeAt(int index) const;
     EditNode *findNode(const QString &id) const;
+    EditNode *nodeOfType(const QString &type) const; // first node of `type`, or null
     void invalidateFrom(int index); // mark node `index`+ dirty (input changed)
 
     // Applies the (enabled) node chain to `input`, reusing per-node cache.

@@ -103,6 +103,8 @@ qt_add_executable(lumen
     src/ui/SelectivePanel.cpp
     src/ui/HealPanel.h
     src/ui/HealPanel.cpp
+    src/ui/LayersPanel.h
+    src/ui/LayersPanel.cpp
     src/ui/ExportDialog.h
     src/ui/ExportDialog.cpp
     src/ui/MainWindow.h

@@ -70,6 +70,14 @@ EditNode *Layer::findNode(const QString &id) const
     return idx < 0 ? nullptr : m_nodes[idx].get();
 }
 
+EditNode *Layer::nodeOfType(const QString &type) const
+{
+    for (const auto &n : m_nodes)
+        if (n->typeName() == type)
+            return n.get();
+    return nullptr;
+}
+
 int Layer::indexOf(const QString &id) const
 {
     for (int i = 0; i < static_cast<int>(m_nodes.size()); ++i)

@@ -2,12 +2,15 @@
 
 #include "core/HealNode.h"
 #include "core/Image.h"
+#include "core/LayerPreview.h"
+#include "core/MaskSpec.h"
 #include "core/SelectiveMask.h"
 #include "gpu/CanvasWidget.h"
 #include "input/CommandPalette.h"
 #include "ui/CurvesPanel.h"
 #include "ui/ExportDialog.h"
 #include "ui/HealPanel.h"
+#include "ui/LayersPanel.h"
 #include "ui/LooksPanel.h"
 #include "ui/SelectivePanel.h"
 #include "ui/TonePanel.h"
@@ -225,28 +228,33 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_tonePanel = new TonePanel(this);
     connect(m_tonePanel, &TonePanel::valuesChanged, this, [this](const ToneValues &v) {
-        m_tune->setExposure(v.exposure); // update the model node
-        m_tune->setContrast(v.contrast);
-        m_tune->setSaturation(v.saturation);
+        if (auto *t = activeTune()) { // route to the active layer
+            t->setExposure(v.exposure);
+            t->setContrast(v.contrast);
+            t->setSaturation(v.saturation);
+        }
         updatePreview(); // preview is driven by walking the graph
     });
     connect(m_tonePanel, &TonePanel::closed, this, &MainWindow::closeToneTool);
 
     m_curvesPanel = new CurvesPanel(this);
     connect(m_curvesPanel, &CurvesPanel::curveChanged, this, [this](const ChannelCurves &c) {
-        m_curves->setCurves(c);
+        if (auto *cv = activeCurves())
+            cv->setCurves(c);
         updatePreview();
     });
 
     m_looksPanel = new LooksPanel(this);
     connect(m_looksPanel, &LooksPanel::loadRequested, this, &MainWindow::loadLookFile);
     connect(m_looksPanel, &LooksPanel::clearRequested, this, [this] {
-        m_lutNode->clear();
+        if (auto *l = activeLut())
+            l->clear();
         m_looksPanel->setLookName(QString());
         updatePreview();
     });
     connect(m_looksPanel, &LooksPanel::intensityChanged, this, [this](double v) {
-        m_lutNode->setIntensity(static_cast<float>(v));
+        if (auto *l = activeLut())
+            l->setIntensity(static_cast<float>(v));
         updatePreview();
     });
 
@@ -324,6 +332,23 @@ MainWindow::MainWindow(QWidget *parent)
         updatePreview();
     });
 
+    m_layersPanel = new LayersPanel(this);
+    connect(m_layersPanel, &LayersPanel::addRequested, this, &MainWindow::addAdjustmentLayer);
+    connect(m_layersPanel, &LayersPanel::deleteRequested, this, &MainWindow::deleteActiveLayer);
+    connect(m_layersPanel, &LayersPanel::layerSelected, this, &MainWindow::selectLayer);
+    connect(m_layersPanel, &LayersPanel::visibilityToggled, this, [this](int i, bool on) {
+        if (i >= 0 && i < m_graph.layerCount()) {
+            m_graph.layer(i).setEnabled(on);
+            refreshLayersPanel();
+            updatePreview();
+            m_graph.commit();
+        }
+    });
+    connect(m_layersPanel, &LayersPanel::opacityChanged, this, [this](int percent) {
+        m_graph.activeLayer().setOpacity(percent / 100.0f);
+        updatePreview();
+    });
+
     // Dismissible hint bar, bottom-centre over the canvas.
     m_hint = new QLabel(this);
     m_hint->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -362,6 +387,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("looks"), QStringLiteral("Looks (LUT)")},
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment")},
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
+        {QStringLiteral("layers"), QStringLiteral("Layers")},
         {QStringLiteral("quit"), QStringLiteral("Quit Lumen")},
     });
 }
@@ -382,6 +408,8 @@ void MainWindow::runCommand(const QString &id)
         openSelectiveTool();
     } else if (id == QLatin1String("heal")) {
         openHealTool();
+    } else if (id == QLatin1String("layers")) {
+        openLayersTool();
     } else if (id == QLatin1String("undo")) {
         doUndo();
     } else if (id == QLatin1String("redo")) {
@@ -492,6 +520,101 @@ void MainWindow::updatePreview()
     m_canvas->setPreviewState(ps);
     m_canvas->setCurveLuts(m_graph.previewLut());
     m_canvas->setLut3D(m_graph.previewLook());
+
+    // Layers above the Base, composited as extra GPU passes.
+    std::vector<LayerPreview> extras;
+    constexpr int cap = 1280;
+    int mw = m_sourceQImage.width(), mh = m_sourceQImage.height();
+    if (std::max(mw, mh) > cap) {
+        const double s = double(cap) / std::max(mw, mh);
+        mw = std::max(1, int(std::lround(mw * s)));
+        mh = std::max(1, int(std::lround(mh * s)));
+    }
+    for (int i = 1; i < m_graph.layerCount(); ++i) {
+        Layer &layer = m_graph.layer(i);
+        LayerPreview lp;
+        layer.contributeToPreview(lp.state);
+        layer.contributeToPreviewLut(lp.curves);
+        lp.look = layer.look();
+        lp.opacity = layer.enabled() ? layer.opacity() : 0.0f;
+        if (layer.mask().type != MaskSpec::None && mw > 0)
+            lp.layerMask = evaluateMask(layer.mask(), mw, mh); // geometric for now
+        extras.push_back(std::move(lp));
+    }
+    m_canvas->setExtraLayers(extras);
+}
+
+TuneNode *MainWindow::activeTune() const
+{
+    return static_cast<TuneNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("tune")));
+}
+
+CurvesNode *MainWindow::activeCurves() const
+{
+    return static_cast<CurvesNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("curves")));
+}
+
+LutNode *MainWindow::activeLut() const
+{
+    return static_cast<LutNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("lut")));
+}
+
+void MainWindow::openLayersTool()
+{
+    refreshLayersPanel();
+    m_layersPanel->adjustSize();
+    m_layersPanel->move(18, 18); // top-left, opposite the tool panels
+    m_layersPanel->show();
+    m_layersPanel->raise();
+}
+
+void MainWindow::refreshLayersPanel()
+{
+    QVector<LayersPanel::Row> rows;
+    for (int i = 0; i < m_graph.layerCount(); ++i)
+        rows.append({m_graph.layer(i).name(), m_graph.layer(i).enabled()});
+    const int active = m_graph.activeLayerIndex();
+    m_layersPanel->setLayers(rows, active,
+                             static_cast<int>(std::lround(m_graph.activeLayer().opacity() * 100)));
+}
+
+void MainWindow::addAdjustmentLayer()
+{
+    Layer &layer = m_graph.addLayer(
+        QStringLiteral("Layer %1").arg(m_graph.layerCount()));
+    // Every adjustment layer gets a tone/curves/look node set (added to it as
+    // it is now the active layer).
+    m_graph.addNode(std::make_unique<TuneNode>());
+    m_graph.addNode(std::make_unique<CurvesNode>());
+    m_graph.addNode(std::make_unique<LutNode>());
+    Q_UNUSED(layer);
+    refreshLayersPanel();
+    updatePreview();
+    m_graph.commit();
+}
+
+void MainWindow::deleteActiveLayer()
+{
+    if (m_graph.removeLayer(m_graph.activeLayerIndex())) {
+        refreshLayersPanel();
+        updatePreview();
+        m_graph.commit();
+    }
+}
+
+void MainWindow::selectLayer(int index)
+{
+    m_graph.setActiveLayer(index);
+    refreshLayersPanel();
+    // Reseed any open adjustment tool with the newly-active layer's values.
+    if (m_tonePanel->isVisible())
+        m_tonePanel->reveal({activeTune()->exposure(), activeTune()->contrast(),
+                             activeTune()->saturation()});
+    if (m_curvesPanel->isVisible())
+        m_curvesPanel->reveal(activeCurves()->curves());
+    if (m_looksPanel->isVisible())
+        m_looksPanel->reveal(QFileInfo(activeLut()->sourcePath()).fileName(),
+                             activeLut()->intensity());
 }
 
 void MainWindow::openToneTool()
@@ -501,7 +624,7 @@ void MainWindow::openToneTool()
     m_tonePanel->adjustSize();
     const int margin = 18;
     m_tonePanel->move(width() - m_tonePanel->width() - margin, margin);
-    m_tonePanel->reveal({m_tune->exposure(), m_tune->contrast(), m_tune->saturation()});
+    m_tonePanel->reveal({activeTune()->exposure(), activeTune()->contrast(), activeTune()->saturation()});
 }
 
 void MainWindow::closeToneTool()
@@ -518,7 +641,7 @@ void MainWindow::openCurvesTool()
     m_curvesPanel->adjustSize();
     const int margin = 18;
     m_curvesPanel->move(width() - m_curvesPanel->width() - margin, margin);
-    m_curvesPanel->reveal(m_curves->curves());
+    m_curvesPanel->reveal(activeCurves()->curves());
 }
 
 void MainWindow::closeCurvesTool()
@@ -535,8 +658,7 @@ void MainWindow::openLooksTool()
     m_looksPanel->adjustSize();
     const int margin = 18;
     m_looksPanel->move(width() - m_looksPanel->width() - margin, margin);
-    m_looksPanel->reveal(QFileInfo(m_lutNode->sourcePath()).fileName(),
-                         m_lutNode->intensity());
+    m_looksPanel->reveal(QFileInfo(activeLut()->sourcePath()).fileName(), activeLut()->intensity());
 }
 
 void MainWindow::closeLooksTool()
@@ -558,7 +680,7 @@ void MainWindow::loadLookFile()
         return;
 
     QString error;
-    if (!m_lutNode->loadHald(path, &error)) {
+    if (!activeLut()->loadHald(path, &error)) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Could not load look: %1").arg(error));
         return;
@@ -864,18 +986,19 @@ void MainWindow::afterHistoryChange()
     // Heal edits the base; rebuild it so undo/redo of a heal is visible.
     refreshBaseImage();
     updatePreview();
+    if (m_layersPanel->isVisible())
+        refreshLayersPanel();
     if (m_healPanel->isVisible()) {
         m_brushMask = m_heal->healMask(); // sync session to restored state
         m_brushUndo.clear();
     }
     // If a tool is open, reseed its control from the restored state.
     if (m_tonePanel->isVisible())
-        m_tonePanel->reveal({m_tune->exposure(), m_tune->contrast(), m_tune->saturation()});
+        m_tonePanel->reveal({activeTune()->exposure(), activeTune()->contrast(), activeTune()->saturation()});
     if (m_curvesPanel->isVisible())
-        m_curvesPanel->reveal(m_curves->curves());
+        m_curvesPanel->reveal(activeCurves()->curves());
     if (m_looksPanel->isVisible())
-        m_looksPanel->reveal(QFileInfo(m_lutNode->sourcePath()).fileName(),
-                             m_lutNode->intensity());
+        m_looksPanel->reveal(QFileInfo(activeLut()->sourcePath()).fileName(), activeLut()->intensity());
     if (m_selectivePanel->isVisible()) {
         m_selectivePanel->reveal(m_selective->values());
         if (m_selective->values().maskMode == 2) {
@@ -924,6 +1047,7 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_looksPanel);
     clampIntoView(m_selectivePanel);
     clampIntoView(m_healPanel);
+    clampIntoView(m_layersPanel);
 
     // Hint bar: bottom-centre.
     m_hint->move((width() - m_hint->width()) / 2, height() - m_hint->height() - 18);

@@ -113,7 +113,7 @@ plain Qt widgets.
 | Item | Status | Notes |
 |---|---|---|
 | Mask inversion | ✅ | `SelectiveValues.invert` — complements the mask in both libvips export and the shader (`selInvert` uniform); **Invert** toggle in the panel; mask overlay reflects it; unit-tested |
-| Layers (per-layer adjustments, add/delete) | ⬜ | Keystone refactor: project = Base layer + N layers, each with adjustments + mask + opacity; forces the deferred multi-pass GPU preview (DESIGN §5.1). See [LAYERS.md](LAYERS.md) |
+| Layers (per-layer adjustments, add/delete) | 🟡 | Done: `MaskSpec`/`evaluateMask`; layered `EditGraph` + libvips composite export; **multi-pass GPU preview** (ping-pong, per-layer pass); **Layers panel** (add/delete/select/visibility/opacity) + active-layer routing of Tone/Curves/Looks. Remaining: dissolve `SelectiveNode` into a masked layer + per-layer mask UI/gizmos (folds in gradient/radial); structural undo of layer add/delete. See [LAYERS.md](LAYERS.md) |
 | Drawn / geometric masks (gradient, radial) | ⬜ | Linear-gradient + radial/elliptical (free-hand already = brush mask). Parametric → shader + libvips, preview==export. Part of the layer mask system — [LAYERS.md](LAYERS.md) §3 |
 | Monochrome (B&W mixer, toning, grain) | ⬜ | `MonoNode`; a layer adjustment once layers exist |
 
