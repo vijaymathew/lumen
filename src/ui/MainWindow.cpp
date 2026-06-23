@@ -5,6 +5,7 @@
 #include "gpu/CanvasWidget.h"
 #include "input/CommandPalette.h"
 #include "ui/CurvesPanel.h"
+#include "ui/HealPanel.h"
 #include "ui/LooksPanel.h"
 #include "ui/SelectivePanel.h"
 #include "ui/TonePanel.h"
@@ -54,9 +55,10 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setWindowTitle(QStringLiteral("Lumen"));
 
-    // The graph owns the nodes; we keep raw pointers to drive them. Order is
-    // tune -> curves -> lut (the shader applies tone ops, then the curve LUT,
-    // then the 3D look LUT, to match).
+    // The graph owns the nodes; we keep raw pointers to drive them. Heal is
+    // first (it edits source pixels, baked into the preview base), then the
+    // pointwise/LUT ops the shader replicates: tune -> curves -> lut -> selective.
+    m_heal = static_cast<HealNode *>(m_graph.addNode(std::make_unique<HealNode>()));
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
     m_lutNode = static_cast<LutNode *>(m_graph.addNode(std::make_unique<LutNode>()));
@@ -109,8 +111,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_selectivePanel, &SelectivePanel::valuesChanged, this,
             [this](const SelectiveValues &v) {
                 m_selective->setValues(v);
-                m_canvas->setBrushMode(v.maskMode == 2);
-                if (v.maskMode == 2 && m_brushMask.isEmpty())
+                const bool brush = v.maskMode == 2;
+                m_brushTarget = brush ? BrushTarget::Selective : BrushTarget::None;
+                m_canvas->setBrushMode(brush);
+                if (brush && m_brushMask.isEmpty())
                     initBrushMask();
                 recomputeSelectiveMask();
                 updatePreview();
@@ -137,7 +141,24 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_canvas, &CanvasWidget::brushStrokeBegan, this, &MainWindow::beginBrushStroke);
     connect(m_canvas, &CanvasWidget::brushPoint, this, &MainWindow::brushAt);
-    connect(m_canvas, &CanvasWidget::brushStrokeEnded, this, [this] { m_brushHasLast = false; });
+    connect(m_canvas, &CanvasWidget::brushStrokeEnded, this, &MainWindow::endBrushStroke);
+
+    m_healPanel = new HealPanel(this);
+    connect(m_healPanel, &HealPanel::settingsChanged, this,
+            [this](int size, int hardness, bool add) {
+                m_brushSize = size;
+                m_brushHardness = hardness;
+                m_brushAdd = add;
+            });
+    connect(m_healPanel, &HealPanel::clearRequested, this, [this] {
+        if (m_brushMask.isEmpty())
+            return;
+        m_brushUndo.push_back(m_brushMask.data); // clear is undoable
+        std::fill(m_brushMask.data.begin(), m_brushMask.data.end(), 0.0f);
+        m_heal->setHealMask(m_brushMask);
+        refreshBaseImage();
+        updatePreview();
+    });
 
     // Dismissible hint bar, bottom-centre over the canvas.
     m_hint = new QLabel(this);
@@ -195,6 +216,8 @@ void MainWindow::runCommand(const QString &id)
         openLooksTool();
     } else if (id == QLatin1String("selective")) {
         openSelectiveTool();
+    } else if (id == QLatin1String("heal")) {
+        openHealTool();
     } else if (id == QLatin1String("undo")) {
         doUndo();
     } else if (id == QLatin1String("redo")) {
@@ -222,7 +245,7 @@ bool MainWindow::openPath(const QString &path)
 
     m_sourceQImage = source.toQImage();
     m_graph.setSource(source);            // full-res source for export
-    m_canvas->setImage(m_sourceQImage);   // unedited image for the GPU preview
+    refreshBaseImage();                   // base = source (healed if a mask exists)
     recomputeSelectiveMask();
     updatePreview();        // apply any existing edits
     m_graph.resetHistory(); // fresh undo timeline for this image
@@ -284,6 +307,13 @@ void MainWindow::updatePreview()
 {
     PreviewState ps = m_graph.previewState();
     ps.selMaskView = static_cast<float>(m_maskView); // preview-only overlay
+    if (m_healPainting) {
+        // Show the in-progress heal stroke as a red overlay (the mask texture),
+        // without any selective adjustment.
+        ps.selEnabled = 0.0f;
+        ps.selMaskMode = 1.0f;
+        ps.selMaskView = 1.0f;
+    }
     m_canvas->setPreviewState(ps);
     m_canvas->setCurveLuts(m_graph.previewLut());
     m_canvas->setLut3D(m_graph.previewLook());
@@ -376,6 +406,7 @@ void MainWindow::openSelectiveTool()
     m_brushUndo.clear();
     m_brushHasLast = false;
     const bool brush = m_selective->values().maskMode == 2;
+    m_brushTarget = brush ? BrushTarget::Selective : BrushTarget::None;
     if (brush && m_brushMask.isEmpty())
         initBrushMask();
     m_canvas->setBrushMode(brush);
@@ -389,6 +420,7 @@ void MainWindow::closeSelectiveTool()
     m_selectivePanel->hide();
     m_canvas->setColorPickMode(false);
     m_canvas->setBrushMode(false);
+    m_brushTarget = BrushTarget::None;
     // Commit the painted mask into the node (one global undo step).
     if (m_selective->values().maskMode == 2)
         m_selective->setBrushMask(m_brushMask);
@@ -398,6 +430,51 @@ void MainWindow::closeSelectiveTool()
     m_graph.commit();
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
+}
+
+void MainWindow::openHealTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_healPanel->adjustSize();
+    const int margin = 18;
+    m_healPanel->move(width() - m_healPanel->width() - margin, margin);
+    m_healPanel->reveal(m_brushSize, m_brushHardness, m_brushAdd);
+
+    // Restore the heal session from the node (may be empty).
+    m_brushMask = m_heal->healMask();
+    m_brushUndo.clear();
+    m_brushHasLast = false;
+    if (m_brushMask.isEmpty())
+        initBrushMask();
+    m_brushTarget = BrushTarget::Heal;
+    m_canvas->setBrushMode(true);
+    refreshBaseImage();
+    updatePreview();
+}
+
+void MainWindow::closeHealTool()
+{
+    m_healPanel->hide();
+    m_canvas->setBrushMode(false);
+    m_brushTarget = BrushTarget::None;
+    m_healPainting = false;
+    m_heal->setHealMask(m_brushMask); // commit (one global undo step)
+    m_brushUndo.clear();
+    refreshBaseImage();
+    updatePreview();
+    m_graph.commit();
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::refreshBaseImage()
+{
+    // The GPU preview base is the source healed by the heal node; the shader
+    // then applies the pointwise/LUT ops on top (heal is first in the graph).
+    if (m_heal && !m_heal->healMask().isEmpty() && !m_graph.source().isNull())
+        m_canvas->setImage(m_heal->apply(m_graph.source()).toQImage());
+    else if (!m_sourceQImage.isNull())
+        m_canvas->setImage(m_sourceQImage);
 }
 
 void MainWindow::recomputeSelectiveMask()
@@ -478,7 +555,27 @@ void MainWindow::brushAt(const QPointF &norm)
     stampBrush(m_brushMask, cx, cy, radius, hardness, m_brushAdd);
     m_lastBrushPoint = QPointF(cx, cy);
     m_brushHasLast = true;
+
+    // Live feedback: the selective brush shows the mask directly; the heal brush
+    // shows a red overlay of the painted region (it inpaints on stroke end).
     m_canvas->setSelectiveMask(m_brushMask);
+    if (m_brushTarget == BrushTarget::Heal) {
+        m_healPainting = true;
+        updatePreview();
+    }
+}
+
+void MainWindow::endBrushStroke()
+{
+    m_brushHasLast = false;
+    if (m_brushTarget != BrushTarget::Heal)
+        return;
+    // Inpaint and show the result; restore the selective texture afterwards.
+    m_healPainting = false;
+    m_heal->setHealMask(m_brushMask);
+    refreshBaseImage();
+    recomputeSelectiveMask();
+    updatePreview();
 }
 
 bool MainWindow::brushSessionUndo()
@@ -487,7 +584,14 @@ bool MainWindow::brushSessionUndo()
         return false;
     m_brushMask.data = m_brushUndo.back();
     m_brushUndo.pop_back();
-    m_canvas->setSelectiveMask(m_brushMask);
+    if (m_brushTarget == BrushTarget::Heal) {
+        m_heal->setHealMask(m_brushMask);
+        refreshBaseImage();
+        recomputeSelectiveMask();
+        updatePreview();
+    } else {
+        m_canvas->setSelectiveMask(m_brushMask);
+    }
     return true;
 }
 
@@ -522,6 +626,8 @@ void MainWindow::closeActiveTool()
         closeLooksTool();
     else if (m_selectivePanel->isVisible())
         closeSelectiveTool();
+    else if (m_healPanel->isVisible())
+        closeHealTool();
     else {
         m_input.setMode(InputController::Mode::Browse);
         m_canvas->setFocus();
@@ -531,8 +637,7 @@ void MainWindow::closeActiveTool()
 void MainWindow::doUndo()
 {
     // While brush-painting, Ctrl+Z is a per-stroke session undo.
-    if (m_selectivePanel->isVisible() && m_selective->values().maskMode == 2
-        && brushSessionUndo())
+    if (m_brushTarget != BrushTarget::None && brushSessionUndo())
         return;
     if (m_graph.undo())
         afterHistoryChange();
@@ -546,7 +651,13 @@ void MainWindow::doRedo()
 
 void MainWindow::afterHistoryChange()
 {
+    // Heal edits the base; rebuild it so undo/redo of a heal is visible.
+    refreshBaseImage();
     updatePreview();
+    if (m_healPanel->isVisible()) {
+        m_brushMask = m_heal->healMask(); // sync session to restored state
+        m_brushUndo.clear();
+    }
     // If a tool is open, reseed its control from the restored state.
     if (m_tonePanel->isVisible())
         m_tonePanel->reveal({m_tune->exposure(), m_tune->contrast(), m_tune->saturation()});
@@ -598,6 +709,7 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_curvesPanel);
     clampIntoView(m_looksPanel);
     clampIntoView(m_selectivePanel);
+    clampIntoView(m_healPanel);
 
     // Hint bar: bottom-centre.
     m_hint->move((width() - m_hint->width()) / 2, height() - m_hint->height() - 18);
