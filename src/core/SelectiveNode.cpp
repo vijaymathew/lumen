@@ -5,10 +5,6 @@
 
 #include "core/SelectiveMask.h"
 
-#include <QBuffer>
-#include <QByteArray>
-#include <QImage>
-
 #include <algorithm>
 #include <cmath>
 
@@ -24,46 +20,6 @@ double smoothstep(double e0, double e1, double x)
         return x < e0 ? 0.0 : 1.0;
     const double t = std::clamp((x - e0) / (e1 - e0), 0.0, 1.0);
     return t * t * (3.0 - 2.0 * t);
-}
-
-// A brush mask is bulky, so persist it as a base64 PNG (only when present).
-QString encodeMask(const MaskBuffer &m)
-{
-    if (m.isEmpty())
-        return {};
-    QImage img(m.width, m.height, QImage::Format_Grayscale8);
-    for (int y = 0; y < m.height; ++y) {
-        uchar *line = img.scanLine(y);
-        for (int x = 0; x < m.width; ++x)
-            line[x] = static_cast<uchar>(
-                std::clamp(std::lround(m.data[static_cast<size_t>(y) * m.width + x] * 255.0f),
-                           0L, 255L));
-    }
-    QByteArray bytes;
-    QBuffer buf(&bytes);
-    buf.open(QIODevice::WriteOnly);
-    img.save(&buf, "PNG");
-    return QString::fromLatin1(bytes.toBase64());
-}
-
-MaskBuffer decodeMask(const QString &s)
-{
-    MaskBuffer m;
-    if (s.isEmpty())
-        return m;
-    QImage img;
-    if (!img.loadFromData(QByteArray::fromBase64(s.toLatin1()), "PNG"))
-        return m;
-    img = img.convertToFormat(QImage::Format_Grayscale8);
-    m.width = img.width();
-    m.height = img.height();
-    m.data.resize(static_cast<size_t>(m.width) * m.height);
-    for (int y = 0; y < m.height; ++y) {
-        const uchar *line = img.constScanLine(y);
-        for (int x = 0; x < m.width; ++x)
-            m.data[static_cast<size_t>(y) * m.width + x] = line[x] / 255.0f;
-    }
-    return m;
 }
 } // namespace
 
@@ -134,8 +90,7 @@ Image SelectiveNode::apply(const Image &input) const
     if (vips_cast(input.handle(), &u8, VIPS_FORMAT_UCHAR, nullptr))
         return input;
 
-    size_t size = 0;
-    void *buf = vips_image_write_to_memory(u8, &size);
+    void *buf = vips_image_write_to_memory(u8, nullptr);
     const int w = u8->Xsize;
     const int h = u8->Ysize;
     const int bands = u8->Bands;
@@ -190,12 +145,9 @@ Image SelectiveNode::apply(const Image &input) const
         }
     }
 
-    VipsImage *result = vips_image_new_from_memory_copy(buf, size, w, h, bands,
-                                                        VIPS_FORMAT_UCHAR);
+    Image result = Image::fromInterleaved(buf, w, h, bands);
     g_free(buf);
-    if (!result)
-        return input;
-    return Image::adopt(result);
+    return result.isNull() ? input : result;
 }
 
 QJsonObject SelectiveNode::saveState() const
@@ -213,7 +165,7 @@ QJsonObject SelectiveNode::saveState() const
     state[QStringLiteral("contrast")] = m_values.contrast;
     state[QStringLiteral("saturation")] = m_values.saturation;
     if (m_values.maskMode == 2 && !m_brushMask.isEmpty())
-        state[QStringLiteral("brushMask")] = encodeMask(m_brushMask);
+        state[QStringLiteral("brushMask")] = encodeMaskPng(m_brushMask);
     return state;
 }
 
@@ -233,5 +185,5 @@ void SelectiveNode::restoreState(const QJsonObject &state)
     v.contrast = static_cast<float>(state.value(QStringLiteral("contrast")).toDouble(0.0));
     v.saturation = static_cast<float>(state.value(QStringLiteral("saturation")).toDouble(0.0));
     setValues(v);
-    m_brushMask = decodeMask(state.value(QStringLiteral("brushMask")).toString());
+    m_brushMask = decodeMaskPng(state.value(QStringLiteral("brushMask")).toString());
 }

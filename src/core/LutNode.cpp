@@ -61,8 +61,7 @@ Image LutNode::apply(const Image &input) const
     if (vips_cast(input.handle(), &u8, VIPS_FORMAT_UCHAR, nullptr))
         return input;
 
-    size_t size = 0;
-    void *buf = vips_image_write_to_memory(u8, &size);
+    void *buf = vips_image_write_to_memory(u8, nullptr);
     const int w = u8->Xsize;
     const int h = u8->Ysize;
     const int bands = u8->Bands;
@@ -85,12 +84,9 @@ Image LutNode::apply(const Image &input) const
         // alpha (and any extra band) left untouched
     }
 
-    VipsImage *result = vips_image_new_from_memory_copy(buf, size, w, h, bands,
-                                                        VIPS_FORMAT_UCHAR);
+    Image result = Image::fromInterleaved(buf, w, h, bands);
     g_free(buf);
-    if (!result)
-        return input;
-    return Image::adopt(result);
+    return result.isNull() ? input : result;
 }
 
 QJsonObject LutNode::saveState() const

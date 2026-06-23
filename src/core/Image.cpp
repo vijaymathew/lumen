@@ -122,6 +122,29 @@ int Image::height() const
     return m_image ? m_image->Ysize : 0;
 }
 
+Image Image::fromInterleaved(const void *data, int width, int height, int bands)
+{
+    if (!data || width <= 0 || height <= 0 || bands < 1)
+        return Image();
+
+    VipsImage *raw = vips_image_new_from_memory_copy(
+        data, static_cast<size_t>(width) * height * bands, width, height, bands,
+        VIPS_FORMAT_UCHAR);
+    if (!raw)
+        return Image();
+
+    // new_from_memory guesses interpretation from band count (4 bands ->
+    // MULTIBAND), which would make a later vips_colourspace(->sRGB) scramble the
+    // channels. Tag it sRGB so the buffer round-trips faithfully.
+    VipsImage *tagged = nullptr;
+    if (vips_copy(raw, &tagged, "interpretation", VIPS_INTERPRETATION_sRGB, nullptr)) {
+        g_object_unref(raw);
+        return Image();
+    }
+    g_object_unref(raw);
+    return Image::adopt(tagged);
+}
+
 Image Image::fromFile(const QString &path, QString *error)
 {
     const QByteArray utf8 = path.toUtf8();

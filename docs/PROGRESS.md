@@ -92,13 +92,14 @@ plain Qt widgets.
 
 ---
 
-## Phase 6 — Healing brush ⬜
+## Phase 6 — Healing brush 🟡
 
 > Content-aware removal via inpainting.
 
 | Item | Status | Notes |
 |---|---|---|
-| `HealNode` (`cv::inpaint`) | ⬜ | Telea / NS to start |
+| `HealNode` (inpaint) | ✅ | Self-contained **Telea FMM** inpaint (no OpenCV, per the guided-filter precedent); paints a heal mask (white = remove), `apply()` upscales it + fills via libvips export path; unit-tested + verified on a real photo. Also fixed a latent colourspace bug: full-image rebuilds now route through `Image::fromInterleaved` (tags sRGB) so coloured pixels round-trip faithfully — also fixed in Selective/Lut nodes |
+| Heal brush UI (paint mask, commit) | ⬜ | Wire a Heal tool reusing the brush-paint + session-undo infra |
 | Higher-quality fill (PatchMatch/xphoto) | ⬜ | Later refinement |
 
 ---

@@ -33,6 +33,11 @@ public:
     // libvips. On failure returns a null Image and sets *error (if provided).
     static Image fromFile(const QString &path, QString *error = nullptr);
 
+    // Builds an Image from an interleaved 8-bit buffer (`bands` per pixel),
+    // tagged sRGB so it round-trips through toQImage without colour mangling.
+    // Copies the data. Used by nodes that edit pixels in a raw buffer.
+    static Image fromInterleaved(const void *data, int width, int height, int bands);
+
     Image(const Image &other);
     Image &operator=(const Image &other);
     Image(Image &&other) noexcept;
