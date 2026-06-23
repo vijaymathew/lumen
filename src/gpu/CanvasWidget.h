@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/LayerPreview.h"
 #include "core/Lut.h"
 #include "core/Lut3D.h"
 #include "core/PreviewState.h"
@@ -50,6 +51,10 @@ public:
     // colour). An empty mask resets to fully-selected.
     void setSelectiveMask(const MaskBuffer &mask);
 
+    // Sets the layers ABOVE the Base (which is driven by the setters above).
+    // Each is composited as an additional pass over the running result.
+    void setExtraLayers(const std::vector<LayerPreview> &layers);
+
     // Resets zoom/pan so the image is fit-to-window and centred.
     void resetView();
 
@@ -90,9 +95,24 @@ protected:
     void leaveEvent(QEvent *e) override;
 
 private:
+    // GPU resources for one extra (above-Base) layer.
+    struct GpuLayer {
+        LayerPreview data;
+        bool dirty = true;
+        std::unique_ptr<QRhiBuffer> ubuf;
+        std::unique_ptr<QRhiTexture> curveTex;
+        std::unique_ptr<QRhiTexture> lut3dTex;
+        std::unique_ptr<QRhiTexture> selMaskTex;
+        std::unique_ptr<QRhiTexture> layerMaskTex;
+        std::unique_ptr<QRhiShaderResourceBindings> srb;
+    };
+
     void ensurePipeline();
-    void ensureOffscreen(); // offscreen target sized to the image
+    void ensureOffscreen(); // offscreen targets sized to the image
     void buildSrb();
+    // Builds/uploads an extra layer's GPU resources; `index` selects its input
+    // (ping-pong A/B). `batch` carries the uploads.
+    void buildExtraLayer(GpuLayer &gl, int index, QRhiResourceUpdateBatch *batch);
     void emitBrushCursor(QPointF widgetPos);
     QPointF imageNormalizedAt(const QPointF &widgetPos);
     QMatrix4x4 computeMvp(const QSize &targetPixels);
@@ -113,18 +133,24 @@ private:
     std::unique_ptr<QRhiTexture> m_lut3dTexture; // 32^3 look LUT
     std::unique_ptr<QRhiSampler> m_selMaskSampler;
     std::unique_ptr<QRhiTexture> m_selMaskTexture; // selective mask (R8)
+    std::unique_ptr<QRhiTexture> m_layerMaskTexture; // base layer mask (white)
+    bool m_layerMaskDirty = true;
     std::unique_ptr<QRhiShaderResourceBindings> m_srb;
     std::unique_ptr<QRhiGraphicsPipeline> m_pipeline; // adjustment pass (offscreen)
     bool m_srbDirty = true;
 
-    // Offscreen target the adjustment chain renders into; the present pass then
-    // draws it to the screen with the zoom/pan transform (multi-pass framework).
-    std::unique_ptr<QRhiTexture> m_offscreenTex;
+    // Two offscreen targets (A/B) the adjustment passes ping-pong between; the
+    // present pass draws the final one to the screen with zoom/pan.
+    std::unique_ptr<QRhiTexture> m_offscreenTex;   // A
     std::unique_ptr<QRhiTextureRenderTarget> m_offscreenRt;
     std::unique_ptr<QRhiRenderPassDescriptor> m_offscreenRpd;
+    std::unique_ptr<QRhiTexture> m_offscreenTexB;  // B
+    std::unique_ptr<QRhiTextureRenderTarget> m_offscreenRtB;
     std::unique_ptr<QRhiBuffer> m_presentUbuf;
-    std::unique_ptr<QRhiShaderResourceBindings> m_presentSrb;
+    std::unique_ptr<QRhiShaderResourceBindings> m_presentSrb;  // samples A
+    std::unique_ptr<QRhiShaderResourceBindings> m_presentSrbB; // samples B
     std::unique_ptr<QRhiGraphicsPipeline> m_presentPipeline;
+    std::vector<GpuLayer> m_extraLayers;
 
     // Pending image waiting to be uploaded to m_texture.
     QImage m_pendingImage;

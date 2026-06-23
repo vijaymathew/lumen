@@ -30,6 +30,7 @@ struct PreviewState {
     float selMaskView = 0.0f;    // preview-only: 0 off, 1 red overlay, 2 grayscale
     float selMaskMode = 0.0f;    // 0 luminosity (parametric), 1 colour (texture)
     float selInvert = 0.0f;      // 1 = invert the mask
+    float layerOpacity = 1.0f;   // this layer's blend onto the running result
 
     friend bool operator==(const PreviewState &, const PreviewState &) = default;
 };

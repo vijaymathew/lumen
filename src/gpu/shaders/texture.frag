@@ -5,9 +5,10 @@ layout(location = 0) in vec2 v_texcoord;
 layout(location = 0) out vec4 fragColor;
 
 layout(binding = 1) uniform sampler2D tex;
-layout(binding = 2) uniform sampler2D lut;     // 256x1 tone curve
-layout(binding = 3) uniform sampler3D lut3d;   // 32^3 look LUT
-layout(binding = 4) uniform sampler2D selMask; // selective colour-affinity mask
+layout(binding = 2) uniform sampler2D lut;       // 256x1 tone curve
+layout(binding = 3) uniform sampler3D lut3d;     // 32^3 look LUT
+layout(binding = 4) uniform sampler2D selMask;   // selective colour-affinity mask
+layout(binding = 5) uniform sampler2D layerMask; // this layer's mask coverage
 
 layout(std140, binding = 0) uniform buf {
     mat4 mvp;
@@ -25,6 +26,7 @@ layout(std140, binding = 0) uniform buf {
     float selMaskView;
     float selMaskMode;
     float selInvert;
+    float layerOpacity; // this layer's blend onto the running result [0,1]
 } ubuf;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -78,5 +80,8 @@ void main()
         }
     }
 
-    fragColor = vec4(col, c.a);
+    // Composite this layer onto the running result by its mask × opacity. For
+    // the Base layer the mask is white and opacity 1, so this is just `col`.
+    float layerCov = texture(layerMask, v_texcoord).r * ubuf.layerOpacity;
+    fragColor = vec4(mix(c.rgb, col, layerCov), c.a);
 }

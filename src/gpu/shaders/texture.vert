@@ -21,6 +21,7 @@ layout(std140, binding = 0) uniform buf {
     float selMaskView;
     float selMaskMode;
     float selInvert;
+    float layerOpacity;
 } ubuf;
 
 void main()

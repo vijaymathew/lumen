@@ -54,6 +54,26 @@ std::vector<uint8_t> resampleCube(const Lut3D &lut)
     return cube;
 }
 
+// Coverage mask → RGBA bytes (R = coverage; shader samples .r). 1x1 white if
+// empty (full coverage).
+std::vector<uint8_t> maskRgba(const MaskBuffer &m, int &w, int &h)
+{
+    if (m.isEmpty()) {
+        w = h = 1;
+        return {255, 255, 255, 255};
+    }
+    w = m.width;
+    h = m.height;
+    std::vector<uint8_t> d(static_cast<size_t>(w) * h * 4);
+    for (size_t i = 0; i < m.data.size(); ++i) {
+        d[i * 4 + 0] = static_cast<uint8_t>(std::clamp(std::lround(m.data[i] * 255.0f), 0L, 255L));
+        d[i * 4 + 1] = 0;
+        d[i * 4 + 2] = 0;
+        d[i * 4 + 3] = 255;
+    }
+    return d;
+}
+
 } // namespace
 
 CanvasWidget::CanvasWidget(QWidget *parent)
@@ -122,12 +142,17 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
         m_lut3dSampler.reset();
         m_selMaskTexture.reset();
         m_selMaskSampler.reset();
+        m_layerMaskTexture.reset();
         m_presentPipeline.reset();
         m_presentSrb.reset();
+        m_presentSrbB.reset();
         m_presentUbuf.reset();
         m_offscreenRt.reset();
+        m_offscreenRtB.reset();
         m_offscreenRpd.reset();
         m_offscreenTex.reset();
+        m_offscreenTexB.reset();
+        m_extraLayers.clear();
         m_ubuf.reset();
         m_vbuf.reset();
         m_textureSize = {};
@@ -135,6 +160,7 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
         m_lutDirty = true;
         m_lut3dDirty = true;
         m_selMaskDirty = true;
+        m_layerMaskDirty = true;
         m_srbDirty = true;
         m_rhi = r;
     }
@@ -212,6 +238,15 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
         m_selMaskDirty = true;
         m_srbDirty = true;
     }
+
+    if (!m_layerMaskTexture) {
+        // The Base layer's mask is white (full coverage); extra layers carry
+        // their own. 1x1 white, sampled as .r.
+        m_layerMaskTexture.reset(r->newTexture(QRhiTexture::RGBA8, QSize(1, 1)));
+        m_layerMaskTexture->create();
+        m_layerMaskDirty = true;
+        m_srbDirty = true;
+    }
 }
 
 void CanvasWidget::buildSrb()
@@ -230,6 +265,8 @@ void CanvasWidget::buildSrb()
             3, QRhiShaderResourceBinding::FragmentStage, m_lut3dTexture.get(), m_lut3dSampler.get()),
         QRhiShaderResourceBinding::sampledTexture(
             4, QRhiShaderResourceBinding::FragmentStage, m_selMaskTexture.get(), m_selMaskSampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(
+            5, QRhiShaderResourceBinding::FragmentStage, m_layerMaskTexture.get(), m_sampler.get()),
     });
     m_srb->create();
 }
@@ -260,6 +297,107 @@ void CanvasWidget::setSelectiveMask(const MaskBuffer &mask)
     m_selMaskH = h;
     m_selMaskDirty = true;
     update();
+}
+
+void CanvasWidget::setExtraLayers(const std::vector<LayerPreview> &layers)
+{
+    // Rebuild all (indices/inputs shift when the count changes; cheap for a few).
+    m_extraLayers.resize(layers.size());
+    for (size_t i = 0; i < layers.size(); ++i) {
+        m_extraLayers[i].data = layers[i];
+        m_extraLayers[i].dirty = true;
+    }
+    update();
+}
+
+void CanvasWidget::buildExtraLayer(GpuLayer &gl, int index, QRhiResourceUpdateBatch *batch)
+{
+    QRhi *r = rhi();
+    if (!gl.ubuf) {
+        gl.ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 128));
+        gl.ubuf->create();
+    }
+    if (!gl.curveTex) {
+        gl.curveTex.reset(r->newTexture(QRhiTexture::RGBA8, QSize(256, 1)));
+        gl.curveTex->create();
+    }
+    if (!gl.lut3dTex) {
+        gl.lut3dTex.reset(r->newTexture(QRhiTexture::RGBA8, kLut3DDim, kLut3DDim, kLut3DDim,
+                                        1, QRhiTexture::ThreeDimensional));
+        gl.lut3dTex->create();
+    }
+    int sw, sh;
+    const std::vector<uint8_t> selBytes = maskRgba(gl.data.selMask, sw, sh);
+    if (!gl.selMaskTex || gl.selMaskTex->pixelSize() != QSize(sw, sh)) {
+        gl.selMaskTex.reset(r->newTexture(QRhiTexture::RGBA8, QSize(sw, sh)));
+        gl.selMaskTex->create();
+    }
+    int lw, lh;
+    const std::vector<uint8_t> layBytes = maskRgba(gl.data.layerMask, lw, lh);
+    if (!gl.layerMaskTex || gl.layerMaskTex->pixelSize() != QSize(lw, lh)) {
+        gl.layerMaskTex.reset(r->newTexture(QRhiTexture::RGBA8, QSize(lw, lh)));
+        gl.layerMaskTex->create();
+    }
+
+    // Uniforms: fixed offscreen-fill transform + this layer's state/opacity.
+    PreviewState st = gl.data.state;
+    st.layerOpacity = gl.data.opacity;
+    const QMatrix4x4 fill = fillMvp(m_textureSize);
+    batch->updateDynamicBuffer(gl.ubuf.get(), 0, 64, fill.constData());
+    batch->updateDynamicBuffer(gl.ubuf.get(), 64, sizeof(PreviewState), &st.exposure);
+
+    QByteArray cbytes(256 * 4, char(0));
+    for (int i = 0; i < 256; ++i) {
+        cbytes[i * 4 + 0] = static_cast<char>(gl.data.curves[0][i]);
+        cbytes[i * 4 + 1] = static_cast<char>(gl.data.curves[1][i]);
+        cbytes[i * 4 + 2] = static_cast<char>(gl.data.curves[2][i]);
+        cbytes[i * 4 + 3] = char(255);
+    }
+    batch->uploadTexture(gl.curveTex.get(), QRhiTextureUploadDescription(
+                                                QRhiTextureUploadEntry(0, 0,
+                                                    QRhiTextureSubresourceUploadDescription(cbytes))));
+
+    const std::vector<uint8_t> cube = resampleCube(gl.data.look);
+    const int sliceBytes = kLut3DDim * kLut3DDim * 4;
+    std::vector<QByteArray> slices;
+    std::vector<QRhiTextureUploadEntry> entries;
+    for (int z = 0; z < kLut3DDim; ++z) {
+        slices.emplace_back(reinterpret_cast<const char *>(cube.data() + size_t(z) * sliceBytes),
+                            sliceBytes);
+        entries.emplace_back(z, 0, QRhiTextureSubresourceUploadDescription(slices.back()));
+    }
+    QRhiTextureUploadDescription d3;
+    d3.setEntries(entries.begin(), entries.end());
+    batch->uploadTexture(gl.lut3dTex.get(), d3);
+
+    const auto upload2d = [&](QRhiTexture *t, const std::vector<uint8_t> &bytes) {
+        QRhiTextureSubresourceUploadDescription sub(
+            QByteArray(reinterpret_cast<const char *>(bytes.data()),
+                       static_cast<qsizetype>(bytes.size())));
+        batch->uploadTexture(t, QRhiTextureUploadDescription(QRhiTextureUploadEntry(0, 0, sub)));
+    };
+    upload2d(gl.selMaskTex.get(), selBytes);
+    upload2d(gl.layerMaskTex.get(), layBytes);
+
+    // Input ping-pongs: even-indexed layers read A, odd read B.
+    QRhiTexture *input = (index % 2 == 0) ? m_offscreenTex.get() : m_offscreenTexB.get();
+    gl.srb.reset(r->newShaderResourceBindings());
+    gl.srb->setBindings({
+        QRhiShaderResourceBinding::uniformBuffer(
+            0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage,
+            gl.ubuf.get()),
+        QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage,
+                                                  input, m_sampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage,
+                                                  gl.curveTex.get(), m_lutSampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(3, QRhiShaderResourceBinding::FragmentStage,
+                                                  gl.lut3dTex.get(), m_lut3dSampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(4, QRhiShaderResourceBinding::FragmentStage,
+                                                  gl.selMaskTex.get(), m_selMaskSampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(5, QRhiShaderResourceBinding::FragmentStage,
+                                                  gl.layerMaskTex.get(), m_sampler.get()),
+    });
+    gl.srb->create();
 }
 
 void CanvasWidget::ensurePipeline()
@@ -316,6 +454,9 @@ void CanvasWidget::ensureOffscreen()
     m_offscreenTex.reset(r->newTexture(QRhiTexture::RGBA8, m_textureSize, 1,
                                        QRhiTexture::RenderTarget));
     m_offscreenTex->create();
+    m_offscreenTexB.reset(r->newTexture(QRhiTexture::RGBA8, m_textureSize, 1,
+                                        QRhiTexture::RenderTarget));
+    m_offscreenTexB->create();
 
     QRhiTextureRenderTargetDescription rtDesc(QRhiColorAttachment(m_offscreenTex.get()));
     m_offscreenRt.reset(r->newTextureRenderTarget(rtDesc));
@@ -323,18 +464,30 @@ void CanvasWidget::ensureOffscreen()
     m_offscreenRt->setRenderPassDescriptor(m_offscreenRpd.get());
     m_offscreenRt->create();
 
-    // Present samples the offscreen result.
-    m_presentSrb.reset(r->newShaderResourceBindings());
-    m_presentSrb->setBindings({
-        QRhiShaderResourceBinding::uniformBuffer(
-            0, QRhiShaderResourceBinding::VertexStage, m_presentUbuf.get()),
-        QRhiShaderResourceBinding::sampledTexture(
-            1, QRhiShaderResourceBinding::FragmentStage, m_offscreenTex.get(), m_sampler.get()),
-    });
-    m_presentSrb->create();
+    QRhiTextureRenderTargetDescription rtDescB(QRhiColorAttachment(m_offscreenTexB.get()));
+    m_offscreenRtB.reset(r->newTextureRenderTarget(rtDescB));
+    m_offscreenRtB->setRenderPassDescriptor(m_offscreenRpd.get()); // compatible
+    m_offscreenRtB->create();
+
+    // Present samples whichever offscreen holds the final result.
+    const auto makePresentSrb = [&](QRhiTexture *tex) {
+        auto srb = r->newShaderResourceBindings();
+        srb->setBindings({
+            QRhiShaderResourceBinding::uniformBuffer(
+                0, QRhiShaderResourceBinding::VertexStage, m_presentUbuf.get()),
+            QRhiShaderResourceBinding::sampledTexture(
+                1, QRhiShaderResourceBinding::FragmentStage, tex, m_sampler.get()),
+        });
+        srb->create();
+        return srb;
+    };
+    m_presentSrb.reset(makePresentSrb(m_offscreenTex.get()));
+    m_presentSrbB.reset(makePresentSrb(m_offscreenTexB.get()));
 
     m_pipeline.reset();        // adjustment pipeline depends on the offscreen rpd
     m_presentPipeline.reset(); // and the present pipeline on the present srb
+    for (auto &gl : m_extraLayers)
+        gl.dirty = true; // their srbs reference the offscreen textures
 }
 
 QMatrix4x4 CanvasWidget::fillMvp(const QSize &target)
@@ -343,7 +496,16 @@ QMatrix4x4 CanvasWidget::fillMvp(const QSize &target)
     proj.ortho(0.0f, target.width(), target.height(), 0.0f, -1.0f, 1.0f);
     QMatrix4x4 model;
     model.scale(target.width(), target.height());
-    return rhi()->clipSpaceCorrMatrix() * proj * model;
+    QMatrix4x4 m = rhi()->clipSpaceCorrMatrix() * proj * model;
+    // Render flipped on bottom-up (OpenGL) framebuffers so the offscreen texture
+    // is stored upright — matching uploaded textures (source/masks). Then every
+    // pass samples consistently and the present pass needs no flip.
+    if (rhi()->isYUpInFramebuffer()) {
+        QMatrix4x4 flip;
+        flip.scale(1.0f, -1.0f, 1.0f);
+        m = flip * m;
+    }
+    return m;
 }
 
 QMatrix4x4 CanvasWidget::computeMvp(const QSize &targetPixels)
@@ -407,7 +569,17 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         m_selMaskDirty = false;
     }
 
-    if (m_srbDirty && m_texture && m_lutTexture && m_lut3dTexture && m_selMaskTexture) {
+    if (m_layerMaskDirty && m_layerMaskTexture) {
+        const uint8_t white[4] = {255, 255, 255, 255};
+        QRhiTextureSubresourceUploadDescription sub(
+            QByteArray(reinterpret_cast<const char *>(white), 4));
+        u->uploadTexture(m_layerMaskTexture.get(),
+                         QRhiTextureUploadDescription(QRhiTextureUploadEntry(0, 0, sub)));
+        m_layerMaskDirty = false;
+    }
+
+    if (m_srbDirty && m_texture && m_lutTexture && m_lut3dTexture && m_selMaskTexture
+        && m_layerMaskTexture) {
         buildSrb();
         m_srbDirty = false;
     }
@@ -453,33 +625,58 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
     const QColor clearColor(17, 17, 19); // matches the app's dark canvas
     const QRhiCommandBuffer::VertexInput vbufBinding(m_vbuf.get(), 0);
     const bool drawable = m_pipeline && m_presentPipeline && m_srb && m_presentSrb
-                       && m_texture && m_offscreenRt;
+                       && m_texture && m_offscreenRt && m_offscreenRtB;
 
     if (drawable) {
         // Adjustment uniforms: a fixed fill transform for the offscreen target.
         const QMatrix4x4 fill = fillMvp(m_textureSize);
         u->updateDynamicBuffer(m_ubuf.get(), 0, 64, fill.constData());
-        static_assert(sizeof(PreviewState) == 14 * sizeof(float),
-                      "PreviewState must be 14 tightly-packed floats");
+        static_assert(sizeof(PreviewState) == 15 * sizeof(float),
+                      "PreviewState must be 15 tightly-packed floats");
         u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(PreviewState), &m_preview.exposure);
         // Present transform: zoom/pan onto the screen.
         const QMatrix4x4 mvp = computeMvp(target);
         u->updateDynamicBuffer(m_presentUbuf.get(), 0, 64, mvp.constData());
 
-        // Pass 1: render the adjustment chain into the offscreen texture.
+        const QRhiViewport imgViewport(0, 0, float(m_textureSize.width()),
+                                       float(m_textureSize.height()));
+
+        // Base pass: the Base layer's chain into offscreen A.
         cb->beginPass(m_offscreenRt.get(), QColor(0, 0, 0, 0), {1.0f, 0}, u);
         cb->setGraphicsPipeline(m_pipeline.get());
-        cb->setViewport({0, 0, float(m_textureSize.width()), float(m_textureSize.height())});
+        cb->setViewport(imgViewport);
         cb->setShaderResources(m_srb.get());
         cb->setVertexInput(0, 1, &vbufBinding);
         cb->draw(4);
         cb->endPass();
 
-        // Pass 2: present it to the screen.
+        // One pass per extra layer, ping-ponging A↔B (even index → B, odd → A).
+        for (int i = 0; i < static_cast<int>(m_extraLayers.size()); ++i) {
+            GpuLayer &gl = m_extraLayers[i];
+            QRhiResourceUpdateBatch *batch = nullptr;
+            if (gl.dirty || !gl.srb) {
+                batch = r->nextResourceUpdateBatch();
+                buildExtraLayer(gl, i, batch);
+                gl.dirty = false;
+            }
+            QRhiTextureRenderTarget *outRt =
+                (i % 2 == 0) ? m_offscreenRtB.get() : m_offscreenRt.get();
+            cb->beginPass(outRt, QColor(0, 0, 0, 0), {1.0f, 0}, batch);
+            cb->setGraphicsPipeline(m_pipeline.get());
+            cb->setViewport(imgViewport);
+            cb->setShaderResources(gl.srb.get());
+            cb->setVertexInput(0, 1, &vbufBinding);
+            cb->draw(4);
+            cb->endPass();
+        }
+
+        // Present the final offscreen (A if an even number of extra layers, else B).
+        QRhiShaderResourceBindings *finalSrb =
+            (m_extraLayers.size() % 2 == 0) ? m_presentSrb.get() : m_presentSrbB.get();
         cb->beginPass(renderTarget(), clearColor, {1.0f, 0});
         cb->setGraphicsPipeline(m_presentPipeline.get());
         cb->setViewport({0, 0, float(target.width()), float(target.height())});
-        cb->setShaderResources(m_presentSrb.get());
+        cb->setShaderResources(finalSrb);
         cb->setVertexInput(0, 1, &vbufBinding);
         cb->draw(4);
         cb->endPass();
