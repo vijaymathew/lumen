@@ -33,11 +33,16 @@ SelectivePanel::SelectivePanel(QWidget *parent)
     title->setObjectName(QStringLiteral("toolTitle"));
     m_maskButton = new QPushButton(QStringLiteral("Mask: Off"), this);
     connect(m_maskButton, &QPushButton::clicked, this, &SelectivePanel::cycleMaskView);
+    m_invertButton = new QPushButton(QStringLiteral("Invert"), this);
+    m_invertButton->setCheckable(true);
+    connect(m_invertButton, &QPushButton::toggled, this,
+            [this] { emit valuesChanged(currentValues()); });
 
     auto *titleRow = new QHBoxLayout;
     titleRow->setContentsMargins(0, 0, 0, 0);
     titleRow->addWidget(title);
     titleRow->addStretch(1);
+    titleRow->addWidget(m_invertButton);
     titleRow->addWidget(m_maskButton);
 
     // Mask-mode selector.
@@ -254,6 +259,7 @@ SelectiveValues SelectivePanel::currentValues() const
     v.exposure = static_cast<float>(m_exposure->value()) / kExposureScale;
     v.contrast = static_cast<float>(m_contrast->value());
     v.saturation = static_cast<float>(m_saturation->value());
+    v.invert = m_invertButton->isChecked();
     return v;
 }
 
@@ -290,6 +296,10 @@ void SelectivePanel::reveal(const SelectiveValues &v)
         s->blockSignals(false);
 
     setTargetColor(QColor::fromRgbF(v.targetR, v.targetG, v.targetB));
+    {
+        const QSignalBlocker b(m_invertButton);
+        m_invertButton->setChecked(v.invert);
+    }
     m_brushAdd = true;
     m_addButton->setChecked(true);
     m_subButton->setChecked(false);

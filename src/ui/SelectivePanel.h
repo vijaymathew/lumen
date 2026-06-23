@@ -53,6 +53,7 @@ private:
     QPushButton *m_colorButton = nullptr;
     QPushButton *m_brushButton = nullptr;
     QPushButton *m_maskButton = nullptr;
+    QPushButton *m_invertButton = nullptr;
     QWidget *m_lumaSection = nullptr;
     QWidget *m_colorSection = nullptr;
     QWidget *m_brushSection = nullptr;

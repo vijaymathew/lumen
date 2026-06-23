@@ -23,6 +23,7 @@ struct SelectiveValues {
     float exposure = 0.0f;   // EV stops
     float contrast = 0.0f;   // -100..100
     float saturation = 0.0f; // -100..100
+    bool invert = false;     // adjust everywhere the mask is NOT
 
     friend bool operator==(const SelectiveValues &, const SelectiveValues &) = default;
 };

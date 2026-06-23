@@ -72,6 +72,7 @@ void SelectiveNode::contributeToPreview(PreviewState &state) const
     state.selLow = m_values.low;
     state.selHigh = m_values.high;
     state.selFeather = std::max(m_values.feather, kMinFeather);
+    state.selInvert = m_values.invert ? 1.0f : 0.0f;
 
     if (isNeutral())
         return;
@@ -131,6 +132,8 @@ Image SelectiveNode::apply(const Image &input) const
             mask = smoothstep(low - feather, low, L)
                  * (1.0 - smoothstep(high, high + feather, L));
         }
+        if (m_values.invert)
+            mask = 1.0 - mask;
 
         double adj[3] = {col[0] * f, col[1] * f, col[2] * f};
         for (int ch = 0; ch < 3; ++ch)
@@ -164,6 +167,7 @@ QJsonObject SelectiveNode::saveState() const
     state[QStringLiteral("exposure")] = m_values.exposure;
     state[QStringLiteral("contrast")] = m_values.contrast;
     state[QStringLiteral("saturation")] = m_values.saturation;
+    state[QStringLiteral("invert")] = m_values.invert;
     if (m_values.maskMode == 2 && !m_brushMask.isEmpty())
         state[QStringLiteral("brushMask")] = encodeMaskPng(m_brushMask);
     return state;
@@ -184,6 +188,7 @@ void SelectiveNode::restoreState(const QJsonObject &state)
     v.exposure = static_cast<float>(state.value(QStringLiteral("exposure")).toDouble(0.0));
     v.contrast = static_cast<float>(state.value(QStringLiteral("contrast")).toDouble(0.0));
     v.saturation = static_cast<float>(state.value(QStringLiteral("saturation")).toDouble(0.0));
+    v.invert = state.value(QStringLiteral("invert")).toBool(false);
     setValues(v);
     m_brushMask = decodeMaskPng(state.value(QStringLiteral("brushMask")).toString());
 }

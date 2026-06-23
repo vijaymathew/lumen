@@ -385,8 +385,8 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         const QMatrix4x4 mvp = computeMvp(target);
         u->updateDynamicBuffer(m_ubuf.get(), 0, 64, mvp.constData());
         // PreviewState's floats are contiguous and match the shader block order.
-        static_assert(sizeof(PreviewState) == 13 * sizeof(float),
-                      "PreviewState must be 13 tightly-packed floats");
+        static_assert(sizeof(PreviewState) == 14 * sizeof(float),
+                      "PreviewState must be 14 tightly-packed floats");
         u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(PreviewState), &m_preview.exposure);
     }
 

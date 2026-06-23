@@ -65,6 +65,13 @@ int main(int /*argc*/, char **argv)
     const int lit = node.apply(src).toQImage().pixelColor(0, 0).red();
     CHECK(lit > 200); // 128 * 2^(2/2.2) ≈ 240
 
+    // Inverting that mask excludes the mid-grey → the adjustment no longer
+    // applies, so it stays put.
+    v.invert = true;
+    node.setValues(v);
+    CHECK(near8(node.apply(src).toQImage().pixelColor(0, 0).red(), 128));
+    v.invert = false;
+
     // Preview-state contribution through the graph.
     EditGraph graph;
     auto *gnode = static_cast<SelectiveNode *>(

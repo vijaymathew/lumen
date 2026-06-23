@@ -24,6 +24,7 @@ layout(std140, binding = 0) uniform buf {
     float selSaturation;
     float selMaskView;
     float selMaskMode;
+    float selInvert;
 } ubuf;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -63,6 +64,8 @@ void main()
         } else {
             mask = texture(selMask, v_texcoord).r; // colour-affinity mask texture
         }
+        if (ubuf.selInvert > 0.5)
+            mask = 1.0 - mask;
         if (ubuf.selEnabled > 0.5) {
             vec3 adj = applyTone(col, ubuf.selExposure, ubuf.selContrast, ubuf.selSaturation);
             col = mix(col, adj, mask);
