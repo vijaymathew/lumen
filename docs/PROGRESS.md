@@ -104,6 +104,21 @@ plain Qt widgets.
 
 ---
 
+## Phase 7 — Layers, masks, monochrome 🟡
+
+> Decided sequencing (2026-06-23): do these **before** RAW. RAW lands later as an
+> 8-bit loader; a 16-bit-linear precision upgrade is a separate future effort.
+> **Design: [LAYERS.md](LAYERS.md)** (layer model + the full mask system).
+
+| Item | Status | Notes |
+|---|---|---|
+| Mask inversion | ✅ | `SelectiveValues.invert` — complements the mask in both libvips export and the shader (`selInvert` uniform); **Invert** toggle in the panel; mask overlay reflects it; unit-tested |
+| Layers (per-layer adjustments, add/delete) | ⬜ | Keystone refactor: project = Base layer + N layers, each with adjustments + mask + opacity; forces the deferred multi-pass GPU preview (DESIGN §5.1). See [LAYERS.md](LAYERS.md) |
+| Drawn / geometric masks (gradient, radial) | ⬜ | Linear-gradient + radial/elliptical (free-hand already = brush mask). Parametric → shader + libvips, preview==export. Part of the layer mask system — [LAYERS.md](LAYERS.md) §3 |
+| Monochrome (B&W mixer, toning, grain) | ⬜ | `MonoNode`; a layer adjustment once layers exist |
+
+---
+
 ## Deferred / post-v1 ⏸️
 
 | Item | Notes |
