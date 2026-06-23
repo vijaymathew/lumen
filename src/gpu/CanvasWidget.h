@@ -31,8 +31,10 @@ class CanvasWidget : public QRhiWidget {
 public:
     explicit CanvasWidget(QWidget *parent = nullptr);
 
-    // Swaps in a new image. The upload happens lazily on the next render.
-    void setImage(const QImage &image);
+    // Swaps in a new image. The upload happens lazily on the next render. By
+    // default the view resets to fit (a newly opened image); pass keepView=true
+    // for a same-size in-place update (e.g. a heal result) to preserve zoom/pan.
+    void setImage(const QImage &image, bool keepView = false);
 
     // Sets the preview parameters accumulated from the edit graph; applied live
     // in the fragment shader.

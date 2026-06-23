@@ -69,7 +69,9 @@ private:
     void onColorPicked(const QPointF &imageNormalized);
     void openHealTool();
     void closeHealTool();
-    void refreshBaseImage(); // base texture = source healed by the heal node
+    // base texture = source healed by the heal node. keepView preserves zoom/pan
+    // (true for in-place heal updates; false only when loading a new image).
+    void refreshBaseImage(bool keepView = true);
     void initBrushMask();
     void beginBrushStroke();
     void brushAt(const QPointF &imageNormalized);
@@ -89,6 +91,7 @@ private:
     CanvasWidget *m_canvas = nullptr;
     QWidget *m_scrim = nullptr;     // dims the image behind the command palette
     QWidget *m_brushRing = nullptr; // on-canvas brush size/hardness cursor
+    QWidget *m_healBusy = nullptr;  // animated "Healing…" badge during async heal
     CommandPalette *m_palette = nullptr;
     TonePanel *m_tonePanel = nullptr;
     CurvesPanel *m_curvesPanel = nullptr;
@@ -116,6 +119,7 @@ private:
     enum class BrushTarget { None, Selective, Heal };
     BrushTarget m_brushTarget = BrushTarget::None;
     MaskBuffer m_brushMask;
+    std::vector<float> m_strokeBaseMask;         // mask at the current stroke's start
     std::vector<std::vector<float>> m_brushUndo; // per-stroke snapshots
     int m_brushSize = 30;
     int m_brushHardness = 50;

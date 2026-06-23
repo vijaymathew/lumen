@@ -26,6 +26,7 @@
 #include <QMessageBox>
 #include <QShortcut>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QtConcurrent>
 
 #include <algorithm>
@@ -49,6 +50,77 @@ protected:
         QPainter p(this);
         p.fillRect(rect(), QColor(10, 10, 11, kScrimAlpha));
     }
+};
+
+// A small "Healing…" badge with an animated spinner, shown while a background
+// inpaint is running. Mouse-transparent.
+class BusyBadge : public QWidget {
+public:
+    explicit BusyBadge(QWidget *parent) : QWidget(parent)
+    {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_NoSystemBackground);
+        setFixedSize(132, 32);
+        m_spin.setInterval(70);
+        connect(&m_spin, &QTimer::timeout, this, [this] {
+            m_angle = (m_angle + 30) % 360;
+            update();
+        });
+        // Only show once the heal has run longer than this, so quick heals
+        // (small blemishes) don't flash the badge.
+        m_delay.setSingleShot(true);
+        m_delay.setInterval(150);
+        connect(&m_delay, &QTimer::timeout, this, [this] {
+            show();
+            raise();
+            m_spin.start();
+        });
+        hide();
+    }
+
+    void start()
+    {
+        if (isVisible() || m_delay.isActive())
+            return;
+        m_delay.start();
+    }
+    void stop()
+    {
+        m_delay.stop(); // cancel a pending show if the heal finished in time
+        m_spin.stop();
+        hide();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(20, 20, 22, 220));
+        p.drawRoundedRect(rect(), 8, 8);
+
+        // Spinner: a dozen fading ticks rotating clockwise.
+        const QPointF c(18, height() / 2.0);
+        p.translate(c);
+        p.rotate(m_angle);
+        for (int i = 0; i < 12; ++i) {
+            p.setPen(QPen(QColor(255, 255, 255, 40 + i * 16), 2.0, Qt::SolidLine,
+                          Qt::RoundCap));
+            p.drawLine(QPointF(0, -4.5), QPointF(0, -8.0));
+            p.rotate(30);
+        }
+        p.resetTransform();
+
+        p.setPen(QColor(0xe8, 0xe8, 0xea));
+        p.drawText(QRect(34, 0, width() - 40, height()),
+                   Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("Healing…"));
+    }
+
+private:
+    QTimer m_spin;  // animation
+    QTimer m_delay; // show-after delay
+    int m_angle = 0;
 };
 
 // A transparent overlay that draws the brush cursor: an outer ring (size) and a
@@ -136,6 +208,8 @@ MainWindow::MainWindow(QWidget *parent)
                 brushRing->setRing(inWindow, outer, inner, visible);
             });
 
+    m_healBusy = new BusyBadge(this);
+
     // Created before the palette so the palette stacks above it.
     m_scrim = new Scrim(this);
     m_scrim->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -219,13 +293,12 @@ MainWindow::MainWindow(QWidget *parent)
     // Background heal preview finished: apply the result (the watcher only
     // delivers the latest request's future).
     connect(&m_healWatcher, &QFutureWatcher<QImage>::finished, this, [this] {
+        static_cast<BusyBadge *>(m_healBusy)->stop();
         if (!m_healWatcher.future().isValid())
             return;
         const QImage healed = m_healWatcher.result();
         if (!healed.isNull())
-            m_canvas->setImage(healed);
-        if (m_healPanel->isVisible())
-            showHint(QStringLiteral("Healed"));
+            m_canvas->setImage(healed, /*keepView=*/true); // preserve zoom/pan
     });
 
     m_healPanel = new HealPanel(this);
@@ -336,7 +409,7 @@ bool MainWindow::openPath(const QString &path)
 
     m_sourceQImage = source.toQImage();
     m_graph.setSource(source);            // full-res source for export
-    refreshBaseImage();                   // base = source (healed if a mask exists)
+    refreshBaseImage(false);              // new image → fit the view
     recomputeSelectiveMask();
     updatePreview();        // apply any existing edits
     m_graph.resetHistory(); // fresh undo timeline for this image
@@ -572,13 +645,13 @@ void MainWindow::closeHealTool()
     m_canvas->setFocus();
 }
 
-void MainWindow::refreshBaseImage()
+void MainWindow::refreshBaseImage(bool keepView)
 {
     // The GPU preview base is the source healed by the heal node; the shader
     // then applies the pointwise/LUT ops on top (heal is first in the graph).
     if (!m_heal || m_heal->healMask().isEmpty() || m_graph.source().isNull()) {
         if (!m_sourceQImage.isNull())
-            m_canvas->setImage(m_sourceQImage);
+            m_canvas->setImage(m_sourceQImage, keepView);
         return;
     }
 
@@ -589,8 +662,8 @@ void MainWindow::refreshBaseImage()
     const Image src = m_graph.source();
     const MaskBuffer mask = m_heal->healMask();
     const bool hq = m_heal->highQuality();
-    if (m_healPanel->isVisible())
-        showHint(QStringLiteral("Healing…"));
+    static_cast<BusyBadge *>(m_healBusy)->start();
+    layoutOverlays(); // position the badge
 
     m_healWatcher.setFuture(QtConcurrent::run([this, gen, src, mask, hq]() -> QImage {
         if (gen != m_healGen)
@@ -650,6 +723,7 @@ void MainWindow::beginBrushStroke()
     m_brushUndo.push_back(m_brushMask.data); // snapshot for session undo
     if (m_brushUndo.size() > 50)
         m_brushUndo.erase(m_brushUndo.begin());
+    m_strokeBaseMask = m_brushMask.data; // for the heal overlay (current stroke only)
     m_brushHasLast = false;
 }
 
@@ -681,12 +755,23 @@ void MainWindow::brushAt(const QPointF &norm)
     m_lastBrushPoint = QPointF(cx, cy);
     m_brushHasLast = true;
 
-    // Live feedback: the selective brush shows the mask directly; the heal brush
-    // shows a red overlay of the painted region (it inpaints on stroke end).
-    m_canvas->setSelectiveMask(m_brushMask);
+    // Live feedback. The selective brush shows the whole mask (you're building a
+    // selection). The heal brush shows only the CURRENT stroke as a red overlay
+    // (it inpaints on stroke end) — so already-healed spots aren't re-tinted.
     if (m_brushTarget == BrushTarget::Heal) {
+        MaskBuffer strokeOnly;
+        strokeOnly.width = w;
+        strokeOnly.height = h;
+        strokeOnly.data.resize(m_brushMask.data.size());
+        for (size_t i = 0; i < strokeOnly.data.size(); ++i) {
+            const float base = i < m_strokeBaseMask.size() ? m_strokeBaseMask[i] : 0.0f;
+            strokeOnly.data[i] = std::clamp(m_brushMask.data[i] - base, 0.0f, 1.0f);
+        }
+        m_canvas->setSelectiveMask(strokeOnly);
         m_healPainting = true;
         updatePreview();
+    } else {
+        m_canvas->setSelectiveMask(m_brushMask);
     }
 }
 
@@ -814,6 +899,9 @@ void MainWindow::layoutOverlays()
     // Scrim covers the whole window, behind the palette.
     m_scrim->setGeometry(rect());
     m_brushRing->setGeometry(rect());
+
+    // Busy badge: top-centre of the canvas.
+    m_healBusy->move((width() - m_healBusy->width()) / 2, 16);
 
     // Palette: fixed width, near the top-centre.
     const int pw = 360;

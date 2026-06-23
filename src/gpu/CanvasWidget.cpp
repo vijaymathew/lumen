@@ -63,11 +63,12 @@ CanvasWidget::CanvasWidget(QWidget *parent)
     m_lut3dData = resampleCube(Lut3D{}); // identity
 }
 
-void CanvasWidget::setImage(const QImage &image)
+void CanvasWidget::setImage(const QImage &image, bool keepView)
 {
     m_pendingImage = image;
     m_textureDirty = true;
-    resetView();
+    if (!keepView)
+        resetView();
     update();
 }
 
