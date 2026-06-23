@@ -42,6 +42,7 @@ protected:
     // Central key handling: catches keys via propagation no matter which child
     // widget has focus, so the active tool can always be closed.
     void keyPressEvent(QKeyEvent *e) override;
+    void keyReleaseEvent(QKeyEvent *e) override;
 
 private:
     void buildCommands();
@@ -71,6 +72,8 @@ private:
     void brushAt(const QPointF &imageNormalized);
     void endBrushStroke();
     bool brushSessionUndo(); // returns true if it handled the undo
+    void adjustBrush(int steps); // s/h + wheel
+    void syncBrushPanel();       // reflect m_brushSize/Hardness into the open panel
     void closeActiveTool();
     void updatePreview(); // push tone state + curve LUT + look to the canvas
     void exportImage();
@@ -114,5 +117,6 @@ private:
     bool m_brushAdd = true;
     QPointF m_lastBrushPoint;
     bool m_brushHasLast = false;
-    bool m_healPainting = false; // a heal stroke is in progress (red overlay)
+    bool m_healPainting = false;      // a heal stroke is in progress (red overlay)
+    bool m_adjustHardness = false;    // s/h + wheel target: false=size, true=hardness
 };

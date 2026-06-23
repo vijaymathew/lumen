@@ -62,6 +62,10 @@ public:
     // ring cursor. Must match MainWindow's stamp radius math.
     void setBrushCursor(float size, float hardness);
 
+    // While true (a size/hardness modifier key is held), the wheel adjusts the
+    // brush via brushAdjustRequested instead of zooming.
+    void setBrushAdjusting(bool on) { m_brushAdjusting = on; }
+
 signals:
     void colorPointPicked(QPointF imageNormalized);
     void brushStrokeBegan();
@@ -70,6 +74,8 @@ signals:
     // Brush ring geometry in widget-logical coords; visible=false hides it.
     void brushCursorMoved(QPointF widgetPos, qreal outerRadius, qreal innerRadius,
                           bool visible);
+    // Wheel notches (+/-) while a brush-adjust key is held.
+    void brushAdjustRequested(int steps);
 
 protected:
     void initialize(QRhiCommandBuffer *cb) override;
@@ -123,6 +129,7 @@ private:
     float m_brushCursorHardness = 0.5f;  // 0-1
     QPointF m_lastCursorPos;
     bool m_hasCursorPos = false;
+    bool m_brushAdjusting = false;       // s/h modifier held → wheel adjusts brush
 
     // Preview adjustments (from the edit graph) fed to the shader.
     PreviewState m_preview;

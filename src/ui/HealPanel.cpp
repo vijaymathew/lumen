@@ -134,6 +134,16 @@ void HealPanel::reveal(int size, int hardness, bool add)
     setFocus(Qt::ShortcutFocusReason);
 }
 
+void HealPanel::setBrushParams(int size, int hardness)
+{
+    const QSignalBlocker b1(m_size);
+    const QSignalBlocker b2(m_hardness);
+    m_size->setValue(size);
+    m_hardness->setValue(hardness);
+    m_sizeValue->setText(QString::number(size));
+    m_hardnessValue->setText(QString::number(hardness));
+}
+
 void HealPanel::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::LeftButton) {

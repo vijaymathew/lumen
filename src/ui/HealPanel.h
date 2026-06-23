@@ -18,6 +18,9 @@ public:
     explicit HealPanel(QWidget *parent = nullptr);
 
     void reveal(int size, int hardness, bool add);
+    // Reflect externally-changed size/hardness (e.g. s/h + wheel) without
+    // re-emitting settingsChanged.
+    void setBrushParams(int size, int hardness);
 
 signals:
     void settingsChanged(int size, int hardness, bool add);

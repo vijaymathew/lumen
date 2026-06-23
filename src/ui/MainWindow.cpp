@@ -211,6 +211,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_canvas, &CanvasWidget::brushStrokeBegan, this, &MainWindow::beginBrushStroke);
     connect(m_canvas, &CanvasWidget::brushPoint, this, &MainWindow::brushAt);
     connect(m_canvas, &CanvasWidget::brushStrokeEnded, this, &MainWindow::endBrushStroke);
+    connect(m_canvas, &CanvasWidget::brushAdjustRequested, this, &MainWindow::adjustBrush);
 
     m_healPanel = new HealPanel(this);
     connect(m_healPanel, &HealPanel::settingsChanged, this,
@@ -826,9 +827,45 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
             openCommandPalette();
             return;
         }
+        // Hold s / h and use the wheel to change brush size / hardness.
+        if (m_brushTarget != BrushTarget::None && !e->isAutoRepeat()
+            && (e->key() == Qt::Key_S || e->key() == Qt::Key_H)) {
+            m_adjustHardness = (e->key() == Qt::Key_H);
+            m_canvas->setBrushAdjusting(true);
+            return;
+        }
         break;
     default:
         break;
     }
     QMainWindow::keyPressEvent(e);
+}
+
+void MainWindow::keyReleaseEvent(QKeyEvent *e)
+{
+    if (!e->isAutoRepeat() && (e->key() == Qt::Key_S || e->key() == Qt::Key_H)) {
+        m_canvas->setBrushAdjusting(false);
+        return;
+    }
+    QMainWindow::keyReleaseEvent(e);
+}
+
+void MainWindow::adjustBrush(int steps)
+{
+    if (m_brushTarget == BrushTarget::None)
+        return;
+    if (m_adjustHardness)
+        m_brushHardness = std::clamp(m_brushHardness + steps * 5, 1, 100);
+    else
+        m_brushSize = std::clamp(m_brushSize + steps * 4, 1, 100);
+    m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f); // live ring
+    syncBrushPanel();
+}
+
+void MainWindow::syncBrushPanel()
+{
+    if (m_brushTarget == BrushTarget::Heal)
+        m_healPanel->setBrushParams(m_brushSize, m_brushHardness);
+    else if (m_brushTarget == BrushTarget::Selective)
+        m_selectivePanel->setBrushParams(m_brushSize, m_brushHardness);
 }

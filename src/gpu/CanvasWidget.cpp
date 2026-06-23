@@ -414,6 +414,8 @@ void CanvasWidget::setBrushMode(bool on)
 {
     m_brushMode = on;
     m_brushing = false;
+    if (!on)
+        m_brushAdjusting = false;
     // Track hover moves so the ring follows the cursor without a button held.
     setMouseTracking(on);
     // Hide the system pointer in brush mode — the ring overlay is the cursor.
@@ -523,6 +525,13 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent *e)
 
 void CanvasWidget::wheelEvent(QWheelEvent *e)
 {
+    // While a brush-adjust key (s/h) is held, the wheel changes the brush
+    // instead of zooming.
+    if (m_brushMode && m_brushAdjusting && e->angleDelta().y() != 0) {
+        emit brushAdjustRequested(e->angleDelta().y() > 0 ? 1 : -1);
+        return;
+    }
+
     const float factor = (e->angleDelta().y() > 0) ? 1.1f : (1.0f / 1.1f);
     // Zoom around the cursor: the image point under the pointer stays put.
     zoomAt(factor, e->position() * devicePixelRatioF());
