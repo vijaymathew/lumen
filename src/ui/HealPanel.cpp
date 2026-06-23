@@ -57,6 +57,20 @@ HealPanel::HealPanel(QWidget *parent)
     m_size = addRow(QStringLiteral("Size"), 30, &m_sizeValue);
     m_hardness = addRow(QStringLiteral("Hardness"), 50, &m_hardnessValue);
 
+    // Fill quality: Detailed (Criminisi exemplar) vs Fast (Telea diffusion).
+    m_qualityButton = new QPushButton(QStringLiteral("Fill: Detailed"), this);
+    connect(m_qualityButton, &QPushButton::clicked, this, [this] {
+        m_highQuality = !m_highQuality;
+        m_qualityButton->setText(m_highQuality ? QStringLiteral("Fill: Detailed")
+                                               : QStringLiteral("Fill: Fast"));
+        emit qualityChanged(m_highQuality);
+    });
+    auto *qualityRow = new QHBoxLayout;
+    qualityRow->setContentsMargins(0, 0, 0, 0);
+    qualityRow->addWidget(m_qualityButton);
+    qualityRow->addStretch(1);
+    layout->addLayout(qualityRow);
+
     auto *hint = new QLabel(QStringLiteral("paint over a blemish · Ctrl+Z undoes a stroke"),
                             this);
     hint->setObjectName(QStringLiteral("section"));
@@ -115,7 +129,7 @@ void HealPanel::emitSettings()
     emit settingsChanged(m_size->value(), m_hardness->value(), m_add);
 }
 
-void HealPanel::reveal(int size, int hardness, bool add)
+void HealPanel::reveal(int size, int hardness, bool add, bool highQuality)
 {
     {
         const QSignalBlocker b1(m_size);
@@ -128,6 +142,9 @@ void HealPanel::reveal(int size, int hardness, bool add)
     m_add = add;
     m_addButton->setChecked(add);
     m_subButton->setChecked(!add);
+    m_highQuality = highQuality;
+    m_qualityButton->setText(highQuality ? QStringLiteral("Fill: Detailed")
+                                         : QStringLiteral("Fill: Fast"));
     adjustSize();
     show();
     raise();

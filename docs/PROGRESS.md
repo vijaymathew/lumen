@@ -92,7 +92,7 @@ plain Qt widgets.
 
 ---
 
-## Phase 6 — Healing brush 🟡
+## Phase 6 — Healing brush ✅
 
 > Content-aware removal via inpainting.
 
@@ -100,7 +100,7 @@ plain Qt widgets.
 |---|---|---|
 | `HealNode` (inpaint) | ✅ | Self-contained **Telea FMM** inpaint (no OpenCV, per the guided-filter precedent); paints a heal mask (white = remove), `apply()` upscales it + fills via libvips export path; unit-tested + verified on a real photo. Also fixed a latent colourspace bug: full-image rebuilds now route through `Image::fromInterleaved` (tags sRGB) so coloured pixels round-trip faithfully — also fixed in Selective/Lut nodes |
 | Heal brush UI (paint mask, commit) | ✅ | `HealPanel` (Paint/Erase/Clear, size, hardness) + heal node **first** in the graph. Reuses the shared brush-paint + per-stroke session undo (generalised via a brush-target enum). Live: red overlay while stroking, inpaint result shown on stroke end (`refreshBaseImage`); commit on close = one global undo step; verified on-screen |
-| Higher-quality fill (PatchMatch/xphoto) | ⬜ | Later refinement |
+| Higher-quality fill (Criminisi exemplar) | ✅ | Self-contained Criminisi et al. exemplar inpainting (copies real patches along isophotes — texture-aware, no OpenCV). HealNode quality toggle (Detailed/Fast) in the panel; default Detailed; unit-tested (exact patch copy) + verified vs Telea on a real photo. Note: slower on large holes (~4s for a ~345×270 region) — "Fast" (Telea) covers those |
 
 ---
 

@@ -17,7 +17,7 @@ class HealPanel : public QWidget {
 public:
     explicit HealPanel(QWidget *parent = nullptr);
 
-    void reveal(int size, int hardness, bool add);
+    void reveal(int size, int hardness, bool add, bool highQuality);
     // Reflect externally-changed size/hardness (e.g. s/h + wheel) without
     // re-emitting settingsChanged.
     void setBrushParams(int size, int hardness);
@@ -25,6 +25,7 @@ public:
 signals:
     void settingsChanged(int size, int hardness, bool add);
     void clearRequested();
+    void qualityChanged(bool highQuality);
 
 protected:
     void mousePressEvent(QMouseEvent *event) override;
@@ -37,6 +38,8 @@ private:
 
     QPushButton *m_addButton = nullptr;
     QPushButton *m_subButton = nullptr;
+    QPushButton *m_qualityButton = nullptr;
+    bool m_highQuality = true;
     QSlider *m_size = nullptr;
     QSlider *m_hardness = nullptr;
     QLabel *m_sizeValue = nullptr;

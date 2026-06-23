@@ -51,6 +51,7 @@ int main(int /*argc*/, char **argv)
         }
     }
 
+    std::vector<uint8_t> teleaImg = img; // keep a copy for the Criminisi pass
     inpaintTelea(img.data(), w, h, 4, mask, 5);
 
     // The centre of the blemish should now resemble the blue background, not red.
@@ -60,6 +61,14 @@ int main(int /*argc*/, char **argv)
     // A background pixel is untouched.
     const uint8_t *bg = img.data() + ((static_cast<size_t>(2) * w + 2)) * 4;
     CHECK(bg[0] == 30 && bg[2] == 200);
+
+    // Criminisi exemplar fill: copies real blue patches, so the centre becomes
+    // essentially exact background blue (no diffusion blur).
+    inpaintCriminisi(teleaImg.data(), w, h, 4, mask, 4);
+    const uint8_t *cc = teleaImg.data() + ((static_cast<size_t>(h / 2) * w + w / 2)) * 4;
+    CHECK(cc[0] == 30 && cc[1] == 40 && cc[2] == 200); // exact blue patch copied
+    const uint8_t *ccbg = teleaImg.data() + ((static_cast<size_t>(2) * w + 2)) * 4;
+    CHECK(ccbg[0] == 30 && ccbg[2] == 200); // background untouched
 
     // HealNode end to end: paint a heal mask, apply, check the region changed.
     const QString path = QDir::temp().filePath(QStringLiteral("lumen_heal_src.png"));

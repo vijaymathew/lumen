@@ -21,6 +21,14 @@ void HealNode::setHealMask(const MaskBuffer &mask)
     invalidate();
 }
 
+void HealNode::setHighQuality(bool on)
+{
+    if (on != m_highQuality) {
+        m_highQuality = on;
+        invalidate();
+    }
+}
+
 Image HealNode::apply(const Image &input) const
 {
     if (input.isNull() || m_mask.isEmpty())
@@ -53,7 +61,10 @@ Image HealNode::apply(const Image &input) const
     }
 
     auto *px = static_cast<uint8_t *>(buf);
-    inpaintTelea(px, w, h, bands, mask, 5);
+    if (m_highQuality)
+        inpaintCriminisi(px, w, h, bands, mask, 4);
+    else
+        inpaintTelea(px, w, h, bands, mask, 5);
 
     Image result = Image::fromInterleaved(buf, w, h, bands);
     g_free(buf);
@@ -65,6 +76,7 @@ QJsonObject HealNode::saveState() const
     QJsonObject state = EditNode::saveState();
     if (!m_mask.isEmpty())
         state[QStringLiteral("healMask")] = encodeMaskPng(m_mask);
+    state[QStringLiteral("highQuality")] = m_highQuality;
     return state;
 }
 
@@ -72,4 +84,5 @@ void HealNode::restoreState(const QJsonObject &state)
 {
     EditNode::restoreState(state);
     m_mask = decodeMaskPng(state.value(QStringLiteral("healMask")).toString());
+    m_highQuality = state.value(QStringLiteral("highQuality")).toBool(true);
 }

@@ -16,6 +16,11 @@ public:
     const MaskBuffer &healMask() const { return m_mask; }
     void setHealMask(const MaskBuffer &mask);
 
+    // true → exemplar fill (Criminisi, texture-aware); false → Telea (fast,
+    // diffusion). Defaults to high quality.
+    bool highQuality() const { return m_highQuality; }
+    void setHighQuality(bool on);
+
     Image apply(const Image &input) const override;
 
     QJsonObject saveState() const override;
@@ -23,4 +28,5 @@ public:
 
 private:
     MaskBuffer m_mask;
+    bool m_highQuality = true;
 };

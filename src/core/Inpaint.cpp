@@ -1,6 +1,7 @@
 #include "core/Inpaint.h"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <queue>
 #include <vector>
@@ -197,6 +198,196 @@ void inpaintTelea(uint8_t *rgba, int width, int height, int bands,
                 inpaintPixel(ni, nj, radius, w, h, bands, rgba, T, flag);
             }
             heap.push({t, nidx});
+        }
+    }
+}
+
+namespace {
+
+inline float luma8(const uint8_t *p)
+{
+    return 0.299f * p[0] + 0.587f * p[1] + 0.114f * p[2];
+}
+
+} // namespace
+
+void inpaintCriminisi(uint8_t *img, int w, int h, int bands,
+                      const std::vector<uint8_t> &mask, int patchRadius)
+{
+    if (!img || w <= 0 || h <= 0 || bands < 3 || patchRadius < 1)
+        return;
+    if (mask.size() != static_cast<size_t>(w) * h)
+        return;
+
+    const int hp = patchRadius;
+    // Exemplars are searched in a local window around each target patch — the
+    // surrounding texture is local, and this keeps the search tractable.
+    const int searchR = std::max(48, patchRadius * 12);
+
+    std::vector<uint8_t> src(static_cast<size_t>(w) * h);
+    std::vector<float> conf(static_cast<size_t>(w) * h);
+    std::vector<float> gray(static_cast<size_t>(w) * h);
+
+    long long remaining = 0;
+    int minx = w, miny = h, maxx = -1, maxy = -1;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const int i = y * w + x;
+            const bool s = mask[i] <= 127;
+            src[i] = s ? 1 : 0;
+            conf[i] = s ? 1.0f : 0.0f;
+            gray[i] = luma8(img + static_cast<size_t>(i) * bands);
+            if (!s) {
+                ++remaining;
+                minx = std::min(minx, x);
+                maxx = std::max(maxx, x);
+                miny = std::min(miny, y);
+                maxy = std::max(maxy, y);
+            }
+        }
+    }
+    if (remaining == 0)
+        return;
+
+    const auto idx = [w](int x, int y) { return y * w + x; };
+    long long guard = static_cast<long long>(w) * h + 16;
+
+    while (remaining > 0 && guard-- > 0) {
+        const int bx0 = std::max(0, minx - 1), bx1 = std::min(w - 1, maxx + 1);
+        const int by0 = std::max(0, miny - 1), by1 = std::min(h - 1, maxy + 1);
+
+        // Highest-priority fill-front pixel: P = confidence * data (isophote).
+        double bestP = -1.0;
+        int bpx = -1, bpy = -1;
+        float bestConf = 0.0f;
+        for (int y = by0; y <= by1; ++y) {
+            for (int x = bx0; x <= bx1; ++x) {
+                const int i = idx(x, y);
+                if (src[i])
+                    continue;
+                const bool front = (x > 0 && src[i - 1]) || (x < w - 1 && src[i + 1])
+                                || (y > 0 && src[i - w]) || (y < h - 1 && src[i + w]);
+                if (!front)
+                    continue;
+
+                double csum = 0.0;
+                int cnt = 0;
+                for (int dy = -hp; dy <= hp; ++dy) {
+                    const int yy = y + dy;
+                    if (yy < 0 || yy >= h)
+                        continue;
+                    for (int dx = -hp; dx <= hp; ++dx) {
+                        const int xx = x + dx;
+                        if (xx < 0 || xx >= w)
+                            continue;
+                        ++cnt;
+                        if (src[idx(xx, yy)])
+                            csum += conf[idx(xx, yy)];
+                    }
+                }
+                const double C = cnt ? csum / cnt : 0.0;
+
+                // Isophote (perpendicular to the grey gradient) and fill-front
+                // normal (gradient of the source indicator).
+                const int xl = x > 0 ? i - 1 : i, xr = x < w - 1 ? i + 1 : i;
+                const int yu = y > 0 ? i - w : i, yd = y < h - 1 ? i + w : i;
+                const float gx = 0.5f * (gray[xr] - gray[xl]);
+                const float gy = 0.5f * (gray[yd] - gray[yu]);
+                const float isoX = gy, isoY = -gx;
+                float nx = (x < w - 1 ? (src[i + 1] ? 1.0f : 0.0f) : 0.0f)
+                         - (x > 0 ? (src[i - 1] ? 1.0f : 0.0f) : 0.0f);
+                float ny = (y < h - 1 ? (src[i + w] ? 1.0f : 0.0f) : 0.0f)
+                         - (y > 0 ? (src[i - w] ? 1.0f : 0.0f) : 0.0f);
+                const float nlen = std::sqrt(nx * nx + ny * ny);
+                double D = 0.0;
+                if (nlen > 1e-5f)
+                    D = std::abs(isoX * (nx / nlen) + isoY * (ny / nlen)) / 255.0;
+
+                const double P = C * (D + 0.001); // small term avoids stalls
+                if (P > bestP) {
+                    bestP = P;
+                    bpx = x;
+                    bpy = y;
+                    bestConf = static_cast<float>(C);
+                }
+            }
+        }
+        if (bpx < 0)
+            break;
+
+        // Best-matching all-source exemplar patch (min SSD over known pixels).
+        long long bestSSD = LLONG_MAX;
+        int bqx = -1, bqy = -1;
+        const int wx0 = std::max(hp, bpx - searchR), wx1 = std::min(w - 1 - hp, bpx + searchR);
+        const int wy0 = std::max(hp, bpy - searchR), wy1 = std::min(h - 1 - hp, bpy + searchR);
+        for (int qy = wy0; qy <= wy1; ++qy) {
+            for (int qx = wx0; qx <= wx1; ++qx) {
+                long long ssd = 0;
+                bool ok = true;
+                for (int dy = -hp; dy <= hp && ok; ++dy) {
+                    const int ty = bpy + dy, sy = qy + dy;
+                    if (ty < 0 || ty >= h)
+                        continue;
+                    for (int dx = -hp; dx <= hp; ++dx) {
+                        const int tx = bpx + dx, sx = qx + dx;
+                        if (tx < 0 || tx >= w)
+                            continue;
+                        const int si = idx(sx, sy);
+                        if (!src[si]) { // candidate patch must be all-source
+                            ok = false;
+                            break;
+                        }
+                        const int ti = idx(tx, ty);
+                        if (src[ti]) {
+                            const uint8_t *a = img + static_cast<size_t>(ti) * bands;
+                            const uint8_t *b = img + static_cast<size_t>(si) * bands;
+                            for (int c = 0; c < 3; ++c) {
+                                const int d = a[c] - b[c];
+                                ssd += d * d;
+                            }
+                        }
+                    }
+                }
+                if (ok && ssd < bestSSD) {
+                    bestSSD = ssd;
+                    bqx = qx;
+                    bqy = qy;
+                }
+            }
+        }
+
+        if (bqx < 0) {
+            // No valid exemplar (shouldn't happen): mark the pixel known so the
+            // fill keeps progressing.
+            const int i = idx(bpx, bpy);
+            src[i] = 1;
+            conf[i] = bestConf;
+            --remaining;
+            continue;
+        }
+
+        // Copy the unknown target pixels from the chosen exemplar.
+        for (int dy = -hp; dy <= hp; ++dy) {
+            const int ty = bpy + dy, sy = bqy + dy;
+            if (ty < 0 || ty >= h)
+                continue;
+            for (int dx = -hp; dx <= hp; ++dx) {
+                const int tx = bpx + dx, sx = bqx + dx;
+                if (tx < 0 || tx >= w)
+                    continue;
+                const int ti = idx(tx, ty);
+                if (src[ti])
+                    continue;
+                const int si = idx(sx, sy);
+                uint8_t *a = img + static_cast<size_t>(ti) * bands;
+                const uint8_t *b = img + static_cast<size_t>(si) * bands;
+                for (int c = 0; c < 3; ++c)
+                    a[c] = b[c];
+                src[ti] = 1;
+                conf[ti] = bestConf;
+                gray[ti] = luma8(a);
+                --remaining;
+            }
         }
     }
 }

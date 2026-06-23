@@ -230,6 +230,11 @@ MainWindow::MainWindow(QWidget *parent)
         refreshBaseImage();
         updatePreview();
     });
+    connect(m_healPanel, &HealPanel::qualityChanged, this, [this](bool hq) {
+        m_heal->setHighQuality(hq);
+        refreshBaseImage(); // re-heal the current mask at the new quality
+        updatePreview();
+    });
 
     // Dismissible hint bar, bottom-centre over the canvas.
     m_hint = new QLabel(this);
@@ -511,7 +516,7 @@ void MainWindow::openHealTool()
     m_healPanel->adjustSize();
     const int margin = 18;
     m_healPanel->move(width() - m_healPanel->width() - margin, margin);
-    m_healPanel->reveal(m_brushSize, m_brushHardness, m_brushAdd);
+    m_healPanel->reveal(m_brushSize, m_brushHardness, m_brushAdd, m_heal->highQuality());
 
     // Restore the heal session from the node (may be empty).
     m_brushMask = m_heal->healMask();
