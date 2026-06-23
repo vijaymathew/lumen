@@ -2,81 +2,57 @@
 
 #include "core/EditNode.h"
 
-#include <QJsonObject>
+#include <QJsonArray>
 
 #include <algorithm>
 
-EditGraph::EditGraph() = default;
+EditGraph::EditGraph()
+{
+    // The Base layer always exists: full-coverage mask, holds the global edit.
+    m_layers.push_back(std::make_unique<Layer>(QStringLiteral("Base")));
+}
+
 EditGraph::~EditGraph() = default;
 
 void EditGraph::setSource(const Image &source)
 {
     m_source = source;
-    // The input to node 0 changed, so every node must recompute.
-    invalidateFrom(0);
+    // The pipeline input changed: every layer must recompute from node 0.
+    for (auto &layer : m_layers)
+        layer->invalidateFrom(0);
+}
+
+void EditGraph::setActiveLayer(int index)
+{
+    if (index >= 0 && index < static_cast<int>(m_layers.size()))
+        m_activeLayer = index;
+}
+
+Layer &EditGraph::addLayer(const QString &name)
+{
+    m_layers.push_back(std::make_unique<Layer>(name));
+    m_activeLayer = static_cast<int>(m_layers.size()) - 1;
+    return *m_layers.back();
+}
+
+bool EditGraph::removeLayer(int index)
+{
+    if (index <= 0 || index >= static_cast<int>(m_layers.size()))
+        return false; // index 0 is the Base layer
+    m_layers.erase(m_layers.begin() + index);
+    if (m_activeLayer >= static_cast<int>(m_layers.size()))
+        m_activeLayer = static_cast<int>(m_layers.size()) - 1;
+    return true;
 }
 
 EditNode *EditGraph::addNode(std::unique_ptr<EditNode> node)
 {
-    EditNode *raw = node.get();
-    m_nodes.push_back(std::move(node));
-    m_cache.emplace_back(); // empty cache slot; the node starts dirty
-    return raw;
+    return activeLayer().addNode(std::move(node));
 }
 
 bool EditGraph::removeNode(const QString &id)
 {
-    const int idx = indexOf(id);
-    if (idx < 0)
-        return false;
-    m_nodes.erase(m_nodes.begin() + idx);
-    m_cache.erase(m_cache.begin() + idx);
-    // Everything from idx onward now receives a different input.
-    invalidateFrom(idx);
-    return true;
-}
-
-bool EditGraph::moveNode(int from, int to)
-{
-    const int n = static_cast<int>(m_nodes.size());
-    if (from < 0 || from >= n || to < 0 || to >= n)
-        return false;
-    if (from == to)
-        return true;
-
-    auto node = std::move(m_nodes[from]);
-    m_nodes.erase(m_nodes.begin() + from);
-    m_nodes.insert(m_nodes.begin() + to, std::move(node));
-
-    // The cache no longer lines up with node order; rebuild it empty and
-    // invalidate from the earliest affected index.
-    m_cache.assign(m_nodes.size(), Image());
-    invalidateFrom(std::min(from, to));
-    return true;
-}
-
-EditNode *EditGraph::nodeAt(int index) const
-{
-    if (index < 0 || index >= static_cast<int>(m_nodes.size()))
-        return nullptr;
-    return m_nodes[index].get();
-}
-
-EditNode *EditGraph::findNode(const QString &id) const
-{
-    const int idx = indexOf(id);
-    return idx < 0 ? nullptr : m_nodes[idx].get();
-}
-
-void EditGraph::invalidateFrom(int index)
-{
-    if (index < 0)
-        index = 0;
-    for (int i = index; i < static_cast<int>(m_nodes.size()); ++i) {
-        m_nodes[i]->markDirty();
-        if (i < static_cast<int>(m_cache.size()))
-            m_cache[i] = Image();
-    }
+    return activeLayer().removeNode(id);
 }
 
 Image EditGraph::result()
@@ -84,84 +60,52 @@ Image EditGraph::result()
     Image current = m_source;
     if (current.isNull())
         return current;
-
-    // Once any node recomputes, its output changed, so every node after it must
-    // recompute too even if its own dirty flag was clear.
-    bool recomputeRest = false;
-
-    for (int i = 0; i < static_cast<int>(m_nodes.size()); ++i) {
-        EditNode *node = m_nodes[i].get();
-        const bool needsCompute =
-            recomputeRest || node->isDirty() || m_cache[i].isNull();
-
-        if (needsCompute) {
-            current = node->isEnabled() ? node->apply(current) : current;
-            m_cache[i] = current;
-            node->clearDirty();
-            recomputeRest = true;
-        } else {
-            current = m_cache[i];
-        }
-    }
+    for (auto &layer : m_layers)
+        current = layer->composite(current);
     return current;
 }
 
 PreviewState EditGraph::previewState() const
 {
     PreviewState state;
-    for (const auto &node : m_nodes) {
-        if (node->isEnabled())
-            node->contributeToPreview(state);
-    }
+    baseLayer().contributeToPreview(state);
     return state;
 }
 
 ChannelLuts EditGraph::previewLut() const
 {
     ChannelLuts luts = identityChannelLuts();
-    for (const auto &node : m_nodes) {
-        if (node->isEnabled())
-            node->contributeToPreviewLut(luts);
-    }
+    baseLayer().contributeToPreviewLut(luts);
     return luts;
 }
 
 Lut3D EditGraph::previewLook() const
 {
-    Lut3D look;
-    for (const auto &node : m_nodes) {
-        if (!node->isEnabled())
-            continue;
-        const Lut3D *l = node->lookLut();
-        if (l && l->isValid())
-            look = *l; // last enabled look wins
-    }
-    return look;
+    return baseLayer().look();
 }
 
-QJsonArray EditGraph::saveState() const
+QJsonObject EditGraph::saveState() const
 {
-    QJsonArray nodes;
-    for (const auto &node : m_nodes) {
-        QJsonObject entry;
-        entry[QStringLiteral("id")] = node->id();
-        entry[QStringLiteral("type")] = node->typeName();
-        entry[QStringLiteral("state")] = node->saveState();
-        nodes.append(entry);
-    }
-    return nodes;
+    QJsonObject root;
+    QJsonArray layers;
+    for (const auto &layer : m_layers)
+        layers.append(layer->saveState());
+    root[QStringLiteral("layers")] = layers;
+    root[QStringLiteral("active")] = m_activeLayer;
+    return root;
 }
 
-void EditGraph::restoreState(const QJsonArray &state)
+void EditGraph::restoreState(const QJsonObject &state)
 {
-    // Current scope: the node set is fixed, so restore parameters by matching id.
-    // Structural undo (add/remove/reorder) will recreate nodes via a type
-    // factory when the UI can add/remove nodes.
-    for (const QJsonValue &value : state) {
-        const QJsonObject entry = value.toObject();
-        if (EditNode *node = findNode(entry.value(QStringLiteral("id")).toString()))
-            node->restoreState(entry.value(QStringLiteral("state")).toObject());
-    }
+    // Structure is stable in this step (only the Base layer is created by the
+    // app), so restore properties/params into the existing layers by index —
+    // keeping external node pointers valid. Structural undo arrives later.
+    const QJsonArray layers = state.value(QStringLiteral("layers")).toArray();
+    for (int i = 0; i < static_cast<int>(m_layers.size()) && i < layers.size(); ++i)
+        m_layers[i]->restoreState(layers[i].toObject());
+    m_activeLayer = state.value(QStringLiteral("active")).toInt(0);
+    if (m_activeLayer < 0 || m_activeLayer >= static_cast<int>(m_layers.size()))
+        m_activeLayer = 0;
 }
 
 void EditGraph::resetHistory()
@@ -173,12 +117,10 @@ void EditGraph::resetHistory()
 
 void EditGraph::commit()
 {
-    QJsonArray state = saveState();
-    // Skip if nothing changed since the current snapshot.
+    QJsonObject state = saveState();
     if (m_historyIndex >= 0 && m_history[m_historyIndex] == state)
-        return;
+        return; // nothing changed since the current snapshot
 
-    // Drop any redo tail, then push.
     if (m_historyIndex + 1 < static_cast<int>(m_history.size()))
         m_history.erase(m_history.begin() + m_historyIndex + 1, m_history.end());
     m_history.push_back(std::move(state));
@@ -212,13 +154,4 @@ bool EditGraph::redo()
     ++m_historyIndex;
     restoreState(m_history[m_historyIndex]);
     return true;
-}
-
-int EditGraph::indexOf(const QString &id) const
-{
-    for (int i = 0; i < static_cast<int>(m_nodes.size()); ++i) {
-        if (m_nodes[i]->id() == id)
-            return i;
-    }
-    return -1;
 }

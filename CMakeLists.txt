@@ -53,6 +53,8 @@ add_library(lumen_core STATIC
     src/core/EditNode.cpp
     src/core/EditGraph.h
     src/core/EditGraph.cpp
+    src/core/Layer.h
+    src/core/Layer.cpp
     src/core/TuneNode.h
     src/core/TuneNode.cpp
     src/core/Curve.h
@@ -203,6 +205,11 @@ if(BUILD_TESTING)
     target_link_libraries(mask_test PRIVATE lumen_core)
     target_compile_options(mask_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME mask_test COMMAND mask_test)
+
+    add_executable(layers_test tests/layers_test.cpp)
+    target_link_libraries(layers_test PRIVATE lumen_core)
+    target_compile_options(layers_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME layers_test COMMAND layers_test)
 
     add_executable(heal_test tests/heal_test.cpp)
     target_link_libraries(heal_test PRIVATE lumen_core)
