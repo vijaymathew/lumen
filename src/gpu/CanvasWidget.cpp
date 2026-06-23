@@ -414,7 +414,48 @@ void CanvasWidget::setBrushMode(bool on)
 {
     m_brushMode = on;
     m_brushing = false;
-    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    // Track hover moves so the ring follows the cursor without a button held.
+    setMouseTracking(on);
+    // Hide the system pointer in brush mode — the ring overlay is the cursor.
+    setCursor(on ? Qt::BlankCursor : Qt::ArrowCursor);
+    if (!on)
+        emit brushCursorMoved({}, 0, 0, false);
+    else if (m_hasCursorPos)
+        emitBrushCursor(m_lastCursorPos);
+}
+
+void CanvasWidget::setBrushCursor(float size, float hardness)
+{
+    m_brushCursorSize = size;
+    m_brushCursorHardness = hardness;
+    if (m_brushMode && m_hasCursorPos)
+        emitBrushCursor(m_lastCursorPos);
+}
+
+void CanvasWidget::emitBrushCursor(QPointF widgetPos)
+{
+    m_lastCursorPos = widgetPos;
+    m_hasCursorPos = true;
+    if (!m_brushMode || m_textureSize.isEmpty()) {
+        emit brushCursorMoved(widgetPos, 0, 0, false);
+        return;
+    }
+    const qreal dpr = devicePixelRatioF();
+    const QSizeF widget(width() * dpr, height() * dpr);
+    const QSizeF image(m_textureSize.width(), m_textureSize.height());
+    const QSizeF disp = zoommath::displayedSize(widget, image, m_zoom);
+    // Match MainWindow::brushAt: radius = (size/100)*0.3 of the image's smaller
+    // displayed dimension. Convert device px back to logical for the overlay.
+    const double f = (m_brushCursorSize / 100.0) * 0.3;
+    const double outerLogical = f * std::min(disp.width(), disp.height()) / dpr;
+    const double innerLogical = outerLogical * m_brushCursorHardness;
+    emit brushCursorMoved(widgetPos, outerLogical, innerLogical, true);
+}
+
+void CanvasWidget::leaveEvent(QEvent *)
+{
+    m_hasCursorPos = false;
+    emit brushCursorMoved({}, 0, 0, false);
 }
 
 QPointF CanvasWidget::imageNormalizedAt(const QPointF &widgetPos)
@@ -446,6 +487,7 @@ void CanvasWidget::mousePressEvent(QMouseEvent *e)
 
     if (m_brushMode) {
         m_brushing = true;
+        emitBrushCursor(e->position());
         emit brushStrokeBegan();
         emit brushPoint(imageNormalizedAt(e->position()));
         return;
@@ -464,6 +506,8 @@ void CanvasWidget::mouseReleaseEvent(QMouseEvent *e)
 
 void CanvasWidget::mouseMoveEvent(QMouseEvent *e)
 {
+    if (m_brushMode)
+        emitBrushCursor(e->position()); // keep the ring under the cursor
     if (m_brushing) {
         emit brushPoint(imageNormalizedAt(e->position()));
         return;
@@ -482,6 +526,8 @@ void CanvasWidget::wheelEvent(QWheelEvent *e)
     const float factor = (e->angleDelta().y() > 0) ? 1.1f : (1.0f / 1.1f);
     // Zoom around the cursor: the image point under the pointer stays put.
     zoomAt(factor, e->position() * devicePixelRatioF());
+    if (m_brushMode) // brush ring scales with zoom
+        emitBrushCursor(e->position());
 }
 
 void CanvasWidget::zoomAt(float factor, const QPointF &cursorDevicePx)

@@ -58,11 +58,18 @@ public:
     // Brush mode: left-drag paints (emits brush signals) instead of panning.
     void setBrushMode(bool on);
 
+    // Brush size (1-100 slider units) and hardness (0-1) for the on-canvas brush
+    // ring cursor. Must match MainWindow's stamp radius math.
+    void setBrushCursor(float size, float hardness);
+
 signals:
     void colorPointPicked(QPointF imageNormalized);
     void brushStrokeBegan();
     void brushPoint(QPointF imageNormalized);
     void brushStrokeEnded();
+    // Brush ring geometry in widget-logical coords; visible=false hides it.
+    void brushCursorMoved(QPointF widgetPos, qreal outerRadius, qreal innerRadius,
+                          bool visible);
 
 protected:
     void initialize(QRhiCommandBuffer *cb) override;
@@ -72,10 +79,12 @@ protected:
     void mouseMoveEvent(QMouseEvent *e) override;
     void mouseReleaseEvent(QMouseEvent *e) override;
     void wheelEvent(QWheelEvent *e) override;
+    void leaveEvent(QEvent *e) override;
 
 private:
     void ensurePipeline();
     void buildSrb();
+    void emitBrushCursor(QPointF widgetPos);
     QPointF imageNormalizedAt(const QPointF &widgetPos);
     QMatrix4x4 computeMvp(const QSize &targetPixels);
     // Multiplies zoom by `factor`, keeping the image point under the cursor fixed.
@@ -110,6 +119,10 @@ private:
     bool m_pickMode = false;
     bool m_brushMode = false;
     bool m_brushing = false;
+    float m_brushCursorSize = 30.0f;     // 1-100 slider units
+    float m_brushCursorHardness = 0.5f;  // 0-1
+    QPointF m_lastCursorPos;
+    bool m_hasCursorPos = false;
 
     // Preview adjustments (from the edit graph) fed to the shader.
     PreviewState m_preview;

@@ -81,7 +81,8 @@ private:
 
     InputController m_input;
     CanvasWidget *m_canvas = nullptr;
-    QWidget *m_scrim = nullptr; // dims the image behind the command palette
+    QWidget *m_scrim = nullptr;     // dims the image behind the command palette
+    QWidget *m_brushRing = nullptr; // on-canvas brush size/hardness cursor
     CommandPalette *m_palette = nullptr;
     TonePanel *m_tonePanel = nullptr;
     CurvesPanel *m_curvesPanel = nullptr;

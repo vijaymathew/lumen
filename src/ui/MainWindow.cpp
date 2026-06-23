@@ -48,6 +48,62 @@ protected:
     }
 };
 
+// A transparent overlay that draws the brush cursor: an outer ring (size) and a
+// fainter inner ring (hardness core). Mouse-transparent so the canvas below
+// still receives events.
+class BrushRing : public QWidget {
+public:
+    explicit BrushRing(QWidget *parent) : QWidget(parent)
+    {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_NoSystemBackground);
+        hide();
+    }
+
+    void setRing(QPointF center, qreal outer, qreal inner, bool visible)
+    {
+        m_center = center;
+        m_outer = outer;
+        m_inner = inner;
+        if (!visible || outer <= 0.5) {
+            if (isVisible())
+                hide();
+            return;
+        }
+        if (!isVisible())
+            show();
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        if (m_outer <= 0.5)
+            return;
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        // Dark halo then a light ring, so it reads on any image.
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor(0, 0, 0, 160), 3.0));
+        p.drawEllipse(m_center, m_outer, m_outer);
+        p.setPen(QPen(QColor(255, 255, 255, 230), 1.3));
+        p.drawEllipse(m_center, m_outer, m_outer);
+        if (m_inner > 1.0 && m_inner < m_outer - 0.5) {
+            p.setPen(QPen(QColor(255, 255, 255, 110), 1.0, Qt::DashLine));
+            p.drawEllipse(m_center, m_inner, m_inner);
+        }
+        // Centre dot.
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(255, 255, 255, 200));
+        p.drawEllipse(m_center, 1.3, 1.3);
+    }
+
+private:
+    QPointF m_center;
+    qreal m_outer = 0;
+    qreal m_inner = 0;
+};
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -66,6 +122,16 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_canvas = new CanvasWidget(this);
     setCentralWidget(m_canvas);
+
+    // Brush cursor ring overlay (a MainWindow child over the canvas, like the
+    // scrim, so it composites reliably above the RHI content).
+    auto *brushRing = new BrushRing(this);
+    m_brushRing = brushRing;
+    connect(m_canvas, &CanvasWidget::brushCursorMoved, this,
+            [this, brushRing](QPointF pos, qreal outer, qreal inner, bool visible) {
+                const QPoint inWindow = m_canvas->mapTo(this, pos.toPoint());
+                brushRing->setRing(inWindow, outer, inner, visible);
+            });
 
     // Created before the palette so the palette stacks above it.
     m_scrim = new Scrim(this);
@@ -113,6 +179,8 @@ MainWindow::MainWindow(QWidget *parent)
                 m_selective->setValues(v);
                 const bool brush = v.maskMode == 2;
                 m_brushTarget = brush ? BrushTarget::Selective : BrushTarget::None;
+                if (brush)
+                    m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f);
                 m_canvas->setBrushMode(brush);
                 if (brush && m_brushMask.isEmpty())
                     initBrushMask();
@@ -131,6 +199,7 @@ MainWindow::MainWindow(QWidget *parent)
                 m_brushSize = size;
                 m_brushHardness = hardness;
                 m_brushAdd = add;
+                m_canvas->setBrushCursor(size, hardness / 100.0f);
             });
     connect(m_selectivePanel, &SelectivePanel::brushClearRequested, this, [this] {
         if (m_brushMask.isEmpty())
@@ -149,6 +218,7 @@ MainWindow::MainWindow(QWidget *parent)
                 m_brushSize = size;
                 m_brushHardness = hardness;
                 m_brushAdd = add;
+                m_canvas->setBrushCursor(size, hardness / 100.0f);
             });
     connect(m_healPanel, &HealPanel::clearRequested, this, [this] {
         if (m_brushMask.isEmpty())
@@ -409,6 +479,8 @@ void MainWindow::openSelectiveTool()
     m_brushTarget = brush ? BrushTarget::Selective : BrushTarget::None;
     if (brush && m_brushMask.isEmpty())
         initBrushMask();
+    if (brush)
+        m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f);
     m_canvas->setBrushMode(brush);
 
     recomputeSelectiveMask();
@@ -447,6 +519,7 @@ void MainWindow::openHealTool()
     if (m_brushMask.isEmpty())
         initBrushMask();
     m_brushTarget = BrushTarget::Heal;
+    m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f);
     m_canvas->setBrushMode(true);
     refreshBaseImage();
     updatePreview();
@@ -688,6 +761,7 @@ void MainWindow::layoutOverlays()
 {
     // Scrim covers the whole window, behind the palette.
     m_scrim->setGeometry(rect());
+    m_brushRing->setGeometry(rect());
 
     // Palette: fixed width, near the top-centre.
     const int pw = 360;
