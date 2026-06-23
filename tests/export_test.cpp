@@ -47,8 +47,30 @@ int main(int /*argc*/, char **argv)
     const Image reloaded = Image::fromFile(out, &error);
     CHECK(!reloaded.isNull());
     CHECK(reloaded.width() == 16 && reloaded.height() == 12);
-
     QFile::remove(out);
+
+    // Each format (with quality on the lossy ones) writes a valid file that
+    // reloads at the right size. This also checks the [Q=..] option suffix is
+    // accepted by the lossy savers and ignored elsewhere.
+    struct Case {
+        const char *ext;
+        int quality;
+    };
+    const Case cases[] = {
+        {"png", -1}, {"jpg", 90}, {"jpg", 20}, {"webp", 80}, {"tiff", -1},
+    };
+    for (const Case &c : cases) {
+        const QString p = QDir::temp().filePath(
+            QStringLiteral("lumen_export_test.%1").arg(c.ext));
+        QFile::remove(p);
+        CHECK(result.saveToFile(p, c.quality, &error));
+        CHECK(QFile::exists(p));
+        const Image rr = Image::fromFile(p, &error);
+        CHECK(!rr.isNull());
+        CHECK(rr.width() == 16 && rr.height() == 12);
+        QFile::remove(p);
+    }
+
     ImageBuffer::shutdownLibrary();
     std::puts("export_test: OK");
     return 0;

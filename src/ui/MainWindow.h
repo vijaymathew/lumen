@@ -106,6 +106,8 @@ private:
     SelectiveNode *m_selective = nullptr; // owned by m_graph
     HealNode *m_heal = nullptr;          // owned by m_graph (first in the chain)
     QString m_sourcePath;                // for a sensible default export name
+    QString m_exportExt = QStringLiteral("jpg"); // remembered export format
+    int m_exportQuality = 90;                    // remembered export quality
     QImage m_sourceQImage;               // for colour sampling + preview mask
     int m_maskView = 0;                  // selective mask overlay (preview-only)
 

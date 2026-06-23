@@ -6,6 +6,7 @@
 #include "gpu/CanvasWidget.h"
 #include "input/CommandPalette.h"
 #include "ui/CurvesPanel.h"
+#include "ui/ExportDialog.h"
 #include "ui/HealPanel.h"
 #include "ui/LooksPanel.h"
 #include "ui/SelectivePanel.h"
@@ -362,22 +363,33 @@ void MainWindow::exportImage()
         return;
     }
 
-    // Suggest "<name>-edited.<ext>" next to the original.
-    const QFileInfo src(m_sourcePath);
-    const QString suffix = src.suffix().isEmpty() ? QStringLiteral("jpg") : src.suffix();
-    const QString suggested = src.dir().filePath(
-        src.completeBaseName() + QStringLiteral("-edited.") + suffix);
+    // 1. Choose format + quality.
+    ExportDialog dlg(this);
+    dlg.setSelection(m_exportExt, m_exportQuality);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    m_exportExt = dlg.extension();
+    const int quality = dlg.quality();
+    if (quality >= 0)
+        m_exportQuality = quality;
 
-    const QString path = QFileDialog::getSaveFileName(
-        this, QStringLiteral("Export image"), suggested,
-        QStringLiteral("Images (*.jpg *.jpeg *.png *.tif *.tiff *.webp)"));
+    // 2. Choose the path, defaulting to "<name>-edited.<ext>" next to the source.
+    const QFileInfo src(m_sourcePath);
+    const QString suggested = src.dir().filePath(
+        src.completeBaseName() + QStringLiteral("-edited.") + m_exportExt);
+    const QString filter =
+        QStringLiteral("%1 (*.%2)").arg(m_exportExt.toUpper(), m_exportExt);
+    QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Export image"),
+                                                suggested, filter);
     if (path.isEmpty())
         return;
+    if (QFileInfo(path).suffix().isEmpty())
+        path += QStringLiteral(".") + m_exportExt;
 
-    // Walk the graph at full resolution, then write via libvips.
+    // 3. Walk the graph at full resolution, then write via libvips.
     const Image result = m_graph.result();
     QString error;
-    if (!result.saveToFile(path, &error)) {
+    if (!result.saveToFile(path, quality, &error)) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Export failed: %1").arg(error));
         return;

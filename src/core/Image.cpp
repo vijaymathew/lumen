@@ -5,6 +5,10 @@
 
 #include "core/Image.h"
 
+#include <QFileInfo>
+
+#include <algorithm>
+
 namespace {
 
 // Returns a new sRGB / 8-bit / 4-band (RGBA) image that the caller owns, or
@@ -196,7 +200,7 @@ QImage Image::toQImage() const
                   [](void *p) { g_free(p); }, buf);
 }
 
-bool Image::saveToFile(const QString &path, QString *error) const
+bool Image::saveToFile(const QString &path, int quality, QString *error) const
 {
     if (!m_image) {
         if (error)
@@ -204,7 +208,16 @@ bool Image::saveToFile(const QString &path, QString *error) const
         return false;
     }
 
-    const QByteArray utf8 = path.toUtf8();
+    // libvips chooses the saver from the extension and parses per-format options
+    // appended as filename[opt=val]. Apply quality to the lossy savers only.
+    QString target = path;
+    if (quality >= 0) {
+        const QString suffix = QFileInfo(path).suffix().toLower();
+        if (suffix == QLatin1String("jpg") || suffix == QLatin1String("jpeg")
+            || suffix == QLatin1String("webp"))
+            target = QStringLiteral("%1[Q=%2]").arg(path).arg(std::clamp(quality, 0, 100));
+    }
+    const QByteArray utf8 = target.toUtf8();
 
     // Drop a trailing alpha band so formats without alpha (e.g. JPEG) succeed.
     VipsImage *out = m_image;
