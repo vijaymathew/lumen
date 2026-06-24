@@ -5,6 +5,7 @@
 #include "core/LayerPreview.h"
 #include "core/MaskSpec.h"
 #include "core/Project.h"
+#include "core/RawLoader.h"
 #include "core/SelectiveMask.h"
 #include "gpu/CanvasWidget.h"
 #include "input/CommandPalette.h"
@@ -18,6 +19,7 @@
 #include "ui/TonePanel.h"
 
 #include <memory>
+#include <utility>
 
 #include <QBuffer>
 #include <QColor>
@@ -495,7 +497,8 @@ bool MainWindow::openPath(const QString &path)
         return loadProjectFile(path); // a project, not a raw image
 
     QString error;
-    Image source = Image::fromFile(path, &error);
+    Image source = raw::isRawPath(path) ? raw::decodeFile(path, &error)
+                                        : Image::fromFile(path, &error);
     if (source.isNull()) {
         QMessageBox::warning(this, QStringLiteral("Lumen"), error);
         return false;
@@ -578,7 +581,9 @@ bool MainWindow::loadProjectFile(const QString &path)
         return false;
     }
     Image source =
-        Image::fromBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error);
+        raw::isRawPath(proj.sourceName)
+            ? raw::decodeBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error)
+            : Image::fromBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error);
     if (source.isNull()) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Could not decode the embedded image: %1").arg(error));
@@ -630,9 +635,21 @@ void MainWindow::openImageDialog()
 {
     const QString dir =
         QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
-    const QString path = QFileDialog::getOpenFileName(
-        this, QStringLiteral("Open image"), dir,
-        QStringLiteral("Images (*.jpg *.jpeg *.png *.tif *.tiff *.webp)"));
+    // Build the filter from a single extension list, including UPPERCASE
+    // variants — native file dialogs glob case-sensitively and cameras usually
+    // write uppercase RAW extensions (.CR2, .NEF…). An "All files" fallback lets
+    // the user pick anything we didn't enumerate.
+    QStringList exts{QStringLiteral("jpg"),  QStringLiteral("jpeg"),
+                     QStringLiteral("png"),  QStringLiteral("tif"),
+                     QStringLiteral("tiff"), QStringLiteral("webp")};
+    exts += raw::extensions();
+    QStringList patterns;
+    for (const QString &e : std::as_const(exts))
+        patterns << QStringLiteral("*.%1").arg(e) << QStringLiteral("*.%1").arg(e.toUpper());
+    const QString filter = QStringLiteral("Images (%1);;All files (*)")
+                               .arg(patterns.join(QLatin1Char(' ')));
+    const QString path =
+        QFileDialog::getOpenFileName(this, QStringLiteral("Open image"), dir, filter);
     if (!path.isEmpty())
         openPath(path);
 }

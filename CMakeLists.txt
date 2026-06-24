@@ -28,10 +28,11 @@ find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets ShaderTools Concurrent
 
 qt_standard_project_setup()
 
-# libvips is the image pipeline. It ships pkg-config files; OpenCV/LibRaw/Lensfun
-# are intentionally NOT wired up yet — they arrive with later milestones.
+# libvips is the image pipeline. LibRaw decodes camera RAW (post-v1). OpenCV /
+# Lensfun are intentionally NOT wired up yet — they arrive with later milestones.
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(VIPS REQUIRED IMPORTED_TARGET vips-cpp)
+pkg_check_modules(LIBRAW REQUIRED IMPORTED_TARGET libraw)
 
 if(MSVC)
     set(LUMEN_WARNINGS /W3)
@@ -71,6 +72,8 @@ add_library(lumen_core STATIC
     src/core/NodeFactory.cpp
     src/core/Project.h
     src/core/Project.cpp
+    src/core/RawLoader.h
+    src/core/RawLoader.cpp
     src/core/GuidedFilter.h
     src/core/GuidedFilter.cpp
     src/core/SelectiveMask.h
@@ -83,7 +86,7 @@ add_library(lumen_core STATIC
     src/core/HealNode.cpp
 )
 target_include_directories(lumen_core PUBLIC src)
-target_link_libraries(lumen_core PUBLIC Qt6::Core Qt6::Gui PkgConfig::VIPS)
+target_link_libraries(lumen_core PUBLIC Qt6::Core Qt6::Gui PkgConfig::VIPS PkgConfig::LIBRAW)
 target_compile_options(lumen_core PRIVATE ${LUMEN_WARNINGS})
 
 # --- Application ----------------------------------------------------------
@@ -231,6 +234,11 @@ if(BUILD_TESTING)
     target_link_libraries(project_test PRIVATE lumen_core)
     target_compile_options(project_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME project_test COMMAND project_test)
+
+    add_executable(raw_test tests/raw_test.cpp)
+    target_link_libraries(raw_test PRIVATE lumen_core)
+    target_compile_options(raw_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME raw_test COMMAND raw_test)
 
     add_executable(heal_test tests/heal_test.cpp)
     target_link_libraries(heal_test PRIVATE lumen_core)

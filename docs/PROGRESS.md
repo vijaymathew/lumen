@@ -120,12 +120,13 @@ plain Qt widgets.
 
 ---
 
-## Deferred / post-v1 ⏸️
+## Post-v1 🟡
 
-| Item | Notes |
-|---|---|
-| Lens correction (`LensCorrectionNode`) | LibRaw + Lensfun. DESIGN §8 |
-| Full RAW workflow polish | LibRaw decode designed for from day one |
+| Item | Status | Notes |
+|---|---|---|
+| RAW decode (8-bit) | ✅ | `core/RawLoader` decodes camera RAW via **LibRaw** (unpack → `dcraw_process` → 8-bit sRGB, camera WB) → `Image` (RGBA), dropping into the same pipeline as a JPEG. Routed by extension in `openPath` + the open dialog (filter includes UPPERCASE globs, shared list with `isRawPath`); `.lumen` re-decodes the embedded RAW bytes on load (`decodeBytes`). `raw_test` covers extension classification + graceful failure. **Verified on a real 25 MB Canon `.CR2`**: decodes + renders correctly, and a RAW→edit→save `.lumen`→reopen round-trip restores the layered edit (the CR2 is embedded verbatim). 16-bit-linear precision is a separate future effort |
+| Lens correction (`LensCorrectionNode`) | ⬜ | LibRaw + Lensfun. DESIGN §8. Best after RAW is verified |
+| Built-in presets (film looks) | ⬜ | Decided approach: **parametric recipes applied as a layer** (Tune/Curves/Mono node bundles; B&W films → Mono mixer). Velvia, Kodachrome 64, HP5, Delta 400, FP4. No new deps |
 | Perspective / advanced crop-rotate | |
 | Built-in presets -- Kodachrome 64, Fuji Velvia, Ilford HP5 Plus (ISO 400), Ilford Delta 400 (ISO 400) and Ilford FP4 Plus (ISO 125) (maybe reuse existing LUTs?)
 
@@ -137,6 +138,6 @@ plain Qt widgets.
 |---|---|---|
 | Qt6 (Core/Gui/Widgets/ShaderTools) | ✅ | UI, RHI rendering |
 | libvips | ✅ | Image decode / pipeline |
-| OpenCV | ⬜ | Healing, guided-filter masks (Phase 5–6) |
-| LibRaw | ⬜ | RAW decode |
+| OpenCV | ⬜ | Not needed — healing / guided-filter masks were written self-contained |
+| LibRaw | ✅ | RAW decode (`core/RawLoader`); pkg-config `libraw` 0.21 |
 | Lensfun | ⬜ | Lens correction (deferred) |
