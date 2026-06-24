@@ -16,7 +16,6 @@
 #include "core/SelectiveMask.h"
 #include "core/TuneNode.h"
 #include "input/InputController.h"
-#include "ui/SelectivePanel.h" // SelectiveValues
 
 #include <vector>
 
@@ -28,7 +27,6 @@ class LayersPanel;
 class MaskGizmo;
 class LooksPanel;
 class MonoPanel;
-class SelectivePanel;
 class TonePanel;
 class QLabel;
 
@@ -61,15 +59,19 @@ private:
     void layoutOverlays();
 
     void openCommandPalette();
-    void openLayersTool();
+    void openLayersTool();    // toggles the Layers panel
+    void showLayersPanel();   // ensures it is visible (used by the selective cmd)
+    void hideLayersPanel();
     void refreshLayersPanel();
     void addAdjustmentLayer();
     void deleteActiveLayer();
     void selectLayer(int index);
-    // Mask editing for the active layer (mask controls + on-canvas gizmo).
+    // Mask editing for the active layer (Layers-panel controls + on-canvas gizmo).
     void setActiveLayerMaskType(int maskType);
     void onLayerMaskEdited(const MaskSpec &spec, bool commit);
-    void syncMaskGizmo(); // reflect the active layer's mask into the gizmo
+    void syncMaskGizmo();      // reflect the active layer's mask into the gizmo
+    void updateMaskEditing();  // enable/disable the canvas brush for a Brush mask
+    void endMaskBrushSession(); // commit in-progress mask-brush strokes
     // The active layer's tone/curves/look/mono nodes (tools edit the active layer).
     TuneNode *activeTune() const;
     CurvesNode *activeCurves() const;
@@ -84,17 +86,12 @@ private:
     void loadLookFile();
     void openMonoTool();
     void closeMonoTool();
-    void openSelectiveTool();
-    void closeSelectiveTool();
-    void recomputeSelectiveMask();
+    void recomputeSelectiveMask(); // uploads the active layer's mask as the overlay
     void onColorPicked(const QPointF &imageNormalized);
-    // A selective adjustment is a masked layer (mask = Luminosity/Colour/Brush
-    // + the layer's TuneNode). These bridge the SelectivePanel to the active
-    // layer. ensureSelectiveLayer adds/selects a layer the panel can drive and
-    // returns its index.
+    // A selective adjustment is a masked layer (mask = Luminosity/Colour/Brush +
+    // the layer's TuneNode), edited via the Layers panel. ensureSelectiveLayer
+    // adds/selects a layer to drive and returns its index.
     int ensureSelectiveLayer();
-    void applySelectiveToActiveLayer(const SelectiveValues &v);
-    SelectiveValues activeLayerSelective() const;
     void syncBrushMaskToLayer(); // copy the working brush mask into the active layer
     void openHealTool();
     void closeHealTool();
@@ -126,7 +123,6 @@ private:
     CurvesPanel *m_curvesPanel = nullptr;
     LooksPanel *m_looksPanel = nullptr;
     MonoPanel *m_monoPanel = nullptr;
-    SelectivePanel *m_selectivePanel = nullptr;
     HealPanel *m_healPanel = nullptr;
     LayersPanel *m_layersPanel = nullptr;
     MaskGizmo *m_maskGizmo = nullptr; // on-canvas gradient/radial mask editor

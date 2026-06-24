@@ -101,8 +101,6 @@ qt_add_executable(lumen
     src/ui/CurvesPanel.cpp
     src/ui/LooksPanel.h
     src/ui/LooksPanel.cpp
-    src/ui/SelectivePanel.h
-    src/ui/SelectivePanel.cpp
     src/ui/HealPanel.h
     src/ui/HealPanel.cpp
     src/ui/LayersPanel.h
