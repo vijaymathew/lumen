@@ -27,6 +27,14 @@ layout(std140, binding = 0) uniform buf {
     float selMaskMode;
     float selInvert;
     float layerOpacity; // this layer's blend onto the running result [0,1]
+    float monoEnabled;
+    float monoR;        // B&W mix weights (pre-normalised to sum 1)
+    float monoG;
+    float monoB;
+    float monoToneStrength;
+    float monoToneR;    // tint colour (pre-normalised to luma 1)
+    float monoToneG;
+    float monoToneB;
 } ubuf;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -55,6 +63,13 @@ void main()
     // 3. Look: trilinear 3D LUT, blended with the pre-look colour by intensity.
     vec3 lutCol = texture(lut3d, clamp(col, 0.0, 1.0)).rgb;
     col = mix(col, lutCol, ubuf.lutIntensity);
+    // 3.5 Monochrome: weighted desaturation to grey, then optional toning. Same
+    //     math as MonoNode::apply().
+    if (ubuf.monoEnabled > 0.5) {
+        float g = clamp(dot(col, vec3(ubuf.monoR, ubuf.monoG, ubuf.monoB)), 0.0, 1.0);
+        vec3 toned = g * vec3(ubuf.monoToneR, ubuf.monoToneG, ubuf.monoToneB);
+        col = mix(vec3(g), toned, ubuf.monoToneStrength);
+    }
     // 4. Preview-only "show mask" overlay of the active layer's mask. (The old
     //    in-shader selective adjustment is vestigial — selEnabled stays 0 now
     //    that selective edits are masked layers; the overlay path remains.)

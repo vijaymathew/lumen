@@ -13,6 +13,7 @@
 #include "ui/LayersPanel.h"
 #include "ui/MaskGizmo.h"
 #include "ui/LooksPanel.h"
+#include "ui/MonoPanel.h"
 #include "ui/SelectivePanel.h"
 #include "ui/TonePanel.h"
 
@@ -192,12 +193,13 @@ MainWindow::MainWindow(QWidget *parent)
 
     // The graph owns the nodes; we keep raw pointers to drive them. Heal is
     // first (it edits source pixels, baked into the preview base), then the
-    // pointwise/LUT ops the shader replicates: tune -> curves -> lut. Selective
-    // adjustments are masked layers above the Base, not a Base node.
+    // pointwise/LUT ops the shader replicates: tune -> curves -> lut -> mono.
+    // Selective adjustments are masked layers above the Base, not a Base node.
     m_heal = static_cast<HealNode *>(m_graph.addNode(std::make_unique<HealNode>()));
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
     m_lutNode = static_cast<LutNode *>(m_graph.addNode(std::make_unique<LutNode>()));
+    m_mono = static_cast<MonoNode *>(m_graph.addNode(std::make_unique<MonoNode>()));
 
     m_canvas = new CanvasWidget(this);
     setCentralWidget(m_canvas);
@@ -258,6 +260,14 @@ MainWindow::MainWindow(QWidget *parent)
             l->setIntensity(static_cast<float>(v));
         updatePreview();
     });
+
+    m_monoPanel = new MonoPanel(this);
+    connect(m_monoPanel, &MonoPanel::valuesChanged, this, [this](const MonoValues &v) {
+        if (auto *mono = activeMono())
+            mono->setValues(v);
+        updatePreview();
+    });
+    connect(m_monoPanel, &MonoPanel::closed, this, &MainWindow::closeMonoTool);
 
     m_selectivePanel = new SelectivePanel(this);
     connect(m_selectivePanel, &SelectivePanel::valuesChanged, this,
@@ -413,6 +423,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("reset-view"), QStringLiteral("Reset view")},
         {QStringLiteral("fullscreen"), QStringLiteral("Toggle fullscreen")},
         {QStringLiteral("looks"), QStringLiteral("Looks (LUT)")},
+        {QStringLiteral("monochrome"), QStringLiteral("Monochrome (B&W + toning)")},
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment")},
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
         {QStringLiteral("layers"), QStringLiteral("Layers")},
@@ -432,6 +443,8 @@ void MainWindow::runCommand(const QString &id)
         openCurvesTool();
     } else if (id == QLatin1String("looks")) {
         openLooksTool();
+    } else if (id == QLatin1String("monochrome")) {
+        openMonoTool();
     } else if (id == QLatin1String("selective")) {
         openSelectiveTool();
     } else if (id == QLatin1String("heal")) {
@@ -601,6 +614,11 @@ LutNode *MainWindow::activeLut() const
     return static_cast<LutNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("lut")));
 }
 
+MonoNode *MainWindow::activeMono() const
+{
+    return static_cast<MonoNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("mono")));
+}
+
 void MainWindow::openLayersTool()
 {
     refreshLayersPanel();
@@ -634,6 +652,7 @@ void MainWindow::addAdjustmentLayer()
     m_graph.addNode(std::make_unique<TuneNode>());
     m_graph.addNode(std::make_unique<CurvesNode>());
     m_graph.addNode(std::make_unique<LutNode>());
+    m_graph.addNode(std::make_unique<MonoNode>());
     Q_UNUSED(layer);
     refreshLayersPanel();
     updatePreview();
@@ -653,15 +672,27 @@ void MainWindow::selectLayer(int index)
 {
     m_graph.setActiveLayer(index);
     refreshLayersPanel();
-    // Reseed any open adjustment tool with the newly-active layer's values.
-    if (m_tonePanel->isVisible())
-        m_tonePanel->reveal({activeTune()->exposure(), activeTune()->contrast(),
-                             activeTune()->saturation()});
-    if (m_curvesPanel->isVisible())
-        m_curvesPanel->reveal(activeCurves()->curves());
-    if (m_looksPanel->isVisible())
-        m_looksPanel->reveal(QFileInfo(activeLut()->sourcePath()).fileName(),
-                             activeLut()->intensity());
+    // Reseed any open adjustment tool with the newly-active layer's values
+    // (guarded — a layer may not carry every node type, e.g. a selective layer).
+    if (m_tonePanel->isVisible()) {
+        if (auto *t = activeTune())
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation()});
+    }
+    if (m_curvesPanel->isVisible()) {
+        if (auto *c = activeCurves())
+            m_curvesPanel->reveal(c->curves());
+    }
+    if (m_looksPanel->isVisible()) {
+        if (auto *l = activeLut())
+            m_looksPanel->reveal(QFileInfo(l->sourcePath()).fileName(), l->intensity());
+    }
+    if (m_monoPanel->isVisible()) {
+        if (!activeMono()) {
+            m_graph.addNode(std::make_unique<MonoNode>());
+            m_graph.commit();
+        }
+        m_monoPanel->reveal(activeMono()->values());
+    }
 }
 
 void MainWindow::setActiveLayerMaskType(int maskType)
@@ -760,6 +791,29 @@ void MainWindow::closeLooksTool()
 {
     m_looksPanel->hide();
     m_graph.commit();
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::openMonoTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    // Most layers carry a mono node; a layer added by another tool (e.g. a
+    // selective layer) may not, so add one on demand.
+    if (!activeMono()) {
+        m_graph.addNode(std::make_unique<MonoNode>());
+        m_graph.commit();
+    }
+    m_monoPanel->adjustSize();
+    const int margin = 18;
+    m_monoPanel->move(width() - m_monoPanel->width() - margin, margin);
+    m_monoPanel->reveal(activeMono()->values());
+}
+
+void MainWindow::closeMonoTool()
+{
+    m_monoPanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
@@ -1177,6 +1231,8 @@ void MainWindow::closeActiveTool()
         closeCurvesTool();
     else if (m_looksPanel->isVisible())
         closeLooksTool();
+    else if (m_monoPanel->isVisible())
+        closeMonoTool();
     else if (m_selectivePanel->isVisible())
         closeSelectiveTool();
     else if (m_healPanel->isVisible())
@@ -1227,6 +1283,10 @@ void MainWindow::afterHistoryChange()
         if (auto *l = activeLut())
             m_looksPanel->reveal(QFileInfo(l->sourcePath()).fileName(), l->intensity());
     }
+    if (m_monoPanel->isVisible()) {
+        if (auto *mono = activeMono())
+            m_monoPanel->reveal(mono->values());
+    }
     if (m_selectivePanel->isVisible()) {
         const SelectiveValues v = activeLayerSelective();
         m_selectivePanel->reveal(v);
@@ -1274,6 +1334,7 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_tonePanel);
     clampIntoView(m_curvesPanel);
     clampIntoView(m_looksPanel);
+    clampIntoView(m_monoPanel);
     clampIntoView(m_selectivePanel);
     clampIntoView(m_healPanel);
     clampIntoView(m_layersPanel);
@@ -1287,6 +1348,7 @@ void MainWindow::layoutOverlays()
         for (QWidget *panel : {static_cast<QWidget *>(m_tonePanel),
                                static_cast<QWidget *>(m_curvesPanel),
                                static_cast<QWidget *>(m_looksPanel),
+                               static_cast<QWidget *>(m_monoPanel),
                                static_cast<QWidget *>(m_selectivePanel),
                                static_cast<QWidget *>(m_healPanel),
                                static_cast<QWidget *>(m_layersPanel)}) {

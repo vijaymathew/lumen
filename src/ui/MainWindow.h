@@ -12,6 +12,7 @@
 #include "core/HealNode.h"
 #include "core/LutNode.h"
 #include "core/MaskSpec.h"
+#include "core/MonoNode.h"
 #include "core/SelectiveMask.h"
 #include "core/TuneNode.h"
 #include "input/InputController.h"
@@ -26,6 +27,7 @@ class HealPanel;
 class LayersPanel;
 class MaskGizmo;
 class LooksPanel;
+class MonoPanel;
 class SelectivePanel;
 class TonePanel;
 class QLabel;
@@ -68,10 +70,11 @@ private:
     void setActiveLayerMaskType(int maskType);
     void onLayerMaskEdited(const MaskSpec &spec, bool commit);
     void syncMaskGizmo(); // reflect the active layer's mask into the gizmo
-    // The active layer's tone/curves/look nodes (tools edit the active layer).
+    // The active layer's tone/curves/look/mono nodes (tools edit the active layer).
     TuneNode *activeTune() const;
     CurvesNode *activeCurves() const;
     LutNode *activeLut() const;
+    MonoNode *activeMono() const;
     void openToneTool();
     void closeToneTool();
     void openCurvesTool();
@@ -79,6 +82,8 @@ private:
     void openLooksTool();
     void closeLooksTool();
     void loadLookFile();
+    void openMonoTool();
+    void closeMonoTool();
     void openSelectiveTool();
     void closeSelectiveTool();
     void recomputeSelectiveMask();
@@ -120,6 +125,7 @@ private:
     TonePanel *m_tonePanel = nullptr;
     CurvesPanel *m_curvesPanel = nullptr;
     LooksPanel *m_looksPanel = nullptr;
+    MonoPanel *m_monoPanel = nullptr;
     SelectivePanel *m_selectivePanel = nullptr;
     HealPanel *m_healPanel = nullptr;
     LayersPanel *m_layersPanel = nullptr;
@@ -132,6 +138,7 @@ private:
     TuneNode *m_tune = nullptr;          // owned by m_graph
     CurvesNode *m_curves = nullptr;      // owned by m_graph
     LutNode *m_lutNode = nullptr;        // owned by m_graph
+    MonoNode *m_mono = nullptr;          // owned by m_graph
     HealNode *m_heal = nullptr;          // owned by m_graph (first in the chain)
     QString m_sourcePath;                // for a sensible default export name
     QString m_exportExt = QStringLiteral("jpg"); // remembered export format

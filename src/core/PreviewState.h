@@ -34,6 +34,17 @@ struct PreviewState {
     float selMaskMode = 0.0f;    // 0 luminosity (parametric), 1 texture (uploaded mask)
     float selInvert = 0.0f;      // 1 = invert the mask
     float layerOpacity = 1.0f;   // this layer's blend onto the running result
+    // MonoNode — monochrome conversion + toning. Weights are pre-normalised
+    // (sum 1) and the tint is pre-normalised to luma 1 so the shader is a plain
+    // dot + per-channel multiply (matches MonoNode::apply()).
+    float monoEnabled = 0.0f;       // 0/1
+    float monoR = 0.2126f;          // B&W mix weights (Rec.709 luma by default)
+    float monoG = 0.7152f;
+    float monoB = 0.0722f;
+    float monoToneStrength = 0.0f;  // tint blend [0,1]
+    float monoToneR = 1.0f;         // tint colour, normalised to luma 1
+    float monoToneG = 1.0f;
+    float monoToneB = 1.0f;
 
     friend bool operator==(const PreviewState &, const PreviewState &) = default;
 };

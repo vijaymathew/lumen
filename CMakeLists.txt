@@ -65,6 +65,8 @@ add_library(lumen_core STATIC
     src/core/Lut3D.cpp
     src/core/LutNode.h
     src/core/LutNode.cpp
+    src/core/MonoNode.h
+    src/core/MonoNode.cpp
     src/core/GuidedFilter.h
     src/core/GuidedFilter.cpp
     src/core/SelectiveMask.h
@@ -103,6 +105,8 @@ qt_add_executable(lumen
     src/ui/HealPanel.cpp
     src/ui/LayersPanel.h
     src/ui/LayersPanel.cpp
+    src/ui/MonoPanel.h
+    src/ui/MonoPanel.cpp
     src/ui/MaskGizmo.h
     src/ui/MaskGizmo.cpp
     src/ui/ExportDialog.h
@@ -210,6 +214,11 @@ if(BUILD_TESTING)
     target_link_libraries(layers_test PRIVATE lumen_core)
     target_compile_options(layers_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME layers_test COMMAND layers_test)
+
+    add_executable(mono_test tests/mono_test.cpp)
+    target_link_libraries(mono_test PRIVATE lumen_core)
+    target_compile_options(mono_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME mono_test COMMAND mono_test)
 
     add_executable(heal_test tests/heal_test.cpp)
     target_link_libraries(heal_test PRIVATE lumen_core)

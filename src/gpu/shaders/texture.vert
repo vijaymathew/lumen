@@ -22,6 +22,14 @@ layout(std140, binding = 0) uniform buf {
     float selMaskMode;
     float selInvert;
     float layerOpacity;
+    float monoEnabled; // all consumed in the fragment stage
+    float monoR;
+    float monoG;
+    float monoB;
+    float monoToneStrength;
+    float monoToneR;
+    float monoToneG;
+    float monoToneB;
 } ubuf;
 
 void main()
