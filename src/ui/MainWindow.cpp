@@ -332,6 +332,7 @@ MainWindow::MainWindow(QWidget *parent)
         MaskSpec spec = m_graph.activeLayer().mask();
         spec.feather = percent / 100.0f;
         m_graph.activeLayer().setMask(spec);
+        recomputeSelectiveMask();
         updatePreview();
         m_graph.commit();
     });
@@ -558,9 +559,17 @@ void MainWindow::toggleFullScreen()
 
 void MainWindow::updatePreview()
 {
+    // While actively painting a Brush mask, always show it (red) so the strokes
+    // you paint to *define* the region are visible even before a tone is dialled
+    // in — independent of the explicit "Show mask" toggle.
+    const bool brushEditing = m_brushTarget == BrushTarget::Selective
+        && m_graph.activeLayerIndex() > 0
+        && m_graph.activeLayer().mask().type == MaskSpec::Brush;
+    const int overlayView = (m_maskView != 0) ? m_maskView : (brushEditing ? 1 : 0);
+
     PreviewState ps = m_graph.previewState();
-    ps.selMaskView = static_cast<float>(m_maskView); // preview-only overlay
-    if (m_maskView != 0)
+    ps.selMaskView = static_cast<float>(overlayView); // preview-only overlay
+    if (overlayView != 0)
         ps.selMaskMode = 1.0f; // overlay samples the uploaded mask texture
     if (m_healPainting) {
         // Show the in-progress heal stroke as a red overlay (the mask texture),
@@ -599,7 +608,7 @@ void MainWindow::updatePreview()
         lp.opacity = layer.enabled() ? layer.opacity() : 0.0f;
         // While showing the active layer's mask overlay, suppress that layer's
         // composite so the overlay reads cleanly.
-        if (m_maskView != 0 && i == activeIdx)
+        if (overlayView != 0 && i == activeIdx)
             lp.opacity = 0.0f;
         if (layer.mask().type != MaskSpec::None && mw > 0)
             lp.layerMask = evaluateMask(layer.mask(), mw, mh, maskRgba, 4);
@@ -674,6 +683,7 @@ void MainWindow::refreshLayersPanel()
                                 m_brushHardness, m_brushAdd, m_maskView);
     syncMaskGizmo();
     updateMaskEditing();
+    recomputeSelectiveMask(); // keep the overlay in sync with the active layer
 }
 
 void MainWindow::addAdjustmentLayer()
@@ -769,6 +779,7 @@ void MainWindow::onLayerMaskEdited(const MaskSpec &spec, bool commit)
     if (m_graph.activeLayerIndex() == 0)
         return;
     m_graph.activeLayer().setMask(spec);
+    recomputeSelectiveMask(); // redraw the overlay as the gizmo drags (if shown)
     updatePreview();
     if (commit)
         m_graph.commit();
@@ -900,6 +911,7 @@ void MainWindow::updateMaskEditing()
         }
         m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f);
         m_canvas->setBrushMode(true);
+        m_canvas->setSelectiveMask(m_brushMask); // show the mask being painted
     } else if (m_brushTarget == BrushTarget::Selective) {
         m_brushTarget = BrushTarget::None;
         m_canvas->setBrushMode(false);
@@ -1029,7 +1041,11 @@ void MainWindow::syncBrushMaskToLayer()
 void MainWindow::recomputeSelectiveMask()
 {
     // Drives the preview-only "show mask" overlay (Base shader binding 4). Show
-    // the active layer's mask; brush mode uses the live working mask.
+    // the active layer's mask; brush mode uses the live working mask. The
+    // texture is only consumed while the overlay is on, so skip the work
+    // otherwise (the brush paints into the texture directly via brushAt).
+    if (m_maskView == 0)
+        return;
     if (m_graph.activeLayerIndex() == 0) {
         m_canvas->setSelectiveMask({});
         return;
@@ -1044,14 +1060,25 @@ void MainWindow::recomputeSelectiveMask()
         return;
     }
     // Evaluate at a capped resolution for a responsive overlay (export/composite
-    // recompute at full res). Luminosity/Colour need the source pixels.
+    // recompute at full res).
     constexpr int cap = 1280;
-    QImage img = m_sourceQImage;
-    if (std::max(img.width(), img.height()) > cap)
-        img = img.scaled(cap, cap, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    img = img.convertToFormat(QImage::Format_RGBA8888);
-    MaskBuffer mask = evaluateMask(m, img.width(), img.height(), img.constBits(), 4);
-    m_canvas->setSelectiveMask(mask);
+    int w = m_sourceQImage.width(), h = m_sourceQImage.height();
+    if (std::max(w, h) > cap) {
+        const double s = double(cap) / std::max(w, h);
+        w = std::max(1, static_cast<int>(std::lround(w * s)));
+        h = std::max(1, static_cast<int>(std::lround(h * s)));
+    }
+    // Geometric masks (gradient/radial) don't need pixels — skip the source copy
+    // so live gizmo dragging stays smooth. Luminosity/Colour need the rgba.
+    if (m.type == MaskSpec::Luminosity || m.type == MaskSpec::Colour) {
+        const QImage img =
+            m_sourceQImage.scaled(w, h, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                .convertToFormat(QImage::Format_RGBA8888);
+        m_canvas->setSelectiveMask(
+            evaluateMask(m, img.width(), img.height(), img.constBits(), 4));
+    } else {
+        m_canvas->setSelectiveMask(evaluateMask(m, w, h, nullptr, 4));
+    }
 }
 
 void MainWindow::initBrushMask()
