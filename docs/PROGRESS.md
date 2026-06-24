@@ -132,9 +132,7 @@ plain Qt widgets.
 | Interactive crop / rotate UI | ⬜ | On-canvas crop rectangle + free-rotate handles. The perspective/zoom homography already exists in `LensCorrectionNode`; this is the framing/gesture layer on top |
 | Sharpen (`SharpenNode`) | ✅ | Unsharp mask via `vips_sharpen` (L* only — no colour fringing); Amount + Radius. A Base node in the "baked" group (after heal, before tone) → bakes into the preview base off the UI thread (debounced), so it's capture-style sharpening. Output cast back to float to keep the pipeline invariant. `SharpenPanel` tool. `sharpen_test` (flat unchanged, edge overshoot, serialise); verified at full-res on a 20 MP CR2 |
 | Histogram | ✅ | `core/Histogram` (`computeHistogram` → 256-bin RGB from a downsampled, display-clamped copy via `vips_hist_find`); `HistogramWidget` additive RGB overlay (bottom-left), toggled from the palette. Consumes the full composite (`m_graph.result()`) computed **off the UI thread** (debounced, latest-wins), so big RAWs don't hitch. `histogram_test` covers bin placement |
-| Built-in presets (film looks) | ⬜ | Decided approach: **parametric recipes applied as a layer** (Tune/Curves/Mono node bundles; B&W films → Mono mixer). Velvia, Kodachrome 64, HP5, Delta 400, FP4. No new deps |
-| A proper whitebalance adjustment module -- if not already implemented
-| Denoise/add-noise module
+| Denoise (`DenoiseNode`) | ✅ | L*a*b*-space noise reduction: **Color** = gaussian blur of a/b; **Luminance** = self-guided `guidedFilter` on L (edge-preserving, reuses the mask filter — no new deps). Base node in the "baked" group, placed **before** sharpen (lens→heal→denoise→sharpen) so noise isn't amplified; bakes off the UI thread (debounced). `DenoisePanel` tool. `denoise_test` (luma noise reduced, edge preserved, serialise); ~1.8 s full-res on a 20 MP CR2. v1 quality (good chroma; NL-means/AI would need OpenCV) |
 | Show highlight/shadow clipping on the image
 
 ---

@@ -1,6 +1,7 @@
 #include "core/NodeFactory.h"
 
 #include "core/CurvesNode.h"
+#include "core/DenoiseNode.h"
 #include "core/EditNode.h"
 #include "core/HealNode.h"
 #include "core/LensCorrectionNode.h"
@@ -27,5 +28,7 @@ std::unique_ptr<EditNode> createNode(const QString &typeName)
         return std::make_unique<LensCorrectionNode>();
     if (typeName == QLatin1String("sharpen"))
         return std::make_unique<SharpenNode>();
+    if (typeName == QLatin1String("denoise"))
+        return std::make_unique<DenoiseNode>();
     return nullptr;
 }
