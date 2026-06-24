@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QFutureWatcher>
 #include <QImage>
 #include <QMainWindow>
@@ -11,8 +12,9 @@
 #include "core/EditGraph.h"
 #include "core/HealNode.h"
 #include "core/LutNode.h"
+#include "core/MaskSpec.h"
+#include "core/MonoNode.h"
 #include "core/SelectiveMask.h"
-#include "core/SelectiveNode.h"
 #include "core/TuneNode.h"
 #include "input/InputController.h"
 
@@ -22,8 +24,10 @@ class CanvasWidget;
 class CommandPalette;
 class CurvesPanel;
 class HealPanel;
+class LayersPanel;
+class MaskGizmo;
 class LooksPanel;
-class SelectivePanel;
+class MonoPanel;
 class TonePanel;
 class QLabel;
 
@@ -51,11 +55,32 @@ private:
     void buildCommands();
     void runCommand(const QString &id);
     void openImageDialog();
+    void saveProject();   // write the current work to a .lumen file
+    void openProject();   // pick a .lumen file via dialog, then load it
+    bool loadProjectFile(const QString &path); // load a .lumen (source + layers)
     void toggleFullScreen();
     void showHint(const QString &text);
     void layoutOverlays();
 
     void openCommandPalette();
+    void openLayersTool();    // toggles the Layers panel
+    void showLayersPanel();   // ensures it is visible (used by the selective cmd)
+    void hideLayersPanel();
+    void refreshLayersPanel();
+    void addAdjustmentLayer();
+    void deleteActiveLayer();
+    void selectLayer(int index);
+    // Mask editing for the active layer (Layers-panel controls + on-canvas gizmo).
+    void setActiveLayerMaskType(int maskType);
+    void onLayerMaskEdited(const MaskSpec &spec, bool commit);
+    void syncMaskGizmo();      // reflect the active layer's mask into the gizmo
+    void updateMaskEditing();  // enable/disable the canvas brush for a Brush mask
+    void endMaskBrushSession(); // commit in-progress mask-brush strokes
+    // The active layer's tone/curves/look/mono nodes (tools edit the active layer).
+    TuneNode *activeTune() const;
+    CurvesNode *activeCurves() const;
+    LutNode *activeLut() const;
+    MonoNode *activeMono() const;
     void openToneTool();
     void closeToneTool();
     void openCurvesTool();
@@ -63,10 +88,15 @@ private:
     void openLooksTool();
     void closeLooksTool();
     void loadLookFile();
-    void openSelectiveTool();
-    void closeSelectiveTool();
-    void recomputeSelectiveMask();
+    void openMonoTool();
+    void closeMonoTool();
+    void recomputeSelectiveMask(); // uploads the active layer's mask as the overlay
     void onColorPicked(const QPointF &imageNormalized);
+    // A selective adjustment is a masked layer (mask = Luminosity/Colour/Brush +
+    // the layer's TuneNode), edited via the Layers panel. ensureSelectiveLayer
+    // adds/selects a layer to drive and returns its index.
+    int ensureSelectiveLayer();
+    void syncBrushMaskToLayer(); // copy the working brush mask into the active layer
     void openHealTool();
     void closeHealTool();
     // base texture = source healed by the heal node. keepView preserves zoom/pan
@@ -96,8 +126,10 @@ private:
     TonePanel *m_tonePanel = nullptr;
     CurvesPanel *m_curvesPanel = nullptr;
     LooksPanel *m_looksPanel = nullptr;
-    SelectivePanel *m_selectivePanel = nullptr;
+    MonoPanel *m_monoPanel = nullptr;
     HealPanel *m_healPanel = nullptr;
+    LayersPanel *m_layersPanel = nullptr;
+    MaskGizmo *m_maskGizmo = nullptr; // on-canvas gradient/radial mask editor
     QLabel *m_hint = nullptr;
 
     // The non-destructive edit graph. The GPU preview reads the tune node's
@@ -106,12 +138,15 @@ private:
     TuneNode *m_tune = nullptr;          // owned by m_graph
     CurvesNode *m_curves = nullptr;      // owned by m_graph
     LutNode *m_lutNode = nullptr;        // owned by m_graph
-    SelectiveNode *m_selective = nullptr; // owned by m_graph
+    MonoNode *m_mono = nullptr;          // owned by m_graph
     HealNode *m_heal = nullptr;          // owned by m_graph (first in the chain)
     QString m_sourcePath;                // for a sensible default export name
     QString m_exportExt = QStringLiteral("jpg"); // remembered export format
     int m_exportQuality = 90;                    // remembered export quality
     QImage m_sourceQImage;               // for colour sampling + preview mask
+    QByteArray m_sourceBytes;            // original encoded source, for embedding in .lumen
+    QString m_sourceName;                // original source file name
+    QString m_projectPath;               // current .lumen path (empty until saved/opened)
     int m_maskView = 0;                  // selective mask overlay (preview-only)
 
     // Shared brush-paint session (used by the selective brush and the heal

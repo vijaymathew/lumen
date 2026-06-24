@@ -1,11 +1,12 @@
 #pragma once
 
 #include "core/Image.h"
+#include "core/Layer.h"
 #include "core/Lut.h"
 #include "core/Lut3D.h"
 #include "core/PreviewState.h"
 
-#include <QJsonArray>
+#include <QJsonObject>
 #include <QString>
 
 #include <memory>
@@ -14,13 +15,15 @@
 class EditNode;
 
 // EditGraph is the non-destructive pipeline: a source image plus an ordered list
-// of EditNodes. result() walks the nodes, transforming the image step by step.
+// of composited Layers (LAYERS.md). result() composites the layers via libvips;
+// a Base layer (full-coverage mask) always exists and holds the global edit, so
+// a single-layer project reduces to the old linear node chain.
 //
-// Evaluation is lazy and cached: each node's output is cached, and only dirty
-// nodes (and everything downstream of them) are recomputed. This is the core of
-// the dirty-flag / cache-invalidation system (DESIGN.md §5.1).
+// Node-level operations (addNode, etc.) delegate to the *active* layer (the Base
+// layer by default), so existing callers and the GPU preview are unchanged while
+// the multi-pass preview is built (step 3).
 //
-// Ownership: the graph owns its nodes. Accessors return non-owning pointers.
+// Ownership: the graph owns its layers and their nodes. Accessors are non-owning.
 class EditGraph {
 public:
     EditGraph();
@@ -29,71 +32,57 @@ public:
     EditGraph(const EditGraph &) = delete;
     EditGraph &operator=(const EditGraph &) = delete;
 
-    // Sets the input image. Invalidates all node caches.
+    // Sets the input image. Invalidates the pipeline.
     void setSource(const Image &source);
     const Image &source() const { return m_source; }
 
-    // Appends a node and returns a non-owning pointer to it.
+    // --- Layers ------------------------------------------------------------
+    int layerCount() const { return static_cast<int>(m_layers.size()); }
+    Layer &layer(int index) const { return *m_layers[index]; }
+    Layer &baseLayer() const { return *m_layers.front(); }
+    Layer &activeLayer() const { return *m_layers[m_activeLayer]; }
+    int activeLayerIndex() const { return m_activeLayer; }
+    void setActiveLayer(int index);
+    Layer &addLayer(const QString &name = QStringLiteral("Layer"));
+    bool removeLayer(int index); // index 0 (Base) cannot be removed
+
+    // --- Node ops (delegate to the active layer) ---------------------------
     EditNode *addNode(std::unique_ptr<EditNode> node);
-
-    // Removes the node with `id`. Returns true if it existed.
     bool removeNode(const QString &id);
+    int nodeCount() const { return activeLayer().nodeCount(); }
+    EditNode *nodeAt(int index) const { return activeLayer().nodeAt(index); }
 
-    // Moves the node at `from` to index `to`. Returns false on bad indices.
-    bool moveNode(int from, int to);
-
-    int nodeCount() const { return static_cast<int>(m_nodes.size()); }
-    EditNode *nodeAt(int index) const;
-    EditNode *findNode(const QString &id) const;
-
-    // Marks the node at `index` and every node after it dirty (their cached
-    // outputs are dropped). Call after a structural change at `index`.
-    void invalidateFrom(int index);
-
-    // Walks the graph and returns the final image, recomputing only what is
-    // dirty and reusing cache otherwise. Returns the source if there are no
-    // nodes, or a null Image if no source is set. (Full-res libvips export path.)
+    // Composites the layers at full resolution (libvips export path). Returns
+    // the source if there are no edits, or a null Image if no source is set.
     Image result();
 
-    // Accumulates the GPU preview parameters by walking enabled nodes. This is
-    // the GPU (display) path counterpart to result(). Cheap — call it on any
-    // edit and push the result to the canvas.
+    // GPU preview parameters from the Base layer (single-pass; the multi-pass
+    // chain over all layers is step 3).
     PreviewState previewState() const;
-
-    // Composes the per-channel tone-curve LUTs of all enabled curve nodes
-    // (identity if none). The canvas applies these after the PreviewState ops.
     ChannelLuts previewLut() const;
-
-    // The effective 3D LUT "look" of the enabled look nodes (the last one wins;
-    // composing multiple looks is out of scope). Invalid if there is none.
     Lut3D previewLook() const;
 
-    // --- Undo/redo ---------------------------------------------------------
-    // History is a stack of graph snapshots. Call commit() to record the current
-    // state as a new undo step (a no-op if nothing changed since the last). The
-    // typical pattern: commit() when a tool's editing session ends.
-
-    // Clears history and records the current state as the baseline. Call when
-    // loading a new image so each image has its own undo timeline.
+    // --- Undo/redo (snapshots of the whole layer list) ---------------------
     void resetHistory();
-
     void commit();
     bool canUndo() const;
     bool canRedo() const;
-    bool undo(); // restores the previous snapshot; returns false if none
-    bool redo(); // restores the next snapshot; returns false if none
+    bool undo();
+    bool redo();
 
-    // Serialises / restores all node parameters (also reusable for project I/O).
-    QJsonArray saveState() const;
-    void restoreState(const QJsonArray &state);
+    QJsonObject saveState() const;
+    void restoreState(const QJsonObject &state);
+    // Loads a project's layer stack (from project::Project::graph). Like
+    // restoreState, but matches the Base layer's nodes by type rather than id,
+    // since a project saved in another session has different node ids. Call
+    // setSource() first, then resetHistory() after.
+    void loadProjectState(const QJsonObject &state);
 
 private:
-    int indexOf(const QString &id) const;
-
     Image m_source;
-    std::vector<std::unique_ptr<EditNode>> m_nodes;
-    std::vector<Image> m_cache; // m_cache[i] = output of node i when clean
+    std::vector<std::unique_ptr<Layer>> m_layers; // [0] = Base, always present
+    int m_activeLayer = 0;
 
-    std::vector<QJsonArray> m_history;
+    std::vector<QJsonObject> m_history;
     int m_historyIndex = -1;
 };

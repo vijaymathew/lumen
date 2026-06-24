@@ -53,6 +53,8 @@ add_library(lumen_core STATIC
     src/core/EditNode.cpp
     src/core/EditGraph.h
     src/core/EditGraph.cpp
+    src/core/Layer.h
+    src/core/Layer.cpp
     src/core/TuneNode.h
     src/core/TuneNode.cpp
     src/core/Curve.h
@@ -63,12 +65,18 @@ add_library(lumen_core STATIC
     src/core/Lut3D.cpp
     src/core/LutNode.h
     src/core/LutNode.cpp
-    src/core/SelectiveNode.h
-    src/core/SelectiveNode.cpp
+    src/core/MonoNode.h
+    src/core/MonoNode.cpp
+    src/core/NodeFactory.h
+    src/core/NodeFactory.cpp
+    src/core/Project.h
+    src/core/Project.cpp
     src/core/GuidedFilter.h
     src/core/GuidedFilter.cpp
     src/core/SelectiveMask.h
     src/core/SelectiveMask.cpp
+    src/core/MaskSpec.h
+    src/core/MaskSpec.cpp
     src/core/Inpaint.h
     src/core/Inpaint.cpp
     src/core/HealNode.h
@@ -95,10 +103,14 @@ qt_add_executable(lumen
     src/ui/CurvesPanel.cpp
     src/ui/LooksPanel.h
     src/ui/LooksPanel.cpp
-    src/ui/SelectivePanel.h
-    src/ui/SelectivePanel.cpp
     src/ui/HealPanel.h
     src/ui/HealPanel.cpp
+    src/ui/LayersPanel.h
+    src/ui/LayersPanel.cpp
+    src/ui/MonoPanel.h
+    src/ui/MonoPanel.cpp
+    src/ui/MaskGizmo.h
+    src/ui/MaskGizmo.cpp
     src/ui/ExportDialog.h
     src/ui/ExportDialog.cpp
     src/ui/MainWindow.h
@@ -133,6 +145,8 @@ qt_add_shaders(lumen "lumen_shaders"
     FILES
         src/gpu/shaders/texture.vert
         src/gpu/shaders/texture.frag
+        src/gpu/shaders/present.vert
+        src/gpu/shaders/present.frag
 )
 
 if(APPLE)
@@ -187,15 +201,36 @@ if(BUILD_TESTING)
     target_compile_options(lutnode_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME lutnode_test COMMAND lutnode_test)
 
-    add_executable(selective_test tests/selective_test.cpp)
-    target_link_libraries(selective_test PRIVATE lumen_core)
-    target_compile_options(selective_test PRIVATE ${LUMEN_WARNINGS})
-    add_test(NAME selective_test COMMAND selective_test)
 
     add_executable(guided_filter_test tests/guided_filter_test.cpp)
     target_link_libraries(guided_filter_test PRIVATE lumen_core)
     target_compile_options(guided_filter_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME guided_filter_test COMMAND guided_filter_test)
+
+    add_executable(mask_test tests/mask_test.cpp)
+    target_link_libraries(mask_test PRIVATE lumen_core)
+    target_compile_options(mask_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME mask_test COMMAND mask_test)
+
+    add_executable(layers_test tests/layers_test.cpp)
+    target_link_libraries(layers_test PRIVATE lumen_core)
+    target_compile_options(layers_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME layers_test COMMAND layers_test)
+
+    add_executable(mono_test tests/mono_test.cpp)
+    target_link_libraries(mono_test PRIVATE lumen_core)
+    target_compile_options(mono_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME mono_test COMMAND mono_test)
+
+    add_executable(layer_undo_test tests/layer_undo_test.cpp)
+    target_link_libraries(layer_undo_test PRIVATE lumen_core)
+    target_compile_options(layer_undo_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME layer_undo_test COMMAND layer_undo_test)
+
+    add_executable(project_test tests/project_test.cpp)
+    target_link_libraries(project_test PRIVATE lumen_core)
+    target_compile_options(project_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME project_test COMMAND project_test)
 
     add_executable(heal_test tests/heal_test.cpp)
     target_link_libraries(heal_test PRIVATE lumen_core)

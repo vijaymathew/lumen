@@ -27,6 +27,9 @@ public:
 
     // Stable unique identifier (assigned at construction).
     const QString &id() const { return m_id; }
+    // Restores a node's id when it is recreated from a snapshot (structural
+    // undo), so id-based matching stays consistent across history.
+    void setId(const QString &id) { m_id = id; }
     // e.g. "tune", "curves", "lut".
     const QString &typeName() const { return m_typeName; }
 

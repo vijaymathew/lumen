@@ -1,0 +1,19 @@
+#version 440
+
+// Present pass: draws a textured quad to the screen with the zoom/pan transform.
+// (The adjustment chain has already run into an offscreen texture.)
+
+layout(location = 0) in vec2 position;
+layout(location = 1) in vec2 texcoord;
+
+layout(location = 0) out vec2 v_texcoord;
+
+layout(std140, binding = 0) uniform buf {
+    mat4 mvp;
+} ubuf;
+
+void main()
+{
+    v_texcoord = texcoord;
+    gl_Position = ubuf.mvp * vec4(position, 0.0, 1.0);
+}

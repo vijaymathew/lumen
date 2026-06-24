@@ -2,20 +2,27 @@
 
 #include "core/HealNode.h"
 #include "core/Image.h"
+#include "core/LayerPreview.h"
+#include "core/MaskSpec.h"
+#include "core/Project.h"
 #include "core/SelectiveMask.h"
 #include "gpu/CanvasWidget.h"
 #include "input/CommandPalette.h"
 #include "ui/CurvesPanel.h"
 #include "ui/ExportDialog.h"
 #include "ui/HealPanel.h"
+#include "ui/LayersPanel.h"
+#include "ui/MaskGizmo.h"
 #include "ui/LooksPanel.h"
-#include "ui/SelectivePanel.h"
+#include "ui/MonoPanel.h"
 #include "ui/TonePanel.h"
 
 #include <memory>
 
+#include <QBuffer>
 #include <QColor>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QKeyEvent>
@@ -188,12 +195,13 @@ MainWindow::MainWindow(QWidget *parent)
 
     // The graph owns the nodes; we keep raw pointers to drive them. Heal is
     // first (it edits source pixels, baked into the preview base), then the
-    // pointwise/LUT ops the shader replicates: tune -> curves -> lut -> selective.
+    // pointwise/LUT ops the shader replicates: tune -> curves -> lut -> mono.
+    // Selective adjustments are masked layers above the Base, not a Base node.
     m_heal = static_cast<HealNode *>(m_graph.addNode(std::make_unique<HealNode>()));
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
     m_lutNode = static_cast<LutNode *>(m_graph.addNode(std::make_unique<LutNode>()));
-    m_selective = static_cast<SelectiveNode *>(m_graph.addNode(std::make_unique<SelectiveNode>()));
+    m_mono = static_cast<MonoNode *>(m_graph.addNode(std::make_unique<MonoNode>()));
 
     m_canvas = new CanvasWidget(this);
     setCentralWidget(m_canvas);
@@ -225,66 +233,47 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_tonePanel = new TonePanel(this);
     connect(m_tonePanel, &TonePanel::valuesChanged, this, [this](const ToneValues &v) {
-        m_tune->setExposure(v.exposure); // update the model node
-        m_tune->setContrast(v.contrast);
-        m_tune->setSaturation(v.saturation);
+        if (auto *t = activeTune()) { // route to the active layer
+            t->setExposure(v.exposure);
+            t->setContrast(v.contrast);
+            t->setSaturation(v.saturation);
+        }
         updatePreview(); // preview is driven by walking the graph
     });
     connect(m_tonePanel, &TonePanel::closed, this, &MainWindow::closeToneTool);
 
     m_curvesPanel = new CurvesPanel(this);
     connect(m_curvesPanel, &CurvesPanel::curveChanged, this, [this](const ChannelCurves &c) {
-        m_curves->setCurves(c);
+        if (auto *cv = activeCurves())
+            cv->setCurves(c);
         updatePreview();
     });
 
     m_looksPanel = new LooksPanel(this);
     connect(m_looksPanel, &LooksPanel::loadRequested, this, &MainWindow::loadLookFile);
     connect(m_looksPanel, &LooksPanel::clearRequested, this, [this] {
-        m_lutNode->clear();
+        if (auto *l = activeLut())
+            l->clear();
         m_looksPanel->setLookName(QString());
         updatePreview();
     });
     connect(m_looksPanel, &LooksPanel::intensityChanged, this, [this](double v) {
-        m_lutNode->setIntensity(static_cast<float>(v));
+        if (auto *l = activeLut())
+            l->setIntensity(static_cast<float>(v));
         updatePreview();
     });
 
-    m_selectivePanel = new SelectivePanel(this);
-    connect(m_selectivePanel, &SelectivePanel::valuesChanged, this,
-            [this](const SelectiveValues &v) {
-                m_selective->setValues(v);
-                const bool brush = v.maskMode == 2;
-                m_brushTarget = brush ? BrushTarget::Selective : BrushTarget::None;
-                if (brush)
-                    m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f);
-                m_canvas->setBrushMode(brush);
-                if (brush && m_brushMask.isEmpty())
-                    initBrushMask();
-                recomputeSelectiveMask();
-                updatePreview();
-            });
-    connect(m_selectivePanel, &SelectivePanel::maskViewChanged, this, [this](int mode) {
-        m_maskView = mode;
+    m_monoPanel = new MonoPanel(this);
+    connect(m_monoPanel, &MonoPanel::valuesChanged, this, [this](const MonoValues &v) {
+        if (auto *mono = activeMono())
+            mono->setValues(v);
         updatePreview();
     });
-    connect(m_selectivePanel, &SelectivePanel::pickColorRequested, this,
-            [this] { m_canvas->setColorPickMode(true); });
+    connect(m_monoPanel, &MonoPanel::closed, this, &MainWindow::closeMonoTool);
+
+    // Mask colour-pick + brush painting are driven from the Layers panel now;
+    // the canvas wiring stays here.
     connect(m_canvas, &CanvasWidget::colorPointPicked, this, &MainWindow::onColorPicked);
-    connect(m_selectivePanel, &SelectivePanel::brushSettingsChanged, this,
-            [this](int size, int hardness, bool add) {
-                m_brushSize = size;
-                m_brushHardness = hardness;
-                m_brushAdd = add;
-                m_canvas->setBrushCursor(size, hardness / 100.0f);
-            });
-    connect(m_selectivePanel, &SelectivePanel::brushClearRequested, this, [this] {
-        if (m_brushMask.isEmpty())
-            return;
-        m_brushUndo.push_back(m_brushMask.data); // clear is undoable
-        std::fill(m_brushMask.data.begin(), m_brushMask.data.end(), 0.0f);
-        m_canvas->setSelectiveMask(m_brushMask);
-    });
     connect(m_canvas, &CanvasWidget::brushStrokeBegan, this, &MainWindow::beginBrushStroke);
     connect(m_canvas, &CanvasWidget::brushPoint, this, &MainWindow::brushAt);
     connect(m_canvas, &CanvasWidget::brushStrokeEnded, this, &MainWindow::endBrushStroke);
@@ -324,13 +313,97 @@ MainWindow::MainWindow(QWidget *parent)
         updatePreview();
     });
 
+    m_layersPanel = new LayersPanel(this);
+    connect(m_layersPanel, &LayersPanel::addRequested, this, &MainWindow::addAdjustmentLayer);
+    connect(m_layersPanel, &LayersPanel::deleteRequested, this, &MainWindow::deleteActiveLayer);
+    connect(m_layersPanel, &LayersPanel::layerSelected, this, &MainWindow::selectLayer);
+    connect(m_layersPanel, &LayersPanel::visibilityToggled, this, [this](int i, bool on) {
+        if (i >= 0 && i < m_graph.layerCount()) {
+            m_graph.layer(i).setEnabled(on);
+            refreshLayersPanel();
+            updatePreview();
+            m_graph.commit();
+        }
+    });
+    connect(m_layersPanel, &LayersPanel::opacityChanged, this, [this](int percent) {
+        m_graph.activeLayer().setOpacity(percent / 100.0f);
+        updatePreview();
+    });
+    connect(m_layersPanel, &LayersPanel::maskTypeChanged, this,
+            &MainWindow::setActiveLayerMaskType);
+    connect(m_layersPanel, &LayersPanel::maskFeatherChanged, this, [this](int percent) {
+        MaskSpec spec = m_graph.activeLayer().mask();
+        spec.feather = percent / 100.0f;
+        m_graph.activeLayer().setMask(spec);
+        recomputeSelectiveMask();
+        updatePreview();
+        m_graph.commit();
+    });
+    connect(m_layersPanel, &LayersPanel::maskInvertChanged, this, [this](bool on) {
+        MaskSpec spec = m_graph.activeLayer().mask();
+        spec.invert = on;
+        m_graph.activeLayer().setMask(spec);
+        recomputeSelectiveMask();
+        updatePreview();
+        m_graph.commit();
+    });
+    connect(m_layersPanel, &LayersPanel::maskRangeChanged, this, [this](int low, int high) {
+        MaskSpec spec = m_graph.activeLayer().mask();
+        spec.low = low / 100.0f;
+        spec.high = high / 100.0f;
+        m_graph.activeLayer().setMask(spec);
+        recomputeSelectiveMask();
+        updatePreview();
+        m_graph.commit();
+    });
+    connect(m_layersPanel, &LayersPanel::maskColorRangeChanged, this, [this](int percent) {
+        MaskSpec spec = m_graph.activeLayer().mask();
+        spec.colorRange = percent / 100.0f;
+        m_graph.activeLayer().setMask(spec);
+        recomputeSelectiveMask();
+        updatePreview();
+        m_graph.commit();
+    });
+    connect(m_layersPanel, &LayersPanel::maskPickColorRequested, this,
+            [this] { m_canvas->setColorPickMode(true); });
+    connect(m_layersPanel, &LayersPanel::maskShowChanged, this, [this](int mode) {
+        m_maskView = mode;
+        recomputeSelectiveMask();
+        updatePreview();
+    });
+    connect(m_layersPanel, &LayersPanel::brushSettingsChanged, this,
+            [this](int size, int hardness, bool add) {
+                m_brushSize = size;
+                m_brushHardness = hardness;
+                m_brushAdd = add;
+                m_canvas->setBrushCursor(size, hardness / 100.0f);
+            });
+    connect(m_layersPanel, &LayersPanel::brushClearRequested, this, [this] {
+        if (m_brushMask.isEmpty())
+            return;
+        m_brushUndo.push_back(m_brushMask.data); // clear is undoable
+        std::fill(m_brushMask.data.begin(), m_brushMask.data.end(), 0.0f);
+        syncBrushMaskToLayer();
+        m_canvas->setSelectiveMask(m_brushMask);
+        updatePreview();
+    });
+
+    // On-canvas gizmo for editing a layer's gradient/radial mask geometry.
+    m_maskGizmo = new MaskGizmo(m_canvas, this);
+    connect(m_maskGizmo, &MaskGizmo::changed, this,
+            [this](const MaskSpec &s) { onLayerMaskEdited(s, /*commit=*/false); });
+    connect(m_maskGizmo, &MaskGizmo::editFinished, this,
+            [this](const MaskSpec &s) { onLayerMaskEdited(s, /*commit=*/true); });
+    connect(m_canvas, &CanvasWidget::viewChanged, m_maskGizmo, &MaskGizmo::refresh);
+
     // Dismissible hint bar, bottom-centre over the canvas.
     m_hint = new QLabel(this);
     m_hint->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_hint->setStyleSheet(QStringLiteral(
         "background: rgba(20,20,22,0.85); border-radius: 8px;"
         "padding: 6px 16px; color: #c8c8cc; font-size: 12px;"));
-    m_hint->setText(QStringLiteral("/  command palette   ·   Ctrl+O open   ·   F11 fullscreen"));
+    m_hint->setText(QStringLiteral(
+        "/  command palette   ·   Ctrl+O open   ·   Ctrl+S save project   ·   F11 fullscreen"));
     m_hint->adjustSize();
 
     buildCommands();
@@ -338,6 +411,8 @@ MainWindow::MainWindow(QWidget *parent)
     // Shell shortcuts. Bare keys are avoided so they don't clash with typing in
     // the palette; "/" and Esc are handled in keyPressEvent instead.
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+O")), this, [this] { openImageDialog(); });
+    new QShortcut(QKeySequence(QStringLiteral("Ctrl+S")), this, [this] { saveProject(); });
+    new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")), this, [this] { openProject(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Q")), this, [this] { close(); });
     new QShortcut(QKeySequence(Qt::Key_F11), this, [this] { toggleFullScreen(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+0")), this, [this] { m_canvas->resetView(); });
@@ -352,6 +427,8 @@ void MainWindow::buildCommands()
     // ids consumed by runCommand(). Editing tools are placeholders for now.
     m_palette->setCommands({
         {QStringLiteral("open"), QStringLiteral("Open image…")},
+        {QStringLiteral("open-project"), QStringLiteral("Open project (.lumen)…")},
+        {QStringLiteral("save-project"), QStringLiteral("Save project (.lumen)…")},
         {QStringLiteral("export"), QStringLiteral("Export image…")},
         {QStringLiteral("tone"), QStringLiteral("Tone (exposure, contrast, saturation)")},
         {QStringLiteral("curves"), QStringLiteral("Curves")},
@@ -360,8 +437,10 @@ void MainWindow::buildCommands()
         {QStringLiteral("reset-view"), QStringLiteral("Reset view")},
         {QStringLiteral("fullscreen"), QStringLiteral("Toggle fullscreen")},
         {QStringLiteral("looks"), QStringLiteral("Looks (LUT)")},
+        {QStringLiteral("monochrome"), QStringLiteral("Monochrome (B&W + toning)")},
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment")},
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
+        {QStringLiteral("layers"), QStringLiteral("Layers")},
         {QStringLiteral("quit"), QStringLiteral("Quit Lumen")},
     });
 }
@@ -370,6 +449,10 @@ void MainWindow::runCommand(const QString &id)
 {
     if (id == QLatin1String("open")) {
         openImageDialog();
+    } else if (id == QLatin1String("open-project")) {
+        openProject();
+    } else if (id == QLatin1String("save-project")) {
+        saveProject();
     } else if (id == QLatin1String("export")) {
         exportImage();
     } else if (id == QLatin1String("tone")) {
@@ -378,10 +461,18 @@ void MainWindow::runCommand(const QString &id)
         openCurvesTool();
     } else if (id == QLatin1String("looks")) {
         openLooksTool();
+    } else if (id == QLatin1String("monochrome")) {
+        openMonoTool();
     } else if (id == QLatin1String("selective")) {
-        openSelectiveTool();
+        // A selective adjustment is a masked layer: add/select one, reveal its
+        // mask editor (Layers panel) and the Tone tool to adjust it.
+        ensureSelectiveLayer();
+        showLayersPanel();
+        openToneTool();
     } else if (id == QLatin1String("heal")) {
         openHealTool();
+    } else if (id == QLatin1String("layers")) {
+        openLayersTool();
     } else if (id == QLatin1String("undo")) {
         doUndo();
     } else if (id == QLatin1String("redo")) {
@@ -400,12 +491,21 @@ void MainWindow::runCommand(const QString &id)
 
 bool MainWindow::openPath(const QString &path)
 {
+    if (path.endsWith(QStringLiteral(".lumen"), Qt::CaseInsensitive))
+        return loadProjectFile(path); // a project, not a raw image
+
     QString error;
     Image source = Image::fromFile(path, &error);
     if (source.isNull()) {
         QMessageBox::warning(this, QStringLiteral("Lumen"), error);
         return false;
     }
+
+    // Keep the original encoded bytes so we can embed them verbatim in a .lumen.
+    QFile srcFile(path);
+    m_sourceBytes = srcFile.open(QIODevice::ReadOnly) ? srcFile.readAll() : QByteArray();
+    m_sourceName = QFileInfo(path).fileName();
+    m_projectPath.clear(); // opening a raw image starts a new (unsaved) project
 
     m_sourceQImage = source.toQImage();
     m_graph.setSource(source);            // full-res source for export
@@ -415,6 +515,114 @@ bool MainWindow::openPath(const QString &path)
     m_graph.resetHistory(); // fresh undo timeline for this image
     m_sourcePath = path;
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
+    return true;
+}
+
+void MainWindow::saveProject()
+{
+    if (m_graph.source().isNull()) {
+        showHint(QStringLiteral("Open an image before saving a project"));
+        return;
+    }
+
+    // Default name: next to the source, "<name>.lumen".
+    const QFileInfo src(m_projectPath.isEmpty() ? m_sourcePath : m_projectPath);
+    const QString suggested =
+        src.dir().filePath(src.completeBaseName() + QStringLiteral(".lumen"));
+    QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Save project"), suggested,
+        QStringLiteral("Lumen project (*.lumen)"));
+    if (path.isEmpty())
+        return;
+    if (!path.endsWith(QStringLiteral(".lumen"), Qt::CaseInsensitive))
+        path += QStringLiteral(".lumen");
+
+    // Embed the original bytes; fall back to a PNG of the source if unavailable.
+    QByteArray bytes = m_sourceBytes;
+    QString name = m_sourceName;
+    if (bytes.isEmpty() && !m_sourceQImage.isNull()) {
+        QBuffer buf(&bytes);
+        buf.open(QIODevice::WriteOnly);
+        m_sourceQImage.save(&buf, "PNG");
+        name = QStringLiteral("source.png");
+    }
+
+    QString error;
+    if (!project::save(path, m_graph.saveState(), bytes, name, &error)) {
+        QMessageBox::warning(this, QStringLiteral("Lumen"),
+                             QStringLiteral("Could not save project: %1").arg(error));
+        return;
+    }
+    m_projectPath = path;
+    setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
+    showHint(QStringLiteral("Saved %1").arg(QFileInfo(path).fileName()));
+}
+
+void MainWindow::openProject()
+{
+    const QString dir =
+        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("Open project"), dir,
+        QStringLiteral("Lumen project (*.lumen)"));
+    if (!path.isEmpty())
+        loadProjectFile(path);
+}
+
+bool MainWindow::loadProjectFile(const QString &path)
+{
+    QString error;
+    project::Project proj;
+    if (!project::load(path, &proj, &error)) {
+        QMessageBox::warning(this, QStringLiteral("Lumen"), error);
+        return false;
+    }
+    Image source =
+        Image::fromBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error);
+    if (source.isNull()) {
+        QMessageBox::warning(this, QStringLiteral("Lumen"),
+                             QStringLiteral("Could not decode the embedded image: %1").arg(error));
+        return false;
+    }
+
+    // Reset any active editing state, then load the document.
+    m_brushTarget = BrushTarget::None;
+    m_maskView = 0;
+    m_brushUndo.clear();
+    m_sourceBytes = proj.sourceBytes;
+    m_sourceName = proj.sourceName;
+    m_sourceQImage = source.toQImage();
+    m_graph.setSource(source);
+    m_graph.loadProjectState(proj.graph);
+
+    refreshBaseImage(false); // re-applies the heal mask, fits the view
+    recomputeSelectiveMask();
+    updatePreview();
+    m_graph.resetHistory();
+
+    m_projectPath = path;
+    m_sourcePath = path; // export defaults to "<project>-edited.<ext>"
+    if (m_layersPanel->isVisible())
+        refreshLayersPanel();
+    // Reseed any open adjustment tool from the newly-active layer (guarded).
+    if (m_tonePanel->isVisible()) {
+        if (auto *t = activeTune())
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation()});
+    }
+    if (m_curvesPanel->isVisible()) {
+        if (auto *c = activeCurves())
+            m_curvesPanel->reveal(c->curves());
+    }
+    if (m_looksPanel->isVisible()) {
+        if (auto *l = activeLut())
+            m_looksPanel->reveal(QFileInfo(l->sourcePath()).fileName(), l->intensity());
+    }
+    if (m_monoPanel->isVisible()) {
+        if (auto *mono = activeMono())
+            m_monoPanel->reveal(mono->values());
+    }
+    setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
+    showHint(QStringLiteral("Opened %1").arg(QFileInfo(path).fileName()));
     return true;
 }
 
@@ -480,8 +688,18 @@ void MainWindow::toggleFullScreen()
 
 void MainWindow::updatePreview()
 {
+    // While actively painting a Brush mask, always show it (red) so the strokes
+    // you paint to *define* the region are visible even before a tone is dialled
+    // in — independent of the explicit "Show mask" toggle.
+    const bool brushEditing = m_brushTarget == BrushTarget::Selective
+        && m_graph.activeLayerIndex() > 0
+        && m_graph.activeLayer().mask().type == MaskSpec::Brush;
+    const int overlayView = (m_maskView != 0) ? m_maskView : (brushEditing ? 1 : 0);
+
     PreviewState ps = m_graph.previewState();
-    ps.selMaskView = static_cast<float>(m_maskView); // preview-only overlay
+    ps.selMaskView = static_cast<float>(overlayView); // preview-only overlay
+    if (overlayView != 0)
+        ps.selMaskMode = 1.0f; // overlay samples the uploaded mask texture
     if (m_healPainting) {
         // Show the in-progress heal stroke as a red overlay (the mask texture),
         // without any selective adjustment.
@@ -492,6 +710,218 @@ void MainWindow::updatePreview()
     m_canvas->setPreviewState(ps);
     m_canvas->setCurveLuts(m_graph.previewLut());
     m_canvas->setLut3D(m_graph.previewLook());
+
+    // A capped-resolution sRGB copy of the source, for evaluating data-driven
+    // (luminosity/colour) layer masks; geometric masks ignore it.
+    constexpr int cap = 1280;
+    QImage maskSrc;
+    if (!m_sourceQImage.isNull()) {
+        maskSrc = m_sourceQImage;
+        if (std::max(maskSrc.width(), maskSrc.height()) > cap)
+            maskSrc = maskSrc.scaled(cap, cap, Qt::KeepAspectRatio,
+                                     Qt::SmoothTransformation);
+        maskSrc = maskSrc.convertToFormat(QImage::Format_RGBA8888);
+    }
+    const int mw = maskSrc.width(), mh = maskSrc.height();
+    const uint8_t *maskRgba = maskSrc.isNull() ? nullptr : maskSrc.constBits();
+
+    // Layers above the Base, composited as extra GPU passes.
+    const int activeIdx = m_graph.activeLayerIndex();
+    std::vector<LayerPreview> extras;
+    for (int i = 1; i < m_graph.layerCount(); ++i) {
+        Layer &layer = m_graph.layer(i);
+        LayerPreview lp;
+        layer.contributeToPreview(lp.state);
+        layer.contributeToPreviewLut(lp.curves);
+        lp.look = layer.look();
+        lp.opacity = layer.enabled() ? layer.opacity() : 0.0f;
+        // While showing the active layer's mask overlay, suppress that layer's
+        // composite so the overlay reads cleanly.
+        if (overlayView != 0 && i == activeIdx)
+            lp.opacity = 0.0f;
+        if (layer.mask().type != MaskSpec::None && mw > 0)
+            lp.layerMask = evaluateMask(layer.mask(), mw, mh, maskRgba, 4);
+        extras.push_back(std::move(lp));
+    }
+    m_canvas->setExtraLayers(extras);
+}
+
+TuneNode *MainWindow::activeTune() const
+{
+    return static_cast<TuneNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("tune")));
+}
+
+CurvesNode *MainWindow::activeCurves() const
+{
+    return static_cast<CurvesNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("curves")));
+}
+
+LutNode *MainWindow::activeLut() const
+{
+    return static_cast<LutNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("lut")));
+}
+
+MonoNode *MainWindow::activeMono() const
+{
+    return static_cast<MonoNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("mono")));
+}
+
+void MainWindow::openLayersTool()
+{
+    if (m_layersPanel->isVisible())
+        hideLayersPanel();
+    else
+        showLayersPanel();
+}
+
+void MainWindow::showLayersPanel()
+{
+    const bool wasVisible = m_layersPanel->isVisible();
+    if (!wasVisible)
+        m_layersPanel->move(18, 18); // top-left, opposite the tool panels
+    m_layersPanel->show();
+    m_layersPanel->raise();
+    refreshLayersPanel();
+}
+
+void MainWindow::hideLayersPanel()
+{
+    endMaskBrushSession();           // commit any in-progress mask-brush strokes
+    m_layersPanel->hide();
+    m_canvas->setColorPickMode(false);
+    if (m_brushTarget == BrushTarget::Selective) {
+        m_brushTarget = BrushTarget::None;
+        m_canvas->setBrushMode(false);
+    }
+    if (m_maskView != 0) {           // clear the mask overlay
+        m_maskView = 0;
+        updatePreview();
+    }
+    syncMaskGizmo();                 // hide the gizmo
+}
+
+void MainWindow::refreshLayersPanel()
+{
+    QVector<LayersPanel::Row> rows;
+    for (int i = 0; i < m_graph.layerCount(); ++i)
+        rows.append({m_graph.layer(i).name(), m_graph.layer(i).enabled()});
+    const int active = m_graph.activeLayerIndex();
+    m_layersPanel->setLayers(rows, active,
+                             static_cast<int>(std::lround(m_graph.activeLayer().opacity() * 100)));
+    m_layersPanel->setMaskState(m_graph.activeLayer().mask(), active == 0, m_brushSize,
+                                m_brushHardness, m_brushAdd, m_maskView);
+    syncMaskGizmo();
+    updateMaskEditing();
+    recomputeSelectiveMask(); // keep the overlay in sync with the active layer
+}
+
+void MainWindow::addAdjustmentLayer()
+{
+    Layer &layer = m_graph.addLayer(
+        QStringLiteral("Layer %1").arg(m_graph.layerCount()));
+    // Every adjustment layer gets a tone/curves/look node set (added to it as
+    // it is now the active layer).
+    m_graph.addNode(std::make_unique<TuneNode>());
+    m_graph.addNode(std::make_unique<CurvesNode>());
+    m_graph.addNode(std::make_unique<LutNode>());
+    m_graph.addNode(std::make_unique<MonoNode>());
+    Q_UNUSED(layer);
+    refreshLayersPanel();
+    updatePreview();
+    m_graph.commit();
+}
+
+void MainWindow::deleteActiveLayer()
+{
+    if (m_graph.removeLayer(m_graph.activeLayerIndex())) {
+        refreshLayersPanel();
+        updatePreview();
+        m_graph.commit();
+    }
+}
+
+void MainWindow::selectLayer(int index)
+{
+    endMaskBrushSession(); // commit the current layer's mask-brush before switching
+    m_graph.setActiveLayer(index);
+    refreshLayersPanel();
+    // Reseed any open adjustment tool with the newly-active layer's values
+    // (guarded — a layer may not carry every node type, e.g. a selective layer).
+    if (m_tonePanel->isVisible()) {
+        if (auto *t = activeTune())
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation()});
+    }
+    if (m_curvesPanel->isVisible()) {
+        if (auto *c = activeCurves())
+            m_curvesPanel->reveal(c->curves());
+    }
+    if (m_looksPanel->isVisible()) {
+        if (auto *l = activeLut())
+            m_looksPanel->reveal(QFileInfo(l->sourcePath()).fileName(), l->intensity());
+    }
+    if (m_monoPanel->isVisible()) {
+        if (!activeMono()) {
+            m_graph.addNode(std::make_unique<MonoNode>());
+            m_graph.commit();
+        }
+        m_monoPanel->reveal(activeMono()->values());
+    }
+}
+
+void MainWindow::setActiveLayerMaskType(int maskType)
+{
+    if (m_graph.activeLayerIndex() == 0)
+        return; // the Base layer has no mask
+    MaskSpec spec = m_graph.activeLayer().mask();
+    const auto type = static_cast<MaskSpec::Type>(maskType);
+    if (spec.type == type)
+        return;
+
+    endMaskBrushSession(); // committing the previous brush if we're leaving it
+
+    // Seed sensible defaults when first switching to a given mask type.
+    if (type == MaskSpec::LinearGradient && spec.type != MaskSpec::LinearGradient) {
+        spec.gradFrom = {0.2, 0.5};
+        spec.gradTo = {0.8, 0.5};
+    } else if (type == MaskSpec::Radial && spec.type != MaskSpec::Radial) {
+        spec.center = {0.5, 0.5};
+        spec.radiusX = 0.3f;
+        spec.radiusY = 0.3f;
+    } else if (type == MaskSpec::Brush && spec.brush.isEmpty()) {
+        initBrushMask();
+        spec.brush = m_brushMask;
+    }
+    spec.type = type;
+    m_graph.activeLayer().setMask(spec);
+
+    m_layersPanel->setMaskState(spec, /*isBaseActive=*/false, m_brushSize, m_brushHardness,
+                                m_brushAdd, m_maskView);
+    syncMaskGizmo();
+    updateMaskEditing(); // turn the canvas brush on/off for a Brush mask
+    recomputeSelectiveMask();
+    updatePreview();
+    m_graph.commit();
+}
+
+void MainWindow::onLayerMaskEdited(const MaskSpec &spec, bool commit)
+{
+    if (m_graph.activeLayerIndex() == 0)
+        return;
+    m_graph.activeLayer().setMask(spec);
+    recomputeSelectiveMask(); // redraw the overlay as the gizmo drags (if shown)
+    updatePreview();
+    if (commit)
+        m_graph.commit();
+}
+
+void MainWindow::syncMaskGizmo()
+{
+    // The gizmo shows itself only for gradient/radial masks on a non-Base layer.
+    if (m_graph.activeLayerIndex() == 0)
+        m_maskGizmo->setSpec(MaskSpec{}); // None → hides
+    else
+        m_maskGizmo->setSpec(m_graph.activeLayer().mask());
+    layoutOverlays(); // re-apply gizmo geometry + z-order
 }
 
 void MainWindow::openToneTool()
@@ -501,7 +931,7 @@ void MainWindow::openToneTool()
     m_tonePanel->adjustSize();
     const int margin = 18;
     m_tonePanel->move(width() - m_tonePanel->width() - margin, margin);
-    m_tonePanel->reveal({m_tune->exposure(), m_tune->contrast(), m_tune->saturation()});
+    m_tonePanel->reveal({activeTune()->exposure(), activeTune()->contrast(), activeTune()->saturation()});
 }
 
 void MainWindow::closeToneTool()
@@ -518,7 +948,7 @@ void MainWindow::openCurvesTool()
     m_curvesPanel->adjustSize();
     const int margin = 18;
     m_curvesPanel->move(width() - m_curvesPanel->width() - margin, margin);
-    m_curvesPanel->reveal(m_curves->curves());
+    m_curvesPanel->reveal(activeCurves()->curves());
 }
 
 void MainWindow::closeCurvesTool()
@@ -535,14 +965,36 @@ void MainWindow::openLooksTool()
     m_looksPanel->adjustSize();
     const int margin = 18;
     m_looksPanel->move(width() - m_looksPanel->width() - margin, margin);
-    m_looksPanel->reveal(QFileInfo(m_lutNode->sourcePath()).fileName(),
-                         m_lutNode->intensity());
+    m_looksPanel->reveal(QFileInfo(activeLut()->sourcePath()).fileName(), activeLut()->intensity());
 }
 
 void MainWindow::closeLooksTool()
 {
     m_looksPanel->hide();
     m_graph.commit();
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::openMonoTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    // Most layers carry a mono node; a layer added by another tool (e.g. a
+    // selective layer) may not, so add one on demand.
+    if (!activeMono()) {
+        m_graph.addNode(std::make_unique<MonoNode>());
+        m_graph.commit();
+    }
+    m_monoPanel->adjustSize();
+    const int margin = 18;
+    m_monoPanel->move(width() - m_monoPanel->width() - margin, margin);
+    m_monoPanel->reveal(activeMono()->values());
+}
+
+void MainWindow::closeMonoTool()
+{
+    m_monoPanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
@@ -558,7 +1010,7 @@ void MainWindow::loadLookFile()
         return;
 
     QString error;
-    if (!m_lutNode->loadHald(path, &error)) {
+    if (!activeLut()->loadHald(path, &error)) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Could not load look: %1").arg(error));
         return;
@@ -567,46 +1019,42 @@ void MainWindow::loadLookFile()
     updatePreview();
 }
 
-void MainWindow::openSelectiveTool()
+void MainWindow::updateMaskEditing()
 {
-    m_input.setMode(InputController::Mode::ToolActive);
-    m_maskView = 0; // panel resets its toggle on reveal too
-    m_selectivePanel->adjustSize();
-    const int margin = 18;
-    m_selectivePanel->move(width() - m_selectivePanel->width() - margin, margin);
-    m_selectivePanel->reveal(m_selective->values());
-
-    // Restore the brush session from the node (may be empty).
-    m_brushMask = m_selective->brushMask();
-    m_brushUndo.clear();
-    m_brushHasLast = false;
-    const bool brush = m_selective->values().maskMode == 2;
-    m_brushTarget = brush ? BrushTarget::Selective : BrushTarget::None;
-    if (brush && m_brushMask.isEmpty())
-        initBrushMask();
-    if (brush)
+    // The active layer's mask is a Brush mask and the Layers panel is open:
+    // enable the canvas brush so left-drag paints. (Heal owns the brush when its
+    // tool is active, so don't fight it.)
+    if (m_brushTarget == BrushTarget::Heal)
+        return;
+    const int idx = m_graph.activeLayerIndex();
+    const bool brushLayer = m_layersPanel->isVisible() && idx > 0
+        && m_graph.activeLayer().mask().type == MaskSpec::Brush;
+    if (brushLayer) {
+        if (m_brushTarget != BrushTarget::Selective) {
+            m_brushMask = m_graph.activeLayer().mask().brush;
+            if (m_brushMask.isEmpty())
+                initBrushMask();
+            m_brushUndo.clear();
+            m_brushHasLast = false;
+            m_brushTarget = BrushTarget::Selective;
+        }
         m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f);
-    m_canvas->setBrushMode(brush);
-
-    recomputeSelectiveMask();
-    updatePreview();
+        m_canvas->setBrushMode(true);
+        m_canvas->setSelectiveMask(m_brushMask); // show the mask being painted
+    } else if (m_brushTarget == BrushTarget::Selective) {
+        m_brushTarget = BrushTarget::None;
+        m_canvas->setBrushMode(false);
+    }
 }
 
-void MainWindow::closeSelectiveTool()
+void MainWindow::endMaskBrushSession()
 {
-    m_selectivePanel->hide();
-    m_canvas->setColorPickMode(false);
-    m_canvas->setBrushMode(false);
-    m_brushTarget = BrushTarget::None;
-    // Commit the painted mask into the node (one global undo step).
-    if (m_selective->values().maskMode == 2)
-        m_selective->setBrushMask(m_brushMask);
-    m_brushUndo.clear();
-    m_maskView = 0; // clear the mask overlay
-    updatePreview();
-    m_graph.commit();
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    // The strokes are already synced into the active layer's mask (brushAt), so
+    // committing snapshots them as one undo step.
+    if (m_brushTarget == BrushTarget::Selective) {
+        m_graph.commit();
+        m_brushUndo.clear();
+    }
 }
 
 void MainWindow::openHealTool()
@@ -675,28 +1123,91 @@ void MainWindow::refreshBaseImage(bool keepView)
     }));
 }
 
+int MainWindow::ensureSelectiveLayer()
+{
+    // A selective edit operates on a non-Base layer whose mask is data-driven
+    // (luminosity/colour/brush) or still unset. If the active layer isn't such a
+    // layer (it's the Base, or carries a geometric gradient/radial mask), add a
+    // fresh adjustment layer so we never clobber a geometric mask.
+    const auto selectable = [](MaskSpec::Type t) {
+        return t == MaskSpec::None || t == MaskSpec::Luminosity
+            || t == MaskSpec::Colour || t == MaskSpec::Brush;
+    };
+    int idx = m_graph.activeLayerIndex();
+    if (idx == 0 || !selectable(m_graph.layer(idx).mask().type)) {
+        m_graph.addLayer(QStringLiteral("Selective %1").arg(m_graph.layerCount()));
+        // Full adjustment node set so any tool (Tone/Curves/Looks/Mono) works.
+        m_graph.addNode(std::make_unique<TuneNode>());
+        m_graph.addNode(std::make_unique<CurvesNode>());
+        m_graph.addNode(std::make_unique<LutNode>());
+        m_graph.addNode(std::make_unique<MonoNode>());
+        idx = m_graph.activeLayerIndex();
+    }
+    // Default a still-unset mask to a full-range luminosity mask (a no-op until
+    // the range or adjustment is dialled in), so the panel has something to edit.
+    Layer &layer = m_graph.layer(idx);
+    if (layer.mask().type == MaskSpec::None) {
+        MaskSpec m;
+        m.type = MaskSpec::Luminosity;
+        layer.setMask(m);
+    }
+    m_graph.commit();
+    return idx;
+}
+
+void MainWindow::syncBrushMaskToLayer()
+{
+    if (m_graph.activeLayerIndex() == 0)
+        return;
+    Layer &layer = m_graph.activeLayer();
+    if (layer.mask().type != MaskSpec::Brush)
+        return;
+    MaskSpec m = layer.mask();
+    m.brush = m_brushMask;
+    layer.setMask(m);
+}
+
 void MainWindow::recomputeSelectiveMask()
 {
-    const SelectiveValues v = m_selective->values();
-    if (v.maskMode == 2) {
-        m_canvas->setSelectiveMask(m_brushMask); // painted mask
+    // Drives the preview-only "show mask" overlay (Base shader binding 4). Show
+    // the active layer's mask; brush mode uses the live working mask. The
+    // texture is only consumed while the overlay is on, so skip the work
+    // otherwise (the brush paints into the texture directly via brushAt).
+    if (m_maskView == 0)
+        return;
+    if (m_graph.activeLayerIndex() == 0) {
+        m_canvas->setSelectiveMask({});
         return;
     }
-    if (v.maskMode != 1 || m_sourceQImage.isNull()) {
-        m_canvas->setSelectiveMask({}); // luminosity mode is parametric in-shader
+    const MaskSpec &m = m_graph.activeLayer().mask();
+    if (m.type == MaskSpec::Brush) {
+        m_canvas->setSelectiveMask(m_brushMask);
         return;
     }
-
-    // Compute the colour-affinity mask from the source at a capped resolution
-    // for a responsive preview (export recomputes at full res in the node).
+    if (m.type == MaskSpec::None || m_sourceQImage.isNull()) {
+        m_canvas->setSelectiveMask({});
+        return;
+    }
+    // Evaluate at a capped resolution for a responsive overlay (export/composite
+    // recompute at full res).
     constexpr int cap = 1280;
-    QImage img = m_sourceQImage;
-    if (std::max(img.width(), img.height()) > cap)
-        img = img.scaled(cap, cap, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    img = img.convertToFormat(QImage::Format_RGBA8888);
-    MaskBuffer mask = colorAffinityMask(img.constBits(), img.width(), img.height(), 4,
-                                        v.targetR, v.targetG, v.targetB, v.colorRange);
-    m_canvas->setSelectiveMask(mask);
+    int w = m_sourceQImage.width(), h = m_sourceQImage.height();
+    if (std::max(w, h) > cap) {
+        const double s = double(cap) / std::max(w, h);
+        w = std::max(1, static_cast<int>(std::lround(w * s)));
+        h = std::max(1, static_cast<int>(std::lround(h * s)));
+    }
+    // Geometric masks (gradient/radial) don't need pixels — skip the source copy
+    // so live gizmo dragging stays smooth. Luminosity/Colour need the rgba.
+    if (m.type == MaskSpec::Luminosity || m.type == MaskSpec::Colour) {
+        const QImage img =
+            m_sourceQImage.scaled(w, h, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                .convertToFormat(QImage::Format_RGBA8888);
+        m_canvas->setSelectiveMask(
+            evaluateMask(m, img.width(), img.height(), img.constBits(), 4));
+    } else {
+        m_canvas->setSelectiveMask(evaluateMask(m, w, h, nullptr, 4));
+    }
 }
 
 void MainWindow::initBrushMask()
@@ -771,7 +1282,11 @@ void MainWindow::brushAt(const QPointF &norm)
         m_healPainting = true;
         updatePreview();
     } else {
+        // Selective brush: the painted mask is the active layer's mask, so push
+        // it down and refresh the masked adjustment live (overlay too if shown).
+        syncBrushMaskToLayer();
         m_canvas->setSelectiveMask(m_brushMask);
+        updatePreview();
     }
 }
 
@@ -800,7 +1315,9 @@ bool MainWindow::brushSessionUndo()
         recomputeSelectiveMask();
         updatePreview();
     } else {
+        syncBrushMaskToLayer();
         m_canvas->setSelectiveMask(m_brushMask);
+        updatePreview();
     }
     return true;
 }
@@ -815,15 +1332,19 @@ void MainWindow::onColorPicked(const QPointF &norm)
                              0, m_sourceQImage.height() - 1);
     const QColor c = m_sourceQImage.pixelColor(x, y);
 
-    SelectiveValues v = m_selective->values();
-    v.maskMode = 1;
-    v.targetR = static_cast<float>(c.redF());
-    v.targetG = static_cast<float>(c.greenF());
-    v.targetB = static_cast<float>(c.blueF());
-    m_selective->setValues(v);
-    m_selectivePanel->setTargetColor(c);
+    if (m_graph.activeLayerIndex() == 0)
+        return;
+    Layer &layer = m_graph.activeLayer();
+    MaskSpec m = layer.mask();
+    m.type = MaskSpec::Colour;
+    m.targetR = static_cast<float>(c.redF());
+    m.targetG = static_cast<float>(c.greenF());
+    m.targetB = static_cast<float>(c.blueF());
+    layer.setMask(m);
+    m_layersPanel->setTargetColor(c);
     recomputeSelectiveMask();
     updatePreview();
+    m_graph.commit();
 }
 
 void MainWindow::closeActiveTool()
@@ -834,8 +1355,8 @@ void MainWindow::closeActiveTool()
         closeCurvesTool();
     else if (m_looksPanel->isVisible())
         closeLooksTool();
-    else if (m_selectivePanel->isVisible())
-        closeSelectiveTool();
+    else if (m_monoPanel->isVisible())
+        closeMonoTool();
     else if (m_healPanel->isVisible())
         closeHealTool();
     else {
@@ -864,25 +1385,35 @@ void MainWindow::afterHistoryChange()
     // Heal edits the base; rebuild it so undo/redo of a heal is visible.
     refreshBaseImage();
     updatePreview();
+    if (m_layersPanel->isVisible())
+        refreshLayersPanel();
     if (m_healPanel->isVisible()) {
         m_brushMask = m_heal->healMask(); // sync session to restored state
         m_brushUndo.clear();
     }
-    // If a tool is open, reseed its control from the restored state.
-    if (m_tonePanel->isVisible())
-        m_tonePanel->reveal({m_tune->exposure(), m_tune->contrast(), m_tune->saturation()});
-    if (m_curvesPanel->isVisible())
-        m_curvesPanel->reveal(m_curves->curves());
-    if (m_looksPanel->isVisible())
-        m_looksPanel->reveal(QFileInfo(m_lutNode->sourcePath()).fileName(),
-                             m_lutNode->intensity());
-    if (m_selectivePanel->isVisible()) {
-        m_selectivePanel->reveal(m_selective->values());
-        if (m_selective->values().maskMode == 2) {
-            m_brushMask = m_selective->brushMask(); // sync session to restored state
-            m_brushUndo.clear();
-            m_canvas->setBrushMode(true);
-        }
+    // If a tool is open, reseed its control from the restored state (guarded —
+    // a layer may not carry every node type, e.g. a selective layer has tune only).
+    if (m_tonePanel->isVisible()) {
+        if (auto *t = activeTune())
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation()});
+    }
+    if (m_curvesPanel->isVisible()) {
+        if (auto *c = activeCurves())
+            m_curvesPanel->reveal(c->curves());
+    }
+    if (m_looksPanel->isVisible()) {
+        if (auto *l = activeLut())
+            m_looksPanel->reveal(QFileInfo(l->sourcePath()).fileName(), l->intensity());
+    }
+    if (m_monoPanel->isVisible()) {
+        if (auto *mono = activeMono())
+            m_monoPanel->reveal(mono->values());
+    }
+    // If a mask brush is active, resync the working mask to the restored state.
+    if (m_brushTarget == BrushTarget::Selective
+        && m_graph.activeLayer().mask().type == MaskSpec::Brush) {
+        m_brushMask = m_graph.activeLayer().mask().brush;
+        m_brushUndo.clear();
         recomputeSelectiveMask();
     }
 }
@@ -922,8 +1453,28 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_tonePanel);
     clampIntoView(m_curvesPanel);
     clampIntoView(m_looksPanel);
-    clampIntoView(m_selectivePanel);
+    clampIntoView(m_monoPanel);
     clampIntoView(m_healPanel);
+    clampIntoView(m_layersPanel);
+
+    // The mask gizmo overlays the canvas area. Keep it above the canvas but below
+    // the floating panels so their controls stay clickable (the gizmo passes
+    // unhandled clicks through to the canvas underneath).
+    if (m_maskGizmo) {
+        m_maskGizmo->setGeometry(m_canvas->geometry());
+        m_maskGizmo->raise();
+        for (QWidget *panel : {static_cast<QWidget *>(m_tonePanel),
+                               static_cast<QWidget *>(m_curvesPanel),
+                               static_cast<QWidget *>(m_looksPanel),
+                               static_cast<QWidget *>(m_monoPanel),
+                               static_cast<QWidget *>(m_healPanel),
+                               static_cast<QWidget *>(m_layersPanel)}) {
+            if (panel && panel->isVisible())
+                panel->raise();
+        }
+        m_brushRing->raise(); // brush cursor stays on top of the gizmo
+        m_healBusy->raise();
+    }
 
     // Hint bar: bottom-centre.
     m_hint->move((width() - m_hint->width()) / 2, height() - m_hint->height() - 18);
@@ -947,10 +1498,24 @@ void MainWindow::openCommandPalette()
 
 void MainWindow::keyPressEvent(QKeyEvent *e)
 {
+    // Hold s / h and use the wheel to change brush size / hardness — works
+    // whenever a brush is active (the mask brush runs in Browse mode).
+    if (m_brushTarget != BrushTarget::None && !e->isAutoRepeat()
+        && (e->key() == Qt::Key_S || e->key() == Qt::Key_H)) {
+        m_adjustHardness = (e->key() == Qt::Key_H);
+        m_canvas->setBrushAdjusting(true);
+        return;
+    }
+
     switch (m_input.mode()) {
     case InputController::Mode::Browse:
         if (e->key() == Qt::Key_Slash) {
             openCommandPalette();
+            return;
+        }
+        // Esc dismisses the persistent Layers panel (and its mask editing).
+        if (e->key() == Qt::Key_Escape && m_layersPanel->isVisible()) {
+            hideLayersPanel();
             return;
         }
         break;
@@ -964,13 +1529,6 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         if (e->key() == Qt::Key_Slash) {
             closeActiveTool();
             openCommandPalette();
-            return;
-        }
-        // Hold s / h and use the wheel to change brush size / hardness.
-        if (m_brushTarget != BrushTarget::None && !e->isAutoRepeat()
-            && (e->key() == Qt::Key_S || e->key() == Qt::Key_H)) {
-            m_adjustHardness = (e->key() == Qt::Key_H);
-            m_canvas->setBrushAdjusting(true);
             return;
         }
         break;
@@ -1006,5 +1564,5 @@ void MainWindow::syncBrushPanel()
     if (m_brushTarget == BrushTarget::Heal)
         m_healPanel->setBrushParams(m_brushSize, m_brushHardness);
     else if (m_brushTarget == BrushTarget::Selective)
-        m_selectivePanel->setBrushParams(m_brushSize, m_brushHardness);
+        m_layersPanel->setBrushParams(m_brushSize, m_brushHardness);
 }

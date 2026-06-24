@@ -5,9 +5,10 @@ layout(location = 0) in vec2 v_texcoord;
 layout(location = 0) out vec4 fragColor;
 
 layout(binding = 1) uniform sampler2D tex;
-layout(binding = 2) uniform sampler2D lut;     // 256x1 tone curve
-layout(binding = 3) uniform sampler3D lut3d;   // 32^3 look LUT
-layout(binding = 4) uniform sampler2D selMask; // selective colour-affinity mask
+layout(binding = 2) uniform sampler2D lut;       // 256x1 tone curve
+layout(binding = 3) uniform sampler3D lut3d;     // 32^3 look LUT
+layout(binding = 4) uniform sampler2D selMask;   // selective colour-affinity mask
+layout(binding = 5) uniform sampler2D layerMask; // this layer's mask coverage
 
 layout(std140, binding = 0) uniform buf {
     mat4 mvp;
@@ -24,6 +25,16 @@ layout(std140, binding = 0) uniform buf {
     float selSaturation;
     float selMaskView;
     float selMaskMode;
+    float selInvert;
+    float layerOpacity; // this layer's blend onto the running result [0,1]
+    float monoEnabled;
+    float monoR;        // B&W mix weights (pre-normalised to sum 1)
+    float monoG;
+    float monoB;
+    float monoToneStrength;
+    float monoToneR;    // tint colour (pre-normalised to luma 1)
+    float monoToneG;
+    float monoToneB;
 } ubuf;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -52,8 +63,16 @@ void main()
     // 3. Look: trilinear 3D LUT, blended with the pre-look colour by intensity.
     vec3 lutCol = texture(lut3d, clamp(col, 0.0, 1.0)).rgb;
     col = mix(col, lutCol, ubuf.lutIntensity);
-    // 4. Selective: a luminosity-masked tone adjustment (SelectiveNode), plus an
-    //    optional preview-only mask overlay.
+    // 3.5 Monochrome: weighted desaturation to grey, then optional toning. Same
+    //     math as MonoNode::apply().
+    if (ubuf.monoEnabled > 0.5) {
+        float g = clamp(dot(col, vec3(ubuf.monoR, ubuf.monoG, ubuf.monoB)), 0.0, 1.0);
+        vec3 toned = g * vec3(ubuf.monoToneR, ubuf.monoToneG, ubuf.monoToneB);
+        col = mix(vec3(g), toned, ubuf.monoToneStrength);
+    }
+    // 4. Preview-only "show mask" overlay of the active layer's mask. (The old
+    //    in-shader selective adjustment is vestigial — selEnabled stays 0 now
+    //    that selective edits are masked layers; the overlay path remains.)
     if (ubuf.selEnabled > 0.5 || ubuf.selMaskView > 0.5) {
         float mask;
         if (ubuf.selMaskMode < 0.5) {
@@ -63,6 +82,8 @@ void main()
         } else {
             mask = texture(selMask, v_texcoord).r; // colour-affinity mask texture
         }
+        if (ubuf.selInvert > 0.5)
+            mask = 1.0 - mask;
         if (ubuf.selEnabled > 0.5) {
             vec3 adj = applyTone(col, ubuf.selExposure, ubuf.selContrast, ubuf.selSaturation);
             col = mix(col, adj, mask);
@@ -75,5 +96,8 @@ void main()
         }
     }
 
-    fragColor = vec4(col, c.a);
+    // Composite this layer onto the running result by its mask × opacity. For
+    // the Base layer the mask is white and opacity 1, so this is just `col`.
+    float layerCov = texture(layerMask, v_texcoord).r * ubuf.layerOpacity;
+    fragColor = vec4(mix(c.rgb, col, layerCov), c.a);
 }
