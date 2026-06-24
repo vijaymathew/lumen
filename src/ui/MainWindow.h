@@ -14,6 +14,7 @@
 #include "core/LensCorrectionNode.h"
 #include "core/LutNode.h"
 #include "core/MaskSpec.h"
+#include "core/DenoiseNode.h"
 #include "core/Histogram.h"
 #include "core/MonoNode.h"
 #include "core/RawLoader.h"
@@ -27,6 +28,7 @@
 class CanvasWidget;
 class CommandPalette;
 class CurvesPanel;
+class DenoisePanel;
 class HealPanel;
 class HistogramWidget;
 class LayersPanel;
@@ -102,6 +104,8 @@ private:
     void closeLensTool();
     void openSharpenTool();  // toggles the Sharpen panel
     void closeSharpenTool();
+    void openDenoiseTool();  // toggles the Denoise panel
+    void closeDenoiseTool();
     void toggleHistogram();  // show/hide the histogram overlay
     void updateHistogram();  // recompute from the current result (when visible)
     // Recomputes the cached lens-corrected working source (and its display
@@ -147,6 +151,7 @@ private:
     MonoPanel *m_monoPanel = nullptr;
     LensPanel *m_lensPanel = nullptr;
     SharpenPanel *m_sharpenPanel = nullptr;
+    DenoisePanel *m_denoisePanel = nullptr;
     HealPanel *m_healPanel = nullptr;
     HistogramWidget *m_histogram = nullptr;
     QTimer *m_histTimer = nullptr; // debounces histogram recompute
@@ -164,7 +169,8 @@ private:
     MonoNode *m_mono = nullptr;          // owned by m_graph
     HealNode *m_heal = nullptr;          // owned by m_graph (second in the chain)
     LensCorrectionNode *m_lens = nullptr; // owned by m_graph (first in the chain)
-    SharpenNode *m_sharpen = nullptr;     // owned by m_graph (after heal, before tune)
+    DenoiseNode *m_denoise = nullptr;     // owned by m_graph (after heal, before sharpen)
+    SharpenNode *m_sharpen = nullptr;     // owned by m_graph (after denoise, before tune)
     Image m_workingSource;               // cached lens-corrected source (preview base input)
     QString m_sourcePath;                // for a sensible default export name
     QString m_exportExt = QStringLiteral("jpg"); // remembered export format

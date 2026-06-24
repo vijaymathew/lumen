@@ -3,12 +3,27 @@
 
 #include "core/LutNode.h"
 
+#include <QFileInfo>
+
 #include <algorithm>
 #include <cmath>
 
 LutNode::LutNode()
     : EditNode(QStringLiteral("lut"))
 {
+}
+
+bool LutNode::loadLut(const QString &path, QString *error)
+{
+    const bool isCube =
+        QFileInfo(path).suffix().compare(QLatin1String("cube"), Qt::CaseInsensitive) == 0;
+    Lut3D lut = isCube ? Lut3D::fromCubeFile(path, error) : Lut3D::fromHaldFile(path, error);
+    if (!lut.isValid())
+        return false;
+    m_lut = lut;
+    m_sourcePath = path;
+    invalidate();
+    return true;
 }
 
 bool LutNode::loadHald(const QString &path, QString *error)
@@ -91,7 +106,7 @@ QJsonObject LutNode::saveState() const
 {
     QJsonObject state = EditNode::saveState();
     if (!m_sourcePath.isEmpty())
-        state[QStringLiteral("hald")] = m_sourcePath;
+        state[QStringLiteral("lut")] = m_sourcePath;
     state[QStringLiteral("intensity")] = m_intensity;
     return state;
 }
@@ -99,11 +114,15 @@ QJsonObject LutNode::saveState() const
 void LutNode::restoreState(const QJsonObject &state)
 {
     EditNode::restoreState(state);
-    const QString path = state.value(QStringLiteral("hald")).toString();
+    // "lut" is the generic key; fall back to the old "hald" key for projects
+    // saved before .cube support.
+    QString path = state.value(QStringLiteral("lut")).toString();
+    if (path.isEmpty())
+        path = state.value(QStringLiteral("hald")).toString();
     if (path.isEmpty())
         clear();
     else
-        loadHald(path);
+        loadLut(path);
     setIntensity(static_cast<float>(
         state.value(QStringLiteral("intensity")).toDouble(1.0)));
 }

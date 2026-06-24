@@ -30,6 +30,9 @@ layout(std140, binding = 0) uniform buf {
     float monoToneR;
     float monoToneG;
     float monoToneB;
+    float wbR;
+    float wbG;
+    float wbB;
 } ubuf;
 
 void main()

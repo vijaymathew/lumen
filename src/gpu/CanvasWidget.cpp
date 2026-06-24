@@ -177,8 +177,8 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
 
     if (!m_ubuf) {
         // std140: mat4 mvp (64) + PreviewState's floats at offset 64.
-        // 23 floats (92 bytes) → 156, rounded up to a 16-byte multiple → 160.
-        m_ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 160));
+        // 26 floats (104 bytes) → 168, rounded up to a 16-byte multiple → 176.
+        m_ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 176));
         m_ubuf->create();
     }
 
@@ -315,7 +315,7 @@ void CanvasWidget::buildExtraLayer(GpuLayer &gl, int index, QRhiResourceUpdateBa
 {
     QRhi *r = rhi();
     if (!gl.ubuf) {
-        gl.ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 160));
+        gl.ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 176));
         gl.ubuf->create();
     }
     if (!gl.curveTex) {
@@ -632,8 +632,8 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         // Adjustment uniforms: a fixed fill transform for the offscreen target.
         const QMatrix4x4 fill = fillMvp(m_textureSize);
         u->updateDynamicBuffer(m_ubuf.get(), 0, 64, fill.constData());
-        static_assert(sizeof(PreviewState) == 23 * sizeof(float),
-                      "PreviewState must be 23 tightly-packed floats");
+        static_assert(sizeof(PreviewState) == 26 * sizeof(float),
+                      "PreviewState must be 26 tightly-packed floats");
         u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(PreviewState), &m_preview.exposure);
         // Present transform: zoom/pan onto the screen.
         const QMatrix4x4 mvp = computeMvp(target);

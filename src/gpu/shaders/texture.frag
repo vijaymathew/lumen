@@ -35,6 +35,9 @@ layout(std140, binding = 0) uniform buf {
     float monoToneR;    // tint colour (pre-normalised to luma 1)
     float monoToneG;
     float monoToneB;
+    float wbR;          // white-balance gains (applied before exposure)
+    float wbG;
+    float wbB;
 } ubuf;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -53,7 +56,8 @@ void main()
     vec3 col = c.rgb;
 
     // Same order and math as the node apply() methods so preview predicts
-    // export. 1. Global tone (TuneNode).
+    // export. 1. Global tone (TuneNode): white balance, then exposure/contrast/sat.
+    col *= vec3(ubuf.wbR, ubuf.wbG, ubuf.wbB);
     col = applyTone(col, ubuf.exposure, ubuf.contrast, ubuf.saturation);
     // 2. Tone curves: each channel maps through its own LUT column (R->.r,
     //    G->.g, B->.b). Identity when no curve.

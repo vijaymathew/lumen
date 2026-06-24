@@ -99,6 +99,8 @@ add_library(lumen_core STATIC
     src/core/LensCorrectionNode.cpp
     src/core/SharpenNode.h
     src/core/SharpenNode.cpp
+    src/core/DenoiseNode.h
+    src/core/DenoiseNode.cpp
     src/core/Histogram.h
     src/core/Histogram.cpp
 )
@@ -137,6 +139,8 @@ qt_add_executable(lumen
     src/ui/LensPanel.cpp
     src/ui/SharpenPanel.h
     src/ui/SharpenPanel.cpp
+    src/ui/DenoisePanel.h
+    src/ui/DenoisePanel.cpp
     src/ui/HistogramWidget.h
     src/ui/HistogramWidget.cpp
     src/ui/MaskGizmo.h
@@ -286,5 +290,11 @@ if(BUILD_TESTING)
     target_link_libraries(histogram_test PRIVATE lumen_core)
     target_compile_options(histogram_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME histogram_test COMMAND histogram_test)
+
+    add_executable(denoise_test tests/denoise_test.cpp)
+    target_link_libraries(denoise_test PRIVATE lumen_core)
+    target_compile_options(denoise_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME denoise_test COMMAND denoise_test)
 endif()
+
 

@@ -12,6 +12,7 @@
 #include "ui/CurvesPanel.h"
 #include "ui/ExportDialog.h"
 #include "core/Histogram.h"
+#include "ui/DenoisePanel.h"
 #include "ui/HealPanel.h"
 #include "ui/HistogramWidget.h"
 #include "ui/LayersPanel.h"
@@ -224,12 +225,14 @@ MainWindow::MainWindow(QWidget *parent)
 
     // The graph owns the nodes; we keep raw pointers to drive them. The "baked"
     // group runs first in libvips and is rendered into the preview base texture:
-    // lens (warps geometry) -> heal (edits pixels) -> sharpen (neighbourhood op).
-    // Then the pointwise/LUT ops the shader replicates: tune -> curves -> lut ->
-    // mono. Selective adjustments are masked layers above the Base, not Base nodes.
+    // lens (warps geometry) -> heal (edits pixels) -> denoise -> sharpen (both
+    // neighbourhood ops; denoise before sharpen so noise isn't amplified). Then
+    // the pointwise/LUT ops the shader replicates: tune -> curves -> lut -> mono.
+    // Selective adjustments are masked layers above the Base, not Base nodes.
     m_lens =
         static_cast<LensCorrectionNode *>(m_graph.addNode(std::make_unique<LensCorrectionNode>()));
     m_heal = static_cast<HealNode *>(m_graph.addNode(std::make_unique<HealNode>()));
+    m_denoise = static_cast<DenoiseNode *>(m_graph.addNode(std::make_unique<DenoiseNode>()));
     m_sharpen = static_cast<SharpenNode *>(m_graph.addNode(std::make_unique<SharpenNode>()));
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
@@ -270,6 +273,8 @@ MainWindow::MainWindow(QWidget *parent)
             t->setExposure(v.exposure);
             t->setContrast(v.contrast);
             t->setSaturation(v.saturation);
+            t->setTemperature(v.temperature);
+            t->setTint(v.tint);
         }
         updatePreview(); // preview is driven by walking the graph
     });
@@ -327,6 +332,18 @@ MainWindow::MainWindow(QWidget *parent)
                 m_bakeTimer->start();
             });
     connect(m_sharpenPanel, &SharpenPanel::closed, this, &MainWindow::closeSharpenTool);
+
+    m_denoisePanel = new DenoisePanel(this);
+    connect(m_denoisePanel, &DenoisePanel::valuesChanged, this,
+            [this](const DenoiseNode::Values &v) {
+                if (!m_denoise)
+                    return;
+                m_denoise->setValues(v);
+                // Denoise bakes into the base; coalesce drags (it's a full-res
+                // LAB pass) just like sharpen.
+                m_bakeTimer->start();
+            });
+    connect(m_denoisePanel, &DenoisePanel::closed, this, &MainWindow::closeDenoiseTool);
 
     // Debounce timers: the histogram recompute and the sharpen base re-bake both
     // settle shortly after the user stops dragging.
@@ -520,6 +537,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("monochrome"), QStringLiteral("Monochrome (B&W + toning)")},
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment")},
         {QStringLiteral("lens"), QStringLiteral("Lens & perspective")},
+        {QStringLiteral("denoise"), QStringLiteral("Denoise")},
         {QStringLiteral("sharpen"), QStringLiteral("Sharpen")},
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
         {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)")},
@@ -556,6 +574,8 @@ void MainWindow::runCommand(const QString &id)
         openLensTool();
     } else if (id == QLatin1String("sharpen")) {
         openSharpenTool();
+    } else if (id == QLatin1String("denoise")) {
+        openDenoiseTool();
     } else if (id == QLatin1String("histogram")) {
         toggleHistogram();
     } else if (id == QLatin1String("heal")) {
@@ -719,7 +739,8 @@ bool MainWindow::loadProjectFile(const QString &path)
     // Reseed any open adjustment tool from the newly-active layer (guarded).
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation()});
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+                                 t->temperature(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
         if (auto *c = activeCurves())
@@ -985,7 +1006,8 @@ void MainWindow::selectLayer(int index)
     // (guarded — a layer may not carry every node type, e.g. a selective layer).
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation()});
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+                                 t->temperature(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
         if (auto *c = activeCurves())
@@ -1067,7 +1089,9 @@ void MainWindow::openToneTool()
     m_tonePanel->adjustSize();
     const int margin = 18;
     m_tonePanel->move(width() - m_tonePanel->width() - margin, margin);
-    m_tonePanel->reveal({activeTune()->exposure(), activeTune()->contrast(), activeTune()->saturation()});
+    m_tonePanel->reveal({activeTune()->exposure(), activeTune()->contrast(),
+                         activeTune()->saturation(), activeTune()->temperature(),
+                         activeTune()->tint()});
 }
 
 void MainWindow::closeToneTool()
@@ -1176,6 +1200,25 @@ void MainWindow::closeSharpenTool()
     m_canvas->setFocus();
 }
 
+void MainWindow::openDenoiseTool()
+{
+    if (!m_denoise)
+        return;
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_denoisePanel->adjustSize();
+    const int margin = 18;
+    m_denoisePanel->move(width() - m_denoisePanel->width() - margin, margin);
+    m_denoisePanel->reveal(m_denoise->values());
+}
+
+void MainWindow::closeDenoiseTool()
+{
+    m_denoisePanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
 void MainWindow::toggleHistogram()
 {
     if (!m_histogram)
@@ -1230,14 +1273,14 @@ void MainWindow::loadLookFile()
         QStringLiteral("lookFile"),
         QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
     const QString path = QFileDialog::getOpenFileName(
-        this, QStringLiteral("Load HALD CLUT"), dir,
-        QStringLiteral("HALD CLUT images (*.png *.tif *.tiff *.jpg *.jpeg)"));
+        this, QStringLiteral("Load LUT"), dir,
+        QStringLiteral("LUT files (*.cube *.png *.tif *.tiff *.jpg *.jpeg)"));
     if (path.isEmpty())
         return;
     rememberDir(QStringLiteral("lookFile"), path);
 
     QString error;
-    if (!activeLut()->loadHald(path, &error)) {
+    if (!activeLut()->loadLut(path, &error)) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Could not load look: %1").arg(error));
         return;
@@ -1323,14 +1366,17 @@ void MainWindow::closeHealTool()
 void MainWindow::refreshBaseImage(bool keepView)
 {
     // The GPU preview base = the lens-corrected source with the other "baked"
-    // neighbourhood ops applied (heal, then sharpen); the shader then applies the
-    // pointwise/LUT ops on top. With no baked op active, the corrected source
-    // (m_sourceQImage) is already the base.
+    // neighbourhood ops applied (heal -> denoise -> sharpen); the shader then
+    // applies the pointwise/LUT ops on top. With no baked op active, the
+    // corrected source (m_sourceQImage) is already the base.
     const bool healActive = m_heal && !m_heal->healMask().isEmpty();
+    const DenoiseNode::Values dv =
+        m_denoise ? m_denoise->values() : DenoiseNode::Values{};
+    const bool denoiseActive = dv.enabled && (dv.luma > 0.0f || dv.chroma > 0.0f);
     const SharpenNode::Values sv =
         m_sharpen ? m_sharpen->values() : SharpenNode::Values{};
     const bool sharpenActive = sv.enabled && sv.amount > 0.0f;
-    if (m_graph.source().isNull() || (!healActive && !sharpenActive)) {
+    if (m_graph.source().isNull() || (!healActive && !denoiseActive && !sharpenActive)) {
         if (!m_sourceQImage.isNull())
             m_canvas->setImage(m_sourceQImage, keepView);
         return;
@@ -1351,7 +1397,7 @@ void MainWindow::refreshBaseImage(bool keepView)
     }
 
     m_healWatcher.setFuture(
-        QtConcurrent::run([this, gen, src, mask, hq, sv]() -> QImage {
+        QtConcurrent::run([this, gen, src, mask, hq, dv, sv]() -> QImage {
             if (gen != m_healGen)
                 return QImage(); // superseded before we even started
             Image img = src;
@@ -1360,6 +1406,11 @@ void MainWindow::refreshBaseImage(bool keepView)
                 heal.setHealMask(mask);
                 heal.setHighQuality(hq);
                 img = heal.apply(img);
+            }
+            if (dv.enabled && (dv.luma > 0.0f || dv.chroma > 0.0f)) {
+                DenoiseNode denoise;
+                denoise.setValues(dv);
+                img = denoise.apply(img);
             }
             if (sv.enabled && sv.amount > 0.0f) {
                 SharpenNode sharpen;
@@ -1608,6 +1659,8 @@ void MainWindow::closeActiveTool()
         closeLensTool();
     else if (m_sharpenPanel->isVisible())
         closeSharpenTool();
+    else if (m_denoisePanel->isVisible())
+        closeDenoiseTool();
     else if (m_healPanel->isVisible())
         closeHealTool();
     else {
@@ -1648,7 +1701,8 @@ void MainWindow::afterHistoryChange()
     // a layer may not carry every node type, e.g. a selective layer has tune only).
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation()});
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+                                 t->temperature(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
         if (auto *c = activeCurves())
@@ -1668,6 +1722,8 @@ void MainWindow::afterHistoryChange()
     }
     if (m_sharpenPanel->isVisible() && m_sharpen)
         m_sharpenPanel->reveal(m_sharpen->values());
+    if (m_denoisePanel->isVisible() && m_denoise)
+        m_denoisePanel->reveal(m_denoise->values());
     updateHistogram(); // reflect the restored state (no-op when hidden)
     // If a mask brush is active, resync the working mask to the restored state.
     if (m_brushTarget == BrushTarget::Selective
@@ -1716,6 +1772,7 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_monoPanel);
     clampIntoView(m_lensPanel);
     clampIntoView(m_sharpenPanel);
+    clampIntoView(m_denoisePanel);
     clampIntoView(m_healPanel);
     clampIntoView(m_layersPanel);
 
@@ -1737,6 +1794,7 @@ void MainWindow::layoutOverlays()
                                static_cast<QWidget *>(m_monoPanel),
                                static_cast<QWidget *>(m_lensPanel),
                                static_cast<QWidget *>(m_sharpenPanel),
+                               static_cast<QWidget *>(m_denoisePanel),
                                static_cast<QWidget *>(m_healPanel),
                                static_cast<QWidget *>(m_layersPanel)}) {
             if (panel && panel->isVisible())
