@@ -82,6 +82,44 @@ int main(int /*argc*/, char **argv)
     Lut3D bad2 = Lut3D::fromHaldImage(QImage(10, 10, QImage::Format_RGBA8888), &error);
     CHECK(!bad2.isValid()); // side^2 not a perfect cube
 
+    // --- .cube loader ------------------------------------------------------
+    {
+        // A 2^3 identity cube (red varies fastest), with comments + a TITLE +
+        // DOMAIN lines that must be tolerated.
+        const QString cubePath = QDir::temp().filePath(QStringLiteral("lumen_test.cube"));
+        QFile::remove(cubePath);
+        QFile f(cubePath);
+        CHECK(f.open(QIODevice::WriteOnly | QIODevice::Text));
+        f.write("# a test cube\nTITLE \"Identity\"\nLUT_3D_SIZE 2\n"
+                "DOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n");
+        for (int b = 0; b < 2; ++b)
+            for (int g = 0; g < 2; ++g)
+                for (int r = 0; r < 2; ++r) // red fastest
+                    f.write(QStringLiteral("%1 %2 %3\n").arg(r).arg(g).arg(b).toUtf8());
+        f.close();
+
+        Lut3D cube = Lut3D::fromCubeFile(cubePath, &error);
+        CHECK(cube.isValid());
+        CHECK(cube.dim() == 2);
+        cube.sample(0.0, 0.0, 0.0, out);
+        CHECK(nearly(out[0], 0.0) && nearly(out[1], 0.0) && nearly(out[2], 0.0));
+        cube.sample(1.0, 1.0, 1.0, out);
+        CHECK(nearly(out[0], 1.0) && nearly(out[1], 1.0) && nearly(out[2], 1.0));
+        cube.sample(0.3, 0.6, 0.9, out); // identity → trilinear returns the input
+        CHECK(nearly(out[0], 0.3) && nearly(out[1], 0.6) && nearly(out[2], 0.9));
+        QFile::remove(cubePath);
+
+        // Missing LUT_3D_SIZE → invalid.
+        const QString badPath = QDir::temp().filePath(QStringLiteral("lumen_bad.cube"));
+        QFile bf(badPath);
+        CHECK(bf.open(QIODevice::WriteOnly | QIODevice::Text));
+        bf.write("0 0 0\n1 1 1\n");
+        bf.close();
+        Lut3D badCube = Lut3D::fromCubeFile(badPath, &error);
+        CHECK(!badCube.isValid());
+        QFile::remove(badPath);
+    }
+
     // An invalid LUT samples as identity.
     Lut3D empty;
     empty.sample(0.3, 0.7, 0.9, out);

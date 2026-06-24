@@ -2,10 +2,15 @@
 
 #include "core/Image.h"
 
+#include <QFile>
 #include <QImage>
+#include <QRegularExpression>
+#include <QStringList>
+#include <QTextStream>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 Lut3D Lut3D::fromHaldFile(const QString &path, QString *error)
 {
@@ -54,6 +59,78 @@ Lut3D Lut3D::fromHaldImage(const QImage &source, QString *error)
             lut.m_data[p * 3 + 1] = line[x * 4 + 1];
             lut.m_data[p * 3 + 2] = line[x * 4 + 2];
         }
+    }
+    return lut;
+}
+
+Lut3D Lut3D::fromCubeFile(const QString &path, QString *error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (error)
+            *error = QStringLiteral("Could not open '%1'").arg(path);
+        return {};
+    }
+
+    static const QRegularExpression ws(QStringLiteral("\\s+"));
+    int dim = 0;
+    std::vector<float> values; // RGB triples in file order (red varies fastest)
+    QTextStream in(&file);
+    while (!in.atEnd()) {
+        const QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
+            continue;
+        const QStringList tok = line.split(ws, Qt::SkipEmptyParts);
+        if (tok.isEmpty())
+            continue;
+        const QString key = tok.first().toUpper();
+        if (key == QLatin1String("LUT_3D_SIZE")) {
+            dim = tok.value(1).toInt();
+        } else if (key == QLatin1String("LUT_1D_SIZE")) {
+            if (error)
+                *error = QStringLiteral("1D .cube LUTs are not supported");
+            return {};
+        } else if (key == QLatin1String("TITLE") || key == QLatin1String("DOMAIN_MIN")
+                   || key == QLatin1String("DOMAIN_MAX")
+                   || key == QLatin1String("LUT_3D_INPUT_RANGE")) {
+            continue; // metadata; standard 0..1 domain is assumed
+        } else if (tok.size() == 3) {
+            bool ok0 = false, ok1 = false, ok2 = false;
+            const float r = tok[0].toFloat(&ok0);
+            const float g = tok[1].toFloat(&ok1);
+            const float b = tok[2].toFloat(&ok2);
+            if (ok0 && ok1 && ok2) {
+                values.push_back(r);
+                values.push_back(g);
+                values.push_back(b);
+            }
+        }
+        // anything else is ignored
+    }
+
+    if (dim < 2) {
+        if (error)
+            *error = QStringLiteral("Not a valid .cube (missing LUT_3D_SIZE)");
+        return {};
+    }
+    const long long entries = static_cast<long long>(dim) * dim * dim;
+    if (static_cast<long long>(values.size()) != entries * 3) {
+        if (error)
+            *error = QStringLiteral("Cube has %1 entries, expected %2 (%3^3)")
+                         .arg(values.size() / 3)
+                         .arg(entries)
+                         .arg(dim);
+        return {};
+    }
+
+    // The .cube ordering (red fastest) matches the internal index
+    // ((b*dim+g)*dim+r), so the triples fill sequentially. Float -> 8-bit cube.
+    Lut3D lut;
+    lut.m_dim = dim;
+    lut.m_data.resize(static_cast<size_t>(entries) * 3);
+    for (size_t i = 0; i < lut.m_data.size(); ++i) {
+        const float v = std::clamp(values[i], 0.0f, 1.0f);
+        lut.m_data[i] = static_cast<uint8_t>(std::lround(v * 255.0f));
     }
     return lut;
 }

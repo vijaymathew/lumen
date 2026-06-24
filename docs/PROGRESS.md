@@ -72,7 +72,7 @@ plain Qt widgets.
 
 | Item | Status | Notes |
 |---|---|---|
-| HALD CLUT loader | ✅ | `Lut3D` parses a HALD CLUT (side n³ → cube edge n²) with a trilinear `sample()`; identity round-trip + file load + invalid-input unit-tested (`lut3d_test`) |
+| LUT loader (HALD + `.cube`) | ✅ | `Lut3D` parses a HALD CLUT (side n³ → cube edge n²) **and Adobe/Resolve `.cube` 3D LUTs** (`fromCubeFile`: `LUT_3D_SIZE` + n³ red-fastest triples → 8-bit cube; DOMAIN/TITLE tolerated); `LutNode::loadLut` dispatches by extension; trilinear `sample()`; identity round-trip + HALD/`.cube` file load + invalid-input unit-tested (`lut3d_test`) |
 | `LutNode` (trilinear apply) | ✅ | libvips export (per-pixel trilinear) + GPU preview via a 32³ `sampler3D` (hardware trilinear); wired into the graph after curves; preview==export verified on a real photo (inverting CLUT). Look persisted by CLUT path |
 | Look intensity slider | ✅ | `out = mix(input, lut(input), t)` in both export and shader (intensity rides in `PreviewState`); `LooksPanel` (Load…/Clear + intensity slider); blend unit-tested + preview==export verified |
 

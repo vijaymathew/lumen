@@ -1267,14 +1267,14 @@ void MainWindow::loadLookFile()
         QStringLiteral("lookFile"),
         QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
     const QString path = QFileDialog::getOpenFileName(
-        this, QStringLiteral("Load HALD CLUT"), dir,
-        QStringLiteral("HALD CLUT images (*.png *.tif *.tiff *.jpg *.jpeg)"));
+        this, QStringLiteral("Load LUT"), dir,
+        QStringLiteral("LUT files (*.cube *.png *.tif *.tiff *.jpg *.jpeg)"));
     if (path.isEmpty())
         return;
     rememberDir(QStringLiteral("lookFile"), path);
 
     QString error;
-    if (!activeLut()->loadHald(path, &error)) {
+    if (!activeLut()->loadLut(path, &error)) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Could not load look: %1").arg(error));
         return;

@@ -14,6 +14,10 @@ class LutNode : public EditNode {
 public:
     LutNode();
 
+    // Loads a 3D LUT from `path`, picking the parser by extension: ".cube" for
+    // an Adobe/Resolve text LUT, otherwise a HALD CLUT image. Returns false (and
+    // sets *error) on failure.
+    bool loadLut(const QString &path, QString *error = nullptr);
     // Loads a HALD CLUT from `path`. Returns false (and sets *error) on failure.
     bool loadHald(const QString &path, QString *error = nullptr);
     // Sets a LUT directly (not persisted across undo — used for tests).

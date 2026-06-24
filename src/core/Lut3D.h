@@ -29,6 +29,12 @@ public:
     // Builds from an already-decoded HALD CLUT image.
     static Lut3D fromHaldImage(const QImage &image, QString *error = nullptr);
 
+    // Loads an Adobe/Resolve ".cube" 3D LUT (text: LUT_3D_SIZE n, then n^3 RGB
+    // triples, red varying fastest). Float values are quantised to the 8-bit
+    // cube; a non-default DOMAIN is not remapped (standard 0..1 looks only).
+    // Returns an invalid Lut3D and sets *error on failure.
+    static Lut3D fromCubeFile(const QString &path, QString *error = nullptr);
+
     // Trilinearly samples the cube. Inputs/outputs are in [0,1]; an invalid LUT
     // returns the input unchanged (identity).
     void sample(double r, double g, double b, double out[3]) const;
