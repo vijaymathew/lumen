@@ -69,6 +69,33 @@ int main(int /*argc*/, char **argv)
     layer.setEnabled(false);
     CHECK(near8(graph.result().toQImage().pixelColor(w / 2, h / 2).red(), 128));
 
+    // A luminosity-masked layer (the dissolved "selective" path): mid-grey has
+    // luminance 0.5. A [0.3,0.7] range includes it → +2 EV brightens; inverting
+    // that range excludes it → no change. (Replaces the old SelectiveNode test.)
+    Layer &lum = graph.addLayer(QStringLiteral("Lum"));
+    auto *lumTune = static_cast<TuneNode *>(lum.addNode(std::make_unique<TuneNode>()));
+    lumTune->setExposure(2.0f);
+    MaskSpec lm;
+    lm.type = MaskSpec::Luminosity;
+    lm.low = 0.3f;
+    lm.high = 0.7f;
+    lm.feather = 0.05f;
+    lum.setMask(lm);
+    CHECK(graph.result().toQImage().pixelColor(w / 2, h / 2).red() > 200);
+
+    // Range that excludes mid-grey (shadows only) → untouched.
+    lm.low = 0.0f;
+    lm.high = 0.4f;
+    lum.setMask(lm);
+    CHECK(near8(graph.result().toQImage().pixelColor(w / 2, h / 2).red(), 128));
+
+    // Inverting the midtone range also excludes mid-grey → untouched.
+    lm.low = 0.3f;
+    lm.high = 0.7f;
+    lm.invert = true;
+    lum.setMask(lm);
+    CHECK(near8(graph.result().toQImage().pixelColor(w / 2, h / 2).red(), 128));
+
     ImageBuffer::shutdownLibrary();
     std::puts("layers_test: OK");
     return 0;

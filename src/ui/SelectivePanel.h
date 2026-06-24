@@ -1,7 +1,5 @@
 #pragma once
 
-#include "core/SelectiveNode.h"
-
 #include <QColor>
 #include <QWidget>
 
@@ -9,6 +7,36 @@ class QLabel;
 class QPushButton;
 class QSlider;
 class QVBoxLayout;
+
+// Parameters for a selective adjustment, as edited by SelectivePanel. A mask
+// (luminosity range / colour affinity / brush) gates a tone adjustment. This is
+// a pure data carrier between the panel and MainWindow, which maps it onto a
+// masked adjustment layer (a MaskSpec + the layer's TuneNode).
+struct SelectiveValues {
+    static constexpr float kMinExposure = -5.0f;
+    static constexpr float kMaxExposure = 5.0f;
+    static constexpr float kMinAmount = -100.0f;
+    static constexpr float kMaxAmount = 100.0f;
+
+    // Mask: 0 = luminosity range, 1 = colour affinity, 2 = brush.
+    int maskMode = 0;
+    // Luminosity-range mask.
+    float low = 0.0f;
+    float high = 1.0f;
+    float feather = 0.1f;
+    // Colour-affinity mask.
+    float targetR = 0.0f;
+    float targetG = 0.0f;
+    float targetB = 0.0f;
+    float colorRange = 0.3f;
+    // Adjustment.
+    float exposure = 0.0f;
+    float contrast = 0.0f;
+    float saturation = 0.0f;
+    bool invert = false;
+
+    friend bool operator==(const SelectiveValues &, const SelectiveValues &) = default;
+};
 
 // SelectivePanel is the floating tool card for a selective adjustment. A mask
 // mode (Luminosity range or Colour affinity) gates a tone adjustment

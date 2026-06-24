@@ -113,7 +113,7 @@ plain Qt widgets.
 | Item | Status | Notes |
 |---|---|---|
 | Mask inversion | ✅ | `SelectiveValues.invert` — complements the mask in both libvips export and the shader (`selInvert` uniform); **Invert** toggle in the panel; mask overlay reflects it; unit-tested |
-| Layers (per-layer adjustments, add/delete) | 🟡 | Done: `MaskSpec`/`evaluateMask`; layered `EditGraph` + libvips composite export; **multi-pass GPU preview** (ping-pong, per-layer pass); **Layers panel** (add/delete/select/visibility/opacity) + active-layer routing of Tone/Curves/Looks; **per-layer mask UI** (None/Gradient/Radial + Feather + Invert) with an **on-canvas `MaskGizmo`** (draggable gradient line / radial ellipse; follows zoom/pan; passes non-handle events through to the canvas). Remaining: dissolve `SelectiveNode` into a masked layer; structural undo of layer add/delete. See [LAYERS.md](LAYERS.md) |
+| Layers (per-layer adjustments, add/delete) | 🟡 | Done: `MaskSpec`/`evaluateMask`; layered `EditGraph` + libvips composite export; **multi-pass GPU preview** (ping-pong, per-layer pass); **Layers panel** (add/delete/select/visibility/opacity) + active-layer routing of Tone/Curves/Looks; **per-layer mask UI** (None/Gradient/Radial + Feather + Invert) with an **on-canvas `MaskGizmo`** (draggable gradient line / radial ellipse; follows zoom/pan; passes non-handle events through to the canvas); **`SelectiveNode` dissolved** — selective edits are now masked adjustment layers (Luminosity/Colour/Brush mask + the layer's `TuneNode`), the Selective panel retargeted to drive the active layer; the "show mask" overlay reflects the active layer's mask; preview path evaluates data-driven masks against the source. Remaining: structural undo of layer add/delete; fold the Selective panel fully into the Layers panel (Option 2, deferred). See [LAYERS.md](LAYERS.md) |
 | Drawn / geometric masks (gradient, radial) | ✅ | Linear-gradient + radial/elliptical via `MaskSpec`/`evaluateMask` (free-hand already = brush mask), parametric → shader + libvips. Per-layer mask controls in the Layers panel + on-canvas `MaskGizmo` for direct manipulation; feather + invert; verified on-screen (radial = feathered bright ellipse, gradient = left→right ramp matching the gizmo). [LAYERS.md](LAYERS.md) §3 |
 | Monochrome (B&W mixer, toning, grain) | ⬜ | `MonoNode`; a layer adjustment once layers exist |
 
@@ -123,6 +123,7 @@ plain Qt widgets.
 
 | Item | Notes |
 |---|---|
+| **Fold Selective into the Layers panel (Option 2)** | Follow-up to the SelectiveNode → masked-layer refactor. Today the Selective tool keeps its own panel that edits a masked layer; the eventual cleanup is to drop the dedicated panel and add Luminosity/Colour/Brush mask types + colour-pick directly to the Layers panel mask controls (one place for all masks). Needs per-layer brush-mask painting wired into the Layers UI first |
 | Lens correction (`LensCorrectionNode`) | LibRaw + Lensfun. DESIGN §8 |
 | Full RAW workflow polish | LibRaw decode designed for from day one |
 | Perspective / advanced crop-rotate | |

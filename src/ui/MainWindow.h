@@ -13,9 +13,9 @@
 #include "core/LutNode.h"
 #include "core/MaskSpec.h"
 #include "core/SelectiveMask.h"
-#include "core/SelectiveNode.h"
 #include "core/TuneNode.h"
 #include "input/InputController.h"
+#include "ui/SelectivePanel.h" // SelectiveValues
 
 #include <vector>
 
@@ -83,6 +83,14 @@ private:
     void closeSelectiveTool();
     void recomputeSelectiveMask();
     void onColorPicked(const QPointF &imageNormalized);
+    // A selective adjustment is a masked layer (mask = Luminosity/Colour/Brush
+    // + the layer's TuneNode). These bridge the SelectivePanel to the active
+    // layer. ensureSelectiveLayer adds/selects a layer the panel can drive and
+    // returns its index.
+    int ensureSelectiveLayer();
+    void applySelectiveToActiveLayer(const SelectiveValues &v);
+    SelectiveValues activeLayerSelective() const;
+    void syncBrushMaskToLayer(); // copy the working brush mask into the active layer
     void openHealTool();
     void closeHealTool();
     // base texture = source healed by the heal node. keepView preserves zoom/pan
@@ -124,7 +132,6 @@ private:
     TuneNode *m_tune = nullptr;          // owned by m_graph
     CurvesNode *m_curves = nullptr;      // owned by m_graph
     LutNode *m_lutNode = nullptr;        // owned by m_graph
-    SelectiveNode *m_selective = nullptr; // owned by m_graph
     HealNode *m_heal = nullptr;          // owned by m_graph (first in the chain)
     QString m_sourcePath;                // for a sensible default export name
     QString m_exportExt = QStringLiteral("jpg"); // remembered export format

@@ -65,8 +65,6 @@ add_library(lumen_core STATIC
     src/core/Lut3D.cpp
     src/core/LutNode.h
     src/core/LutNode.cpp
-    src/core/SelectiveNode.h
-    src/core/SelectiveNode.cpp
     src/core/GuidedFilter.h
     src/core/GuidedFilter.cpp
     src/core/SelectiveMask.h
@@ -197,10 +195,6 @@ if(BUILD_TESTING)
     target_compile_options(lutnode_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME lutnode_test COMMAND lutnode_test)
 
-    add_executable(selective_test tests/selective_test.cpp)
-    target_link_libraries(selective_test PRIVATE lumen_core)
-    target_compile_options(selective_test PRIVATE ${LUMEN_WARNINGS})
-    add_test(NAME selective_test COMMAND selective_test)
 
     add_executable(guided_filter_test tests/guided_filter_test.cpp)
     target_link_libraries(guided_filter_test PRIVATE lumen_core)

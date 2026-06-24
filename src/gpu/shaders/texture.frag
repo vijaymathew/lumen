@@ -55,8 +55,9 @@ void main()
     // 3. Look: trilinear 3D LUT, blended with the pre-look colour by intensity.
     vec3 lutCol = texture(lut3d, clamp(col, 0.0, 1.0)).rgb;
     col = mix(col, lutCol, ubuf.lutIntensity);
-    // 4. Selective: a luminosity-masked tone adjustment (SelectiveNode), plus an
-    //    optional preview-only mask overlay.
+    // 4. Preview-only "show mask" overlay of the active layer's mask. (The old
+    //    in-shader selective adjustment is vestigial — selEnabled stays 0 now
+    //    that selective edits are masked layers; the overlay path remains.)
     if (ubuf.selEnabled > 0.5 || ubuf.selMaskView > 0.5) {
         float mask;
         if (ubuf.selMaskMode < 0.5) {

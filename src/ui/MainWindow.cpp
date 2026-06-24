@@ -192,12 +192,12 @@ MainWindow::MainWindow(QWidget *parent)
 
     // The graph owns the nodes; we keep raw pointers to drive them. Heal is
     // first (it edits source pixels, baked into the preview base), then the
-    // pointwise/LUT ops the shader replicates: tune -> curves -> lut -> selective.
+    // pointwise/LUT ops the shader replicates: tune -> curves -> lut. Selective
+    // adjustments are masked layers above the Base, not a Base node.
     m_heal = static_cast<HealNode *>(m_graph.addNode(std::make_unique<HealNode>()));
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
     m_lutNode = static_cast<LutNode *>(m_graph.addNode(std::make_unique<LutNode>()));
-    m_selective = static_cast<SelectiveNode *>(m_graph.addNode(std::make_unique<SelectiveNode>()));
 
     m_canvas = new CanvasWidget(this);
     setCentralWidget(m_canvas);
@@ -262,14 +262,15 @@ MainWindow::MainWindow(QWidget *parent)
     m_selectivePanel = new SelectivePanel(this);
     connect(m_selectivePanel, &SelectivePanel::valuesChanged, this,
             [this](const SelectiveValues &v) {
-                m_selective->setValues(v);
                 const bool brush = v.maskMode == 2;
                 m_brushTarget = brush ? BrushTarget::Selective : BrushTarget::None;
-                if (brush)
+                if (brush) {
                     m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f);
+                    if (m_brushMask.isEmpty())
+                        initBrushMask();
+                }
                 m_canvas->setBrushMode(brush);
-                if (brush && m_brushMask.isEmpty())
-                    initBrushMask();
+                applySelectiveToActiveLayer(v); // writes the active layer's mask + tune
                 recomputeSelectiveMask();
                 updatePreview();
             });
@@ -292,7 +293,9 @@ MainWindow::MainWindow(QWidget *parent)
             return;
         m_brushUndo.push_back(m_brushMask.data); // clear is undoable
         std::fill(m_brushMask.data.begin(), m_brushMask.data.end(), 0.0f);
+        syncBrushMaskToLayer(); // the layer adjustment follows the cleared mask
         m_canvas->setSelectiveMask(m_brushMask);
+        updatePreview();
     });
     connect(m_canvas, &CanvasWidget::brushStrokeBegan, this, &MainWindow::beginBrushStroke);
     connect(m_canvas, &CanvasWidget::brushPoint, this, &MainWindow::brushAt);
@@ -535,6 +538,8 @@ void MainWindow::updatePreview()
 {
     PreviewState ps = m_graph.previewState();
     ps.selMaskView = static_cast<float>(m_maskView); // preview-only overlay
+    if (m_maskView != 0)
+        ps.selMaskMode = 1.0f; // overlay samples the uploaded mask texture
     if (m_healPainting) {
         // Show the in-progress heal stroke as a red overlay (the mask texture),
         // without any selective adjustment.
@@ -546,15 +551,23 @@ void MainWindow::updatePreview()
     m_canvas->setCurveLuts(m_graph.previewLut());
     m_canvas->setLut3D(m_graph.previewLook());
 
-    // Layers above the Base, composited as extra GPU passes.
-    std::vector<LayerPreview> extras;
+    // A capped-resolution sRGB copy of the source, for evaluating data-driven
+    // (luminosity/colour) layer masks; geometric masks ignore it.
     constexpr int cap = 1280;
-    int mw = m_sourceQImage.width(), mh = m_sourceQImage.height();
-    if (std::max(mw, mh) > cap) {
-        const double s = double(cap) / std::max(mw, mh);
-        mw = std::max(1, int(std::lround(mw * s)));
-        mh = std::max(1, int(std::lround(mh * s)));
+    QImage maskSrc;
+    if (!m_sourceQImage.isNull()) {
+        maskSrc = m_sourceQImage;
+        if (std::max(maskSrc.width(), maskSrc.height()) > cap)
+            maskSrc = maskSrc.scaled(cap, cap, Qt::KeepAspectRatio,
+                                     Qt::SmoothTransformation);
+        maskSrc = maskSrc.convertToFormat(QImage::Format_RGBA8888);
     }
+    const int mw = maskSrc.width(), mh = maskSrc.height();
+    const uint8_t *maskRgba = maskSrc.isNull() ? nullptr : maskSrc.constBits();
+
+    // Layers above the Base, composited as extra GPU passes.
+    const int activeIdx = m_graph.activeLayerIndex();
+    std::vector<LayerPreview> extras;
     for (int i = 1; i < m_graph.layerCount(); ++i) {
         Layer &layer = m_graph.layer(i);
         LayerPreview lp;
@@ -562,8 +575,12 @@ void MainWindow::updatePreview()
         layer.contributeToPreviewLut(lp.curves);
         lp.look = layer.look();
         lp.opacity = layer.enabled() ? layer.opacity() : 0.0f;
+        // While showing the active layer's mask overlay, suppress that layer's
+        // composite so the overlay reads cleanly.
+        if (m_maskView != 0 && i == activeIdx)
+            lp.opacity = 0.0f;
         if (layer.mask().type != MaskSpec::None && mw > 0)
-            lp.layerMask = evaluateMask(layer.mask(), mw, mh); // geometric for now
+            lp.layerMask = evaluateMask(layer.mask(), mw, mh, maskRgba, 4);
         extras.push_back(std::move(lp));
     }
     m_canvas->setExtraLayers(extras);
@@ -771,16 +788,23 @@ void MainWindow::openSelectiveTool()
 {
     m_input.setMode(InputController::Mode::ToolActive);
     m_maskView = 0; // panel resets its toggle on reveal too
+
+    // A selective adjustment is a masked layer; add/select one for the panel to
+    // drive, then seed the panel from it.
+    ensureSelectiveLayer();
+    refreshLayersPanel();
+    const SelectiveValues v = activeLayerSelective();
+
     m_selectivePanel->adjustSize();
     const int margin = 18;
     m_selectivePanel->move(width() - m_selectivePanel->width() - margin, margin);
-    m_selectivePanel->reveal(m_selective->values());
+    m_selectivePanel->reveal(v);
 
-    // Restore the brush session from the node (may be empty).
-    m_brushMask = m_selective->brushMask();
+    // Restore the brush session from the active layer's mask (may be empty).
+    m_brushMask = m_graph.activeLayer().mask().brush;
     m_brushUndo.clear();
     m_brushHasLast = false;
-    const bool brush = m_selective->values().maskMode == 2;
+    const bool brush = v.maskMode == 2;
     m_brushTarget = brush ? BrushTarget::Selective : BrushTarget::None;
     if (brush && m_brushMask.isEmpty())
         initBrushMask();
@@ -798,9 +822,8 @@ void MainWindow::closeSelectiveTool()
     m_canvas->setColorPickMode(false);
     m_canvas->setBrushMode(false);
     m_brushTarget = BrushTarget::None;
-    // Commit the painted mask into the node (one global undo step).
-    if (m_selective->values().maskMode == 2)
-        m_selective->setBrushMask(m_brushMask);
+    // Commit the painted mask into the active layer (one global undo step).
+    syncBrushMaskToLayer();
     m_brushUndo.clear();
     m_maskView = 0; // clear the mask overlay
     updatePreview();
@@ -875,27 +898,138 @@ void MainWindow::refreshBaseImage(bool keepView)
     }));
 }
 
+int MainWindow::ensureSelectiveLayer()
+{
+    // A selective edit operates on a non-Base layer whose mask is data-driven
+    // (luminosity/colour/brush) or still unset. If the active layer isn't such a
+    // layer (it's the Base, or carries a geometric gradient/radial mask), add a
+    // fresh adjustment layer so we never clobber a geometric mask.
+    const auto selectable = [](MaskSpec::Type t) {
+        return t == MaskSpec::None || t == MaskSpec::Luminosity
+            || t == MaskSpec::Colour || t == MaskSpec::Brush;
+    };
+    int idx = m_graph.activeLayerIndex();
+    if (idx == 0 || !selectable(m_graph.layer(idx).mask().type)) {
+        m_graph.addLayer(QStringLiteral("Selective %1").arg(m_graph.layerCount()));
+        m_graph.addNode(std::make_unique<TuneNode>()); // the masked adjustment
+        idx = m_graph.activeLayerIndex();
+    }
+    // Default a still-unset mask to a full-range luminosity mask (a no-op until
+    // the range or adjustment is dialled in), so the panel has something to edit.
+    Layer &layer = m_graph.layer(idx);
+    if (layer.mask().type == MaskSpec::None) {
+        MaskSpec m;
+        m.type = MaskSpec::Luminosity;
+        layer.setMask(m);
+    }
+    m_graph.commit();
+    return idx;
+}
+
+SelectiveValues MainWindow::activeLayerSelective() const
+{
+    SelectiveValues v;
+    const Layer &layer = m_graph.activeLayer();
+    const MaskSpec &m = layer.mask();
+    v.invert = m.invert;
+    v.feather = m.feather;
+    switch (m.type) {
+    case MaskSpec::Colour:
+        v.maskMode = 1;
+        v.targetR = m.targetR;
+        v.targetG = m.targetG;
+        v.targetB = m.targetB;
+        v.colorRange = m.colorRange;
+        break;
+    case MaskSpec::Brush:
+        v.maskMode = 2;
+        break;
+    case MaskSpec::Luminosity:
+    default:
+        v.maskMode = 0;
+        v.low = m.low;
+        v.high = m.high;
+        break;
+    }
+    if (auto *t = static_cast<TuneNode *>(layer.nodeOfType(QStringLiteral("tune")))) {
+        v.exposure = t->exposure();
+        v.contrast = t->contrast();
+        v.saturation = t->saturation();
+    }
+    return v;
+}
+
+void MainWindow::applySelectiveToActiveLayer(const SelectiveValues &v)
+{
+    if (m_graph.activeLayerIndex() == 0)
+        return; // openSelectiveTool guarantees a non-Base active layer
+    Layer &layer = m_graph.activeLayer();
+    MaskSpec m = layer.mask(); // keep geometry fields we don't touch
+    m.invert = v.invert;
+    m.feather = v.feather;
+    switch (v.maskMode) {
+    case 1:
+        m.type = MaskSpec::Colour;
+        m.targetR = v.targetR;
+        m.targetG = v.targetG;
+        m.targetB = v.targetB;
+        m.colorRange = v.colorRange;
+        break;
+    case 2:
+        m.type = MaskSpec::Brush;
+        m.brush = m_brushMask;
+        break;
+    default:
+        m.type = MaskSpec::Luminosity;
+        m.low = v.low;
+        m.high = v.high;
+        break;
+    }
+    layer.setMask(m);
+    if (auto *t = activeTune()) {
+        t->setExposure(v.exposure);
+        t->setContrast(v.contrast);
+        t->setSaturation(v.saturation);
+    }
+}
+
+void MainWindow::syncBrushMaskToLayer()
+{
+    if (m_graph.activeLayerIndex() == 0)
+        return;
+    Layer &layer = m_graph.activeLayer();
+    if (layer.mask().type != MaskSpec::Brush)
+        return;
+    MaskSpec m = layer.mask();
+    m.brush = m_brushMask;
+    layer.setMask(m);
+}
+
 void MainWindow::recomputeSelectiveMask()
 {
-    const SelectiveValues v = m_selective->values();
-    if (v.maskMode == 2) {
-        m_canvas->setSelectiveMask(m_brushMask); // painted mask
+    // Drives the preview-only "show mask" overlay (Base shader binding 4). Show
+    // the active layer's mask; brush mode uses the live working mask.
+    if (m_graph.activeLayerIndex() == 0) {
+        m_canvas->setSelectiveMask({});
         return;
     }
-    if (v.maskMode != 1 || m_sourceQImage.isNull()) {
-        m_canvas->setSelectiveMask({}); // luminosity mode is parametric in-shader
+    const MaskSpec &m = m_graph.activeLayer().mask();
+    if (m.type == MaskSpec::Brush) {
+        m_canvas->setSelectiveMask(m_brushMask);
         return;
     }
-
-    // Compute the colour-affinity mask from the source at a capped resolution
-    // for a responsive preview (export recomputes at full res in the node).
+    if (m.type == MaskSpec::None || m_sourceQImage.isNull()) {
+        m_canvas->setSelectiveMask({});
+        return;
+    }
+    // Evaluate at a capped resolution for a responsive overlay (export/composite
+    // recompute at full res). Luminosity/Colour need the source pixels.
     constexpr int cap = 1280;
     QImage img = m_sourceQImage;
     if (std::max(img.width(), img.height()) > cap)
         img = img.scaled(cap, cap, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     img = img.convertToFormat(QImage::Format_RGBA8888);
-    MaskBuffer mask = colorAffinityMask(img.constBits(), img.width(), img.height(), 4,
-                                        v.targetR, v.targetG, v.targetB, v.colorRange);
+    MaskBuffer mask = evaluateMask(m, img.width(), img.height(), img.constBits(), 4);
     m_canvas->setSelectiveMask(mask);
 }
 
@@ -971,7 +1105,11 @@ void MainWindow::brushAt(const QPointF &norm)
         m_healPainting = true;
         updatePreview();
     } else {
+        // Selective brush: the painted mask is the active layer's mask, so push
+        // it down and refresh the masked adjustment live (overlay too if shown).
+        syncBrushMaskToLayer();
         m_canvas->setSelectiveMask(m_brushMask);
+        updatePreview();
     }
 }
 
@@ -1000,7 +1138,9 @@ bool MainWindow::brushSessionUndo()
         recomputeSelectiveMask();
         updatePreview();
     } else {
+        syncBrushMaskToLayer();
         m_canvas->setSelectiveMask(m_brushMask);
+        updatePreview();
     }
     return true;
 }
@@ -1015,12 +1155,15 @@ void MainWindow::onColorPicked(const QPointF &norm)
                              0, m_sourceQImage.height() - 1);
     const QColor c = m_sourceQImage.pixelColor(x, y);
 
-    SelectiveValues v = m_selective->values();
-    v.maskMode = 1;
-    v.targetR = static_cast<float>(c.redF());
-    v.targetG = static_cast<float>(c.greenF());
-    v.targetB = static_cast<float>(c.blueF());
-    m_selective->setValues(v);
+    if (m_graph.activeLayerIndex() == 0)
+        return;
+    Layer &layer = m_graph.activeLayer();
+    MaskSpec m = layer.mask();
+    m.type = MaskSpec::Colour;
+    m.targetR = static_cast<float>(c.redF());
+    m.targetG = static_cast<float>(c.greenF());
+    m.targetB = static_cast<float>(c.blueF());
+    layer.setMask(m);
     m_selectivePanel->setTargetColor(c);
     recomputeSelectiveMask();
     updatePreview();
@@ -1070,17 +1213,25 @@ void MainWindow::afterHistoryChange()
         m_brushMask = m_heal->healMask(); // sync session to restored state
         m_brushUndo.clear();
     }
-    // If a tool is open, reseed its control from the restored state.
-    if (m_tonePanel->isVisible())
-        m_tonePanel->reveal({activeTune()->exposure(), activeTune()->contrast(), activeTune()->saturation()});
-    if (m_curvesPanel->isVisible())
-        m_curvesPanel->reveal(activeCurves()->curves());
-    if (m_looksPanel->isVisible())
-        m_looksPanel->reveal(QFileInfo(activeLut()->sourcePath()).fileName(), activeLut()->intensity());
+    // If a tool is open, reseed its control from the restored state (guarded —
+    // a layer may not carry every node type, e.g. a selective layer has tune only).
+    if (m_tonePanel->isVisible()) {
+        if (auto *t = activeTune())
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation()});
+    }
+    if (m_curvesPanel->isVisible()) {
+        if (auto *c = activeCurves())
+            m_curvesPanel->reveal(c->curves());
+    }
+    if (m_looksPanel->isVisible()) {
+        if (auto *l = activeLut())
+            m_looksPanel->reveal(QFileInfo(l->sourcePath()).fileName(), l->intensity());
+    }
     if (m_selectivePanel->isVisible()) {
-        m_selectivePanel->reveal(m_selective->values());
-        if (m_selective->values().maskMode == 2) {
-            m_brushMask = m_selective->brushMask(); // sync session to restored state
+        const SelectiveValues v = activeLayerSelective();
+        m_selectivePanel->reveal(v);
+        if (v.maskMode == 2) {
+            m_brushMask = m_graph.activeLayer().mask().brush; // sync to restored state
             m_brushUndo.clear();
             m_canvas->setBrushMode(true);
         }

@@ -19,16 +19,19 @@ struct PreviewState {
     float saturation = 1.0f;   // factor, 1 = neutral, multiplied across nodes
     // LutNode.
     float lutIntensity = 1.0f; // look blend [0,1]; harmless when the LUT is identity
-    // SelectiveNode — luminosity-masked tone adjustment.
-    float selEnabled = 0.0f;     // 0/1
-    float selLow = 0.0f;         // luminosity range [0,1]
+    // Mask-overlay fields. Selective adjustments are now masked layers (see
+    // Layer/MaskSpec), so the in-shader sel* adjustment is vestigial (selEnabled
+    // stays 0); selMaskView/selMaskMode/selInvert + the selMask texture drive the
+    // preview-only "show mask" overlay of the active layer's mask.
+    float selEnabled = 0.0f;     // 0/1 (no longer driven; kept for layout)
+    float selLow = 0.0f;         // luminosity range [0,1] (overlay luminosity path)
     float selHigh = 1.0f;
     float selFeather = 0.1f;
-    float selExposure = 0.0f;    // EV stops
-    float selContrast = 1.0f;    // factor
-    float selSaturation = 1.0f;  // factor
+    float selExposure = 0.0f;    // EV stops (vestigial)
+    float selContrast = 1.0f;    // factor (vestigial)
+    float selSaturation = 1.0f;  // factor (vestigial)
     float selMaskView = 0.0f;    // preview-only: 0 off, 1 red overlay, 2 grayscale
-    float selMaskMode = 0.0f;    // 0 luminosity (parametric), 1 colour (texture)
+    float selMaskMode = 0.0f;    // 0 luminosity (parametric), 1 texture (uploaded mask)
     float selInvert = 0.0f;      // 1 = invert the mask
     float layerOpacity = 1.0f;   // this layer's blend onto the running result
 

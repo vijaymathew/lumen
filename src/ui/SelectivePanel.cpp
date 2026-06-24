@@ -155,15 +155,15 @@ SelectivePanel::SelectivePanel(QWidget *parent)
     adjustLayout->setSpacing(8);
     adjustLayout->addWidget(makeSection(adjust, QStringLiteral("Adjust")));
     m_exposure = addRow(adjustLayout, QStringLiteral("Exposure"),
-                        static_cast<int>(SelectiveNode::kMinExposure * kExposureScale),
-                        static_cast<int>(SelectiveNode::kMaxExposure * kExposureScale),
+                        static_cast<int>(SelectiveValues::kMinExposure * kExposureScale),
+                        static_cast<int>(SelectiveValues::kMaxExposure * kExposureScale),
                         &m_exposureValue);
     m_contrast = addRow(adjustLayout, QStringLiteral("Contrast"),
-                        static_cast<int>(SelectiveNode::kMinAmount),
-                        static_cast<int>(SelectiveNode::kMaxAmount), &m_contrastValue);
+                        static_cast<int>(SelectiveValues::kMinAmount),
+                        static_cast<int>(SelectiveValues::kMaxAmount), &m_contrastValue);
     m_saturation = addRow(adjustLayout, QStringLiteral("Saturation"),
-                          static_cast<int>(SelectiveNode::kMinAmount),
-                          static_cast<int>(SelectiveNode::kMaxAmount), &m_saturationValue);
+                          static_cast<int>(SelectiveValues::kMinAmount),
+                          static_cast<int>(SelectiveValues::kMaxAmount), &m_saturationValue);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(16, 14, 16, 16);
