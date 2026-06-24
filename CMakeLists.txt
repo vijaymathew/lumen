@@ -105,6 +105,8 @@ qt_add_executable(lumen
     src/ui/HealPanel.cpp
     src/ui/LayersPanel.h
     src/ui/LayersPanel.cpp
+    src/ui/MaskGizmo.h
+    src/ui/MaskGizmo.cpp
     src/ui/ExportDialog.h
     src/ui/ExportDialog.cpp
     src/ui/MainWindow.h

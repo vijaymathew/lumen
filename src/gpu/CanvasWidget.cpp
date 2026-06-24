@@ -96,6 +96,7 @@ void CanvasWidget::resetView()
 {
     m_zoom = 1.0f;
     m_pan = {0.0, 0.0};
+    emit viewChanged();
     update();
 }
 
@@ -742,6 +743,36 @@ void CanvasWidget::leaveEvent(QEvent *)
     emit brushCursorMoved({}, 0, 0, false);
 }
 
+QPointF CanvasWidget::widgetForNormalized(QPointF norm, QSizeF *dispLogicalOut) const
+{
+    const qreal dpr = devicePixelRatioF();
+    const QSizeF widget(width() * dpr, height() * dpr);
+    const QSizeF image(m_textureSize.width(), m_textureSize.height());
+    if (image.isEmpty() || widget.isEmpty())
+        return {};
+    const QSizeF disp = zoommath::displayedSize(widget, image, m_zoom);
+    const QPointF tl = zoommath::imageTopLeft(widget, image, m_zoom, m_pan);
+    if (dispLogicalOut)
+        *dispLogicalOut = QSizeF(disp.width() / dpr, disp.height() / dpr);
+    const QPointF device(tl.x() + norm.x() * disp.width(),
+                         tl.y() + norm.y() * disp.height());
+    return device / dpr;
+}
+
+QPointF CanvasWidget::normalizedForWidget(QPointF widgetLogical) const
+{
+    const qreal dpr = devicePixelRatioF();
+    const QSizeF widget(width() * dpr, height() * dpr);
+    const QSizeF image(m_textureSize.width(), m_textureSize.height());
+    if (image.isEmpty() || widget.isEmpty())
+        return {};
+    const QSizeF disp = zoommath::displayedSize(widget, image, m_zoom);
+    const QPointF tl = zoommath::imageTopLeft(widget, image, m_zoom, m_pan);
+    const QPointF device = widgetLogical * dpr;
+    return QPointF(std::clamp((device.x() - tl.x()) / disp.width(), 0.0, 1.0),
+                  std::clamp((device.y() - tl.y()) / disp.height(), 0.0, 1.0));
+}
+
 QPointF CanvasWidget::imageNormalizedAt(const QPointF &widgetPos)
 {
     const qreal dpr = devicePixelRatioF();
@@ -801,6 +832,7 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent *e)
         m_lastMousePos = e->position();
         // Convert logical-pixel delta to device pixels (pan is in device px).
         m_pan += delta * devicePixelRatioF();
+        emit viewChanged();
         update();
     }
 }
@@ -834,5 +866,6 @@ void CanvasWidget::zoomAt(float factor, const QPointF &cursorDevicePx)
 
     m_pan = zoommath::panForZoom(widget, image, m_zoom, newZoom, m_pan, cursorDevicePx);
     m_zoom = newZoom;
+    emit viewChanged();
     update();
 }

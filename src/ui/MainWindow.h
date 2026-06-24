@@ -11,6 +11,7 @@
 #include "core/EditGraph.h"
 #include "core/HealNode.h"
 #include "core/LutNode.h"
+#include "core/MaskSpec.h"
 #include "core/SelectiveMask.h"
 #include "core/SelectiveNode.h"
 #include "core/TuneNode.h"
@@ -23,6 +24,7 @@ class CommandPalette;
 class CurvesPanel;
 class HealPanel;
 class LayersPanel;
+class MaskGizmo;
 class LooksPanel;
 class SelectivePanel;
 class TonePanel;
@@ -62,6 +64,10 @@ private:
     void addAdjustmentLayer();
     void deleteActiveLayer();
     void selectLayer(int index);
+    // Mask editing for the active layer (mask controls + on-canvas gizmo).
+    void setActiveLayerMaskType(int maskType);
+    void onLayerMaskEdited(const MaskSpec &spec, bool commit);
+    void syncMaskGizmo(); // reflect the active layer's mask into the gizmo
     // The active layer's tone/curves/look nodes (tools edit the active layer).
     TuneNode *activeTune() const;
     CurvesNode *activeCurves() const;
@@ -109,6 +115,7 @@ private:
     SelectivePanel *m_selectivePanel = nullptr;
     HealPanel *m_healPanel = nullptr;
     LayersPanel *m_layersPanel = nullptr;
+    MaskGizmo *m_maskGizmo = nullptr; // on-canvas gradient/radial mask editor
     QLabel *m_hint = nullptr;
 
     // The non-destructive edit graph. The GPU preview reads the tune node's

@@ -11,6 +11,7 @@
 #include "ui/ExportDialog.h"
 #include "ui/HealPanel.h"
 #include "ui/LayersPanel.h"
+#include "ui/MaskGizmo.h"
 #include "ui/LooksPanel.h"
 #include "ui/SelectivePanel.h"
 #include "ui/TonePanel.h"
@@ -348,6 +349,30 @@ MainWindow::MainWindow(QWidget *parent)
         m_graph.activeLayer().setOpacity(percent / 100.0f);
         updatePreview();
     });
+    connect(m_layersPanel, &LayersPanel::maskTypeChanged, this,
+            &MainWindow::setActiveLayerMaskType);
+    connect(m_layersPanel, &LayersPanel::maskFeatherChanged, this, [this](int percent) {
+        MaskSpec spec = m_graph.activeLayer().mask();
+        spec.feather = percent / 100.0f;
+        m_graph.activeLayer().setMask(spec);
+        updatePreview();
+        m_graph.commit();
+    });
+    connect(m_layersPanel, &LayersPanel::maskInvertChanged, this, [this](bool on) {
+        MaskSpec spec = m_graph.activeLayer().mask();
+        spec.invert = on;
+        m_graph.activeLayer().setMask(spec);
+        updatePreview();
+        m_graph.commit();
+    });
+
+    // On-canvas gizmo for editing a layer's gradient/radial mask geometry.
+    m_maskGizmo = new MaskGizmo(m_canvas, this);
+    connect(m_maskGizmo, &MaskGizmo::changed, this,
+            [this](const MaskSpec &s) { onLayerMaskEdited(s, /*commit=*/false); });
+    connect(m_maskGizmo, &MaskGizmo::editFinished, this,
+            [this](const MaskSpec &s) { onLayerMaskEdited(s, /*commit=*/true); });
+    connect(m_canvas, &CanvasWidget::viewChanged, m_maskGizmo, &MaskGizmo::refresh);
 
     // Dismissible hint bar, bottom-centre over the canvas.
     m_hint = new QLabel(this);
@@ -576,6 +601,11 @@ void MainWindow::refreshLayersPanel()
     const int active = m_graph.activeLayerIndex();
     m_layersPanel->setLayers(rows, active,
                              static_cast<int>(std::lround(m_graph.activeLayer().opacity() * 100)));
+    const MaskSpec &mask = m_graph.activeLayer().mask();
+    m_layersPanel->setMaskState(static_cast<int>(mask.type),
+                                static_cast<int>(std::lround(mask.feather * 100)),
+                                mask.invert, active == 0);
+    syncMaskGizmo();
 }
 
 void MainWindow::addAdjustmentLayer()
@@ -615,6 +645,54 @@ void MainWindow::selectLayer(int index)
     if (m_looksPanel->isVisible())
         m_looksPanel->reveal(QFileInfo(activeLut()->sourcePath()).fileName(),
                              activeLut()->intensity());
+}
+
+void MainWindow::setActiveLayerMaskType(int maskType)
+{
+    if (m_graph.activeLayerIndex() == 0)
+        return; // the Base layer has no mask
+    MaskSpec spec = m_graph.activeLayer().mask();
+    const auto type = static_cast<MaskSpec::Type>(maskType);
+    if (spec.type == type)
+        return;
+    // Seed sensible default geometry when first switching to a geometric mask.
+    if (type == MaskSpec::LinearGradient &&
+        spec.type != MaskSpec::LinearGradient) {
+        spec.gradFrom = {0.2, 0.5};
+        spec.gradTo = {0.8, 0.5};
+    } else if (type == MaskSpec::Radial && spec.type != MaskSpec::Radial) {
+        spec.center = {0.5, 0.5};
+        spec.radiusX = 0.3f;
+        spec.radiusY = 0.3f;
+    }
+    spec.type = type;
+    m_graph.activeLayer().setMask(spec);
+    m_layersPanel->setMaskState(static_cast<int>(spec.type),
+                                static_cast<int>(std::lround(spec.feather * 100)),
+                                spec.invert, /*isBaseActive=*/false);
+    syncMaskGizmo();
+    updatePreview();
+    m_graph.commit();
+}
+
+void MainWindow::onLayerMaskEdited(const MaskSpec &spec, bool commit)
+{
+    if (m_graph.activeLayerIndex() == 0)
+        return;
+    m_graph.activeLayer().setMask(spec);
+    updatePreview();
+    if (commit)
+        m_graph.commit();
+}
+
+void MainWindow::syncMaskGizmo()
+{
+    // The gizmo shows itself only for gradient/radial masks on a non-Base layer.
+    if (m_graph.activeLayerIndex() == 0)
+        m_maskGizmo->setSpec(MaskSpec{}); // None → hides
+    else
+        m_maskGizmo->setSpec(m_graph.activeLayer().mask());
+    layoutOverlays(); // re-apply gizmo geometry + z-order
 }
 
 void MainWindow::openToneTool()
@@ -1048,6 +1126,25 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_selectivePanel);
     clampIntoView(m_healPanel);
     clampIntoView(m_layersPanel);
+
+    // The mask gizmo overlays the canvas area. Keep it above the canvas but below
+    // the floating panels so their controls stay clickable (the gizmo passes
+    // unhandled clicks through to the canvas underneath).
+    if (m_maskGizmo) {
+        m_maskGizmo->setGeometry(m_canvas->geometry());
+        m_maskGizmo->raise();
+        for (QWidget *panel : {static_cast<QWidget *>(m_tonePanel),
+                               static_cast<QWidget *>(m_curvesPanel),
+                               static_cast<QWidget *>(m_looksPanel),
+                               static_cast<QWidget *>(m_selectivePanel),
+                               static_cast<QWidget *>(m_healPanel),
+                               static_cast<QWidget *>(m_layersPanel)}) {
+            if (panel && panel->isVisible())
+                panel->raise();
+        }
+        m_brushRing->raise(); // brush cursor stays on top of the gizmo
+        m_healBusy->raise();
+    }
 
     // Hint bar: bottom-centre.
     m_hint->move((width() - m_hint->width()) / 2, height() - m_hint->height() - 18);

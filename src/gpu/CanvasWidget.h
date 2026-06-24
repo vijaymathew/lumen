@@ -58,6 +58,12 @@ public:
     // Resets zoom/pan so the image is fit-to-window and centred.
     void resetView();
 
+    // image-normalised [0,1] → widget-logical position (inverse of the pick
+    // mapping). For on-canvas gizmos. Returns the displayed scale in
+    // logical px/normalised-unit via *scaleOut (x,y) if requested.
+    QPointF widgetForNormalized(QPointF norm, QSizeF *dispLogicalOut = nullptr) const;
+    QPointF normalizedForWidget(QPointF widgetLogical) const; // inverse, clamped [0,1]
+
     // Enters colour-pick mode: the next left-click emits colorPointPicked with
     // the image-normalised position instead of panning.
     void setColorPickMode(bool on);
@@ -83,6 +89,9 @@ signals:
                           bool visible);
     // Wheel notches (+/-) while a brush-adjust key is held.
     void brushAdjustRequested(int steps);
+    // Emitted when the zoom/pan transform changes, so on-canvas overlays (the
+    // mask gizmo) can repaint against the new mapping.
+    void viewChanged();
 
 protected:
     void initialize(QRhiCommandBuffer *cb) override;

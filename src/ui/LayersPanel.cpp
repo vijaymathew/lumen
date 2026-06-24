@@ -54,6 +54,58 @@ LayersPanel::LayersPanel(QWidget *parent)
         emit opacityChanged(v);
     });
 
+    // --- Mask section (active layer) ---
+    m_maskSection = new QWidget(this);
+    auto *maskLayout = new QVBoxLayout(m_maskSection);
+    maskLayout->setContentsMargins(0, 0, 0, 0);
+    maskLayout->setSpacing(6);
+
+    auto *maskTitle = new QLabel(QStringLiteral("Mask"), m_maskSection);
+    maskTitle->setObjectName(QStringLiteral("rowName"));
+
+    auto *typeRow = new QHBoxLayout;
+    typeRow->setContentsMargins(0, 0, 0, 0);
+    typeRow->setSpacing(4);
+    const struct { const char *label; int type; } kTypes[] = {
+        {"None", 0}, {"Gradient", 2}, {"Radial", 3}};
+    for (const auto &t : kTypes) {
+        auto *b = new QPushButton(QString::fromLatin1(t.label), m_maskSection);
+        b->setCheckable(true);
+        b->setProperty("maskType", t.type);
+        connect(b, &QPushButton::clicked, this,
+                [this, type = t.type] { emit maskTypeChanged(type); });
+        typeRow->addWidget(b);
+        m_maskTypeButtons.push_back(b);
+    }
+
+    auto *featherLabel = new QLabel(QStringLiteral("Feather"), m_maskSection);
+    featherLabel->setObjectName(QStringLiteral("rowName"));
+    m_featherValue = new QLabel(m_maskSection);
+    m_featherValue->setObjectName(QStringLiteral("rowValue"));
+    m_featherValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    auto *featherHeader = new QHBoxLayout;
+    featherHeader->setContentsMargins(0, 0, 0, 0);
+    featherHeader->addWidget(featherLabel);
+    featherHeader->addStretch(1);
+    featherHeader->addWidget(m_featherValue);
+    m_feather = new QSlider(Qt::Horizontal, m_maskSection);
+    m_feather->setRange(0, 100);
+    connect(m_feather, &QSlider::valueChanged, this, [this](int v) {
+        m_featherValue->setText(QStringLiteral("%1%").arg(v));
+        emit maskFeatherChanged(v);
+    });
+
+    m_invertButton = new QPushButton(QStringLiteral("Invert mask"), m_maskSection);
+    m_invertButton->setCheckable(true);
+    connect(m_invertButton, &QPushButton::toggled, this,
+            [this](bool on) { emit maskInvertChanged(on); });
+
+    maskLayout->addWidget(maskTitle);
+    maskLayout->addLayout(typeRow);
+    maskLayout->addLayout(featherHeader);
+    maskLayout->addWidget(m_feather);
+    maskLayout->addWidget(m_invertButton);
+
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(14, 12, 14, 14);
     layout->setSpacing(8);
@@ -62,6 +114,7 @@ LayersPanel::LayersPanel(QWidget *parent)
     layout->addLayout(buttons);
     layout->addLayout(opacityHeader);
     layout->addWidget(m_opacity);
+    layout->addWidget(m_maskSection);
 
     setStyleSheet(QStringLiteral(R"(
         #layersPanel { background: #1c1c1f; border: 1px solid #38383d; border-radius: 10px; }
@@ -74,6 +127,9 @@ LayersPanel::LayersPanel(QWidget *parent)
         }
         QPushButton:hover { background: #34343a; }
         QPushButton[active="true"] { background: #3a3550; border-color: #7F77DD; }
+        QPushButton:checked { background: #3a3550; border-color: #7F77DD; }
+        QPushButton:disabled { color: #6a6a6e; }
+        #rowName { color: #b4b4b8; font-size: 12px; }
     )"));
 
     hide();
@@ -114,6 +170,30 @@ void LayersPanel::setLayers(const QVector<Row> &rows, int active, int activeOpac
         m_opacityValue->setText(QStringLiteral("%1%").arg(activeOpacity));
     }
     m_opacity->setEnabled(active > 0); // Base layer is always full opacity
+    adjustSize();
+}
+
+void LayersPanel::setMaskState(int maskType, int feather, bool invert, bool isBaseActive)
+{
+    // The Base layer has no mask of its own (it is the canvas everything composites
+    // onto), so the mask controls only apply to layers above it.
+    m_maskSection->setVisible(!isBaseActive);
+    for (auto *b : m_maskTypeButtons) {
+        const QSignalBlocker block(b);
+        b->setChecked(b->property("maskType").toInt() == maskType);
+    }
+    const bool geometric = maskType != 0; // None disables feather/invert
+    {
+        const QSignalBlocker block(m_feather);
+        m_feather->setValue(feather);
+        m_featherValue->setText(QStringLiteral("%1%").arg(feather));
+    }
+    m_feather->setEnabled(geometric);
+    {
+        const QSignalBlocker block(m_invertButton);
+        m_invertButton->setChecked(invert);
+    }
+    m_invertButton->setEnabled(geometric);
     adjustSize();
 }
 

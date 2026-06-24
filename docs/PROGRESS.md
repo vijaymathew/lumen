@@ -113,8 +113,8 @@ plain Qt widgets.
 | Item | Status | Notes |
 |---|---|---|
 | Mask inversion | ✅ | `SelectiveValues.invert` — complements the mask in both libvips export and the shader (`selInvert` uniform); **Invert** toggle in the panel; mask overlay reflects it; unit-tested |
-| Layers (per-layer adjustments, add/delete) | 🟡 | Done: `MaskSpec`/`evaluateMask`; layered `EditGraph` + libvips composite export; **multi-pass GPU preview** (ping-pong, per-layer pass); **Layers panel** (add/delete/select/visibility/opacity) + active-layer routing of Tone/Curves/Looks. Remaining: dissolve `SelectiveNode` into a masked layer + per-layer mask UI/gizmos (folds in gradient/radial); structural undo of layer add/delete. See [LAYERS.md](LAYERS.md) |
-| Drawn / geometric masks (gradient, radial) | ⬜ | Linear-gradient + radial/elliptical (free-hand already = brush mask). Parametric → shader + libvips, preview==export. Part of the layer mask system — [LAYERS.md](LAYERS.md) §3 |
+| Layers (per-layer adjustments, add/delete) | 🟡 | Done: `MaskSpec`/`evaluateMask`; layered `EditGraph` + libvips composite export; **multi-pass GPU preview** (ping-pong, per-layer pass); **Layers panel** (add/delete/select/visibility/opacity) + active-layer routing of Tone/Curves/Looks; **per-layer mask UI** (None/Gradient/Radial + Feather + Invert) with an **on-canvas `MaskGizmo`** (draggable gradient line / radial ellipse; follows zoom/pan; passes non-handle events through to the canvas). Remaining: dissolve `SelectiveNode` into a masked layer; structural undo of layer add/delete. See [LAYERS.md](LAYERS.md) |
+| Drawn / geometric masks (gradient, radial) | ✅ | Linear-gradient + radial/elliptical via `MaskSpec`/`evaluateMask` (free-hand already = brush mask), parametric → shader + libvips. Per-layer mask controls in the Layers panel + on-canvas `MaskGizmo` for direct manipulation; feather + invert; verified on-screen (radial = feathered bright ellipse, gradient = left→right ramp matching the gizmo). [LAYERS.md](LAYERS.md) §3 |
 | Monochrome (B&W mixer, toning, grain) | ⬜ | `MonoNode`; a layer adjustment once layers exist |
 
 ---
