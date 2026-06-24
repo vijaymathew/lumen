@@ -120,14 +120,22 @@ plain Qt widgets.
 
 ---
 
-## Deferred / post-v1 ⏸️
+## Post-v1 🟡
 
-| Item | Notes |
-|---|---|
-| Lens correction (`LensCorrectionNode`) | LibRaw + Lensfun. DESIGN §8 |
-| Full RAW workflow polish | LibRaw decode designed for from day one |
-| Perspective / advanced crop-rotate | |
-| Built-in presets -- Kodachrome 64, Fuji Velvia, Ilford HP5 Plus (ISO 400), Ilford Delta 400 (ISO 400) and Ilford FP4 Plus (ISO 125) (maybe reuse existing LUTs?)
+| Item | Status | Notes |
+|---|---|---|
+| RAW decode | ✅ | `core/RawLoader` decodes camera RAW via **LibRaw** (unpack → `dcraw_process` → **16-bit** sRGB, camera WB) → float `Image`, dropping into the same pipeline as a JPEG. Routed by extension in `openPath` + the open dialog (filter includes UPPERCASE globs, shared list with `isRawPath`); `.lumen` re-decodes the embedded RAW bytes on load. `raw_test` covers classification + graceful failure. **Verified on a real 25 MB Canon `.CR2`**: decodes + renders correctly, RAW→edit→`.lumen`→reopen round-trips |
+| High-precision pipeline (float) | 🟡 | **Stage 1–2 done:** the working `Image` is now **float** (sRGB-encoded, unclamped) end-to-end — `fromFile`/`fromBytes`/`fromInterleavedFloat`, and every node (Tune/Curves/Lut/Mono/Heal/composite) processes at float (no inter-node 8-bit banding); `CurvesNode` interpolates its 256-LUT to match the GPU. RAW decodes at **16-bit → float**. **16-bit PNG/TIFF export** (ExportDialog depth selector; `saveToFile(..., bits)`); verified genuine `ushort rgb16` on a full-res CR2. `preview == export` preserved (8-bit display). Verified: 16/16 tests, visual parity on the CR2. **Remaining (Stage 3+):** true scene-linear processing (exposure/WB/blend in linear; currently encoded-space with the `/2.2` exposure approximation), extended RAW **highlight-recovery headroom** (LibRaw still normalises highlights to white), and a **float GPU preview** so recovery is live on-canvas (today the preview source is 8-bit, display-accurate) |
+| Whitebalance module | ⬜ | A proper temperature/tint WB adjustment (most natural in the linear stage above) |
+| Lens correction + perspective (`LensCorrectionNode`) | ✅ | First Base node (geometry baked into the preview base, before heal/tone). **Automatic** distortion / TCA / vignetting from EXIF via **Lensfun** (optional dep — `LUMEN_HAVE_LENSFUN`; perspective-only without it). `RawLoader` extracts camera/lens identity; matched by camera/lens with a **fixed-lens-compact fallback** (camera-mount lookup). **Manual perspective**: vertical/horizontal keystone + rotate + zoom via a centre-pinned homography (`vips_mapim` backward-resample). `LensPanel` tool; per-correction toggles + amounts. Re-renders the corrected source on change (cached so heal dabs don't re-warp), **preview == export** preserved. `lens_node_test` covers the homography + serialise; **verified on a real CR2** (Canon G7 X Mark II compact: auto-corrected, mean Δ≈12) |
+| Built-in presets (film looks) | ⬜ | Decided approach: **parametric recipes applied as a layer** (Tune/Curves/Mono node bundles; B&W films → Mono mixer). Velvia, Kodachrome 64, HP5, Delta 400, FP4. No new deps |
+| Interactive crop / rotate UI | ⬜ | On-canvas crop rectangle + free-rotate handles. The perspective/zoom homography already exists in `LensCorrectionNode`; this is the framing/gesture layer on top |
+| Sharpen (`SharpenNode`) | ✅ | Unsharp mask via `vips_sharpen` (L* only — no colour fringing); Amount + Radius. A Base node in the "baked" group (after heal, before tone) → bakes into the preview base off the UI thread (debounced), so it's capture-style sharpening. Output cast back to float to keep the pipeline invariant. `SharpenPanel` tool. `sharpen_test` (flat unchanged, edge overshoot, serialise); verified at full-res on a 20 MP CR2 |
+| Histogram | ✅ | `core/Histogram` (`computeHistogram` → 256-bin RGB from a downsampled, display-clamped copy via `vips_hist_find`); `HistogramWidget` additive RGB overlay (bottom-left), toggled from the palette. Consumes the full composite (`m_graph.result()`) computed **off the UI thread** (debounced, latest-wins), so big RAWs don't hitch. `histogram_test` covers bin placement |
+| Built-in presets (film looks) | ⬜ | Decided approach: **parametric recipes applied as a layer** (Tune/Curves/Mono node bundles; B&W films → Mono mixer). Velvia, Kodachrome 64, HP5, Delta 400, FP4. No new deps |
+| A proper whitebalance adjustment module -- if not already implemented
+| Denoise/add-noise module
+| Show highlight/shadow clipping on the image
 
 ---
 
@@ -137,6 +145,6 @@ plain Qt widgets.
 |---|---|---|
 | Qt6 (Core/Gui/Widgets/ShaderTools) | ✅ | UI, RHI rendering |
 | libvips | ✅ | Image decode / pipeline |
-| OpenCV | ⬜ | Healing, guided-filter masks (Phase 5–6) |
-| LibRaw | ⬜ | RAW decode |
-| Lensfun | ⬜ | Lens correction (deferred) |
+| OpenCV | ⬜ | Not needed — healing / guided-filter masks were written self-contained |
+| LibRaw | ✅ | RAW decode (`core/RawLoader`); pkg-config `libraw` 0.21 |
+| Lensfun | ✅ (optional) | Automatic lens correction (`core/LensCorrectionNode`); pkg-config `lensfun` 0.3.4. **Optional** — gated by `LUMEN_HAVE_LENSFUN`; without it the node is perspective-only |

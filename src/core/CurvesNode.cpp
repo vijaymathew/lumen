@@ -5,6 +5,12 @@
 
 #include <QJsonArray>
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <vector>
+
 namespace {
 
 QJsonArray curveToJson(const Curve &curve)
@@ -84,30 +90,42 @@ Image CurvesNode::apply(const Image &input) const
     if (input.isNull() || isIdentity())
         return input;
 
-    const std::array<uint8_t, 256> r = effectiveLut(0);
-    const std::array<uint8_t, 256> g = effectiveLut(1);
-    const std::array<uint8_t, 256> b = effectiveLut(2);
+    const std::array<uint8_t, 256> lut[3] = {effectiveLut(0), effectiveLut(1),
+                                             effectiveLut(2)};
 
-    // 256x1, 4-band LUT: R/G/B map through their effective curves, alpha identity.
-    unsigned char data[256 * 4];
-    for (int i = 0; i < 256; ++i) {
-        data[i * 4 + 0] = r[i];
-        data[i * 4 + 1] = g[i];
-        data[i * 4 + 2] = b[i];
-        data[i * 4 + 3] = static_cast<unsigned char>(i);
+    // The working image is float sRGB (0..255). Cast to float, then apply each
+    // channel's curve by *interpolating* its 256-entry LUT — matching the GPU's
+    // linear LUT-texture sampling (and preserving precision, unlike 8-bit maplut).
+    VipsImage *f = nullptr;
+    if (vips_cast(input.handle(), &f, VIPS_FORMAT_FLOAT, nullptr))
+        return input;
+    void *buf = vips_image_write_to_memory(f, nullptr);
+    const int w = f->Xsize, h = f->Ysize, bands = f->Bands;
+    g_object_unref(f);
+    if (!buf)
+        return input;
+
+    const auto curveAt = [](const std::array<uint8_t, 256> &c, float v) {
+        v = std::clamp(v, 0.0f, 255.0f);
+        const int i0 = static_cast<int>(v);
+        const int i1 = std::min(i0 + 1, 255);
+        const float frac = v - static_cast<float>(i0);
+        return c[i0] * (1.0f - frac) + c[i1] * frac;
+    };
+
+    auto *px = static_cast<float *>(buf);
+    const long long n = static_cast<long long>(w) * h;
+    const int colour = std::min(bands, 3);
+    for (long long i = 0; i < n; ++i) {
+        float *p = px + i * bands;
+        for (int ch = 0; ch < colour; ++ch)
+            p[ch] = curveAt(lut[ch], p[ch]);
+        // alpha (and any extra band) untouched
     }
-    VipsImage *lutImg = vips_image_new_from_memory_copy(data, sizeof(data), 256, 1, 4,
-                                                        VIPS_FORMAT_UCHAR);
-    if (!lutImg)
-        return input;
 
-    VipsImage *out = nullptr;
-    const int rc = vips_maplut(input.handle(), &out, lutImg, nullptr);
-    g_object_unref(lutImg);
-    if (rc)
-        return input;
-
-    return Image::adopt(out);
+    Image result = Image::fromInterleavedFloat(px, w, h, bands);
+    g_free(buf);
+    return result.isNull() ? input : result;
 }
 
 QJsonObject CurvesNode::saveState() const

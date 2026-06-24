@@ -15,6 +15,9 @@ int main(int argc, char *argv[])
     }
 
     QApplication app(argc, argv);
+    // Organisation + application name give QSettings a stable per-user store
+    // (used to remember the file dialogs' last-used directories).
+    QCoreApplication::setOrganizationName(QStringLiteral("Lumen"));
     QCoreApplication::setApplicationName(QStringLiteral("Lumen"));
     QCoreApplication::setApplicationVersion(QStringLiteral("0.1.0"));
 

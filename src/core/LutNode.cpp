@@ -56,35 +56,33 @@ Image LutNode::apply(const Image &input) const
     if (input.isNull() || !m_lut.isValid() || m_intensity == 0.0f)
         return input;
 
-    // Work on an 8-bit RGBA buffer.
-    VipsImage *u8 = nullptr;
-    if (vips_cast(input.handle(), &u8, VIPS_FORMAT_UCHAR, nullptr))
+    // Work on a float RGBA buffer (sRGB 0..255) at full precision.
+    VipsImage *f = nullptr;
+    if (vips_cast(input.handle(), &f, VIPS_FORMAT_FLOAT, nullptr))
         return input;
 
-    void *buf = vips_image_write_to_memory(u8, nullptr);
-    const int w = u8->Xsize;
-    const int h = u8->Ysize;
-    const int bands = u8->Bands;
-    g_object_unref(u8);
+    void *buf = vips_image_write_to_memory(f, nullptr);
+    const int w = f->Xsize;
+    const int h = f->Ysize;
+    const int bands = f->Bands;
+    g_object_unref(f);
     if (!buf)
         return input;
 
-    auto *px = static_cast<uint8_t *>(buf);
+    auto *px = static_cast<float *>(buf);
     const long long n = static_cast<long long>(w) * h;
     const double t = m_intensity;
     double out[3];
     for (long long i = 0; i < n; ++i) {
-        uint8_t *p = px + i * bands;
+        float *p = px + i * bands;
         m_lut.sample(p[0] / 255.0, p[1] / 255.0, p[2] / 255.0, out);
-        for (int c = 0; c < 3; ++c) {
+        for (int c = 0; c < 3; ++c)
             // Blend the look with the original by intensity.
-            const double blended = p[c] * (1.0 - t) + out[c] * 255.0 * t;
-            p[c] = static_cast<uint8_t>(std::clamp(std::lround(blended), 0L, 255L));
-        }
+            p[c] = static_cast<float>(p[c] * (1.0 - t) + out[c] * 255.0 * t);
         // alpha (and any extra band) left untouched
     }
 
-    Image result = Image::fromInterleaved(buf, w, h, bands);
+    Image result = Image::fromInterleavedFloat(px, w, h, bands);
     g_free(buf);
     return result.isNull() ? input : result;
 }

@@ -20,12 +20,15 @@ public:
 
     QString extension() const; // "jpg", "png", "tiff", "webp"
     int quality() const;       // 0-100, or -1 if the format is lossless
+    int bits() const;          // 8 or 16 (16 only for lossless PNG/TIFF)
 
 private:
-    void syncQualityRow();
+    void syncRows();
 
     QComboBox *m_format = nullptr;
     QSlider *m_quality = nullptr;
     QLabel *m_qualityValue = nullptr;
     QLabel *m_qualityName = nullptr;
+    QComboBox *m_bits = nullptr;
+    QLabel *m_bitsName = nullptr;
 };

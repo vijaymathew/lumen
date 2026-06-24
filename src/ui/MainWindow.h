@@ -11,10 +11,14 @@
 #include "core/CurvesNode.h"
 #include "core/EditGraph.h"
 #include "core/HealNode.h"
+#include "core/LensCorrectionNode.h"
 #include "core/LutNode.h"
 #include "core/MaskSpec.h"
+#include "core/Histogram.h"
 #include "core/MonoNode.h"
+#include "core/RawLoader.h"
 #include "core/SelectiveMask.h"
+#include "core/SharpenNode.h"
 #include "core/TuneNode.h"
 #include "input/InputController.h"
 
@@ -24,12 +28,16 @@ class CanvasWidget;
 class CommandPalette;
 class CurvesPanel;
 class HealPanel;
+class HistogramWidget;
 class LayersPanel;
+class LensPanel;
 class MaskGizmo;
 class LooksPanel;
 class MonoPanel;
+class SharpenPanel;
 class TonePanel;
 class QLabel;
+class QTimer;
 
 // MainWindow is the immersive shell: a fullscreen canvas with a "/"-triggered
 // command palette floating over it and a dismissible hint bar. It owns the
@@ -90,6 +98,16 @@ private:
     void loadLookFile();
     void openMonoTool();
     void closeMonoTool();
+    void openLensTool();  // toggles the Lens & Perspective panel
+    void closeLensTool();
+    void openSharpenTool();  // toggles the Sharpen panel
+    void closeSharpenTool();
+    void toggleHistogram();  // show/hide the histogram overlay
+    void updateHistogram();  // recompute from the current result (when visible)
+    // Recomputes the cached lens-corrected working source (and its display
+    // QImage) from the original; cheap no-op when no correction is active. Called
+    // when the lens parameters or the source image change — NOT per heal dab.
+    void refreshWorkingSource();
     void recomputeSelectiveMask(); // uploads the active layer's mask as the overlay
     void onColorPicked(const QPointF &imageNormalized);
     // A selective adjustment is a masked layer (mask = Luminosity/Colour/Brush +
@@ -127,7 +145,12 @@ private:
     CurvesPanel *m_curvesPanel = nullptr;
     LooksPanel *m_looksPanel = nullptr;
     MonoPanel *m_monoPanel = nullptr;
+    LensPanel *m_lensPanel = nullptr;
+    SharpenPanel *m_sharpenPanel = nullptr;
     HealPanel *m_healPanel = nullptr;
+    HistogramWidget *m_histogram = nullptr;
+    QTimer *m_histTimer = nullptr; // debounces histogram recompute
+    QTimer *m_bakeTimer = nullptr; // debounces sharpen base re-bake
     LayersPanel *m_layersPanel = nullptr;
     MaskGizmo *m_maskGizmo = nullptr; // on-canvas gradient/radial mask editor
     QLabel *m_hint = nullptr;
@@ -139,7 +162,10 @@ private:
     CurvesNode *m_curves = nullptr;      // owned by m_graph
     LutNode *m_lutNode = nullptr;        // owned by m_graph
     MonoNode *m_mono = nullptr;          // owned by m_graph
-    HealNode *m_heal = nullptr;          // owned by m_graph (first in the chain)
+    HealNode *m_heal = nullptr;          // owned by m_graph (second in the chain)
+    LensCorrectionNode *m_lens = nullptr; // owned by m_graph (first in the chain)
+    SharpenNode *m_sharpen = nullptr;     // owned by m_graph (after heal, before tune)
+    Image m_workingSource;               // cached lens-corrected source (preview base input)
     QString m_sourcePath;                // for a sensible default export name
     QString m_exportExt = QStringLiteral("jpg"); // remembered export format
     int m_exportQuality = 90;                    // remembered export quality
@@ -168,4 +194,9 @@ private:
     // freezes the app; only the latest request's result is applied.
     QFutureWatcher<QImage> m_healWatcher;
     std::atomic<quint64> m_healGen{0};
+
+    // The histogram consumes the full-res composite, so it too is computed off
+    // the UI thread; the latest request wins.
+    QFutureWatcher<HistogramData> m_histWatcher;
+    std::atomic<quint64> m_histGen{0};
 };

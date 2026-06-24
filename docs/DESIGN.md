@@ -58,10 +58,9 @@ Linux-first image editor in the first place.
 - **Healing brush** — content-aware removal via inpainting.
 - **Filters / looks** — LUT-based (3D / HALD CLUT) film and stylistic looks.
 
-### Explicitly deferred (post-v1)
-- **Lens correction** (distortion, vignetting, TCA). Requires pairing LibRaw
-  with **Lensfun** as a separate `LensCorrectionNode`. Not in the v1 feature set
-  and not on the critical path. See §8.
+### Post-v1, now implemented
+- **Lens correction** (distortion, vignetting, TCA) + manual perspective, as a
+  `LensCorrectionNode` pairing LibRaw metadata with **Lensfun**. See §8.
 - RAW is *designed for* from day one (LibRaw in the loader) but full RAW
   workflow polish is a later milestone.
 - Perspective / crop-rotate beyond a basic crop.
@@ -261,7 +260,7 @@ lumen/
 | CV algorithms | **OpenCV** | Healing inpaint (`cv::inpaint`, `xphoto`), guided filter for masks |
 | GPU preview | **Qt RHI** (Metal on macOS, OpenGL/Vulkan on Linux) | One shader codebase, real-time preview, macOS-safe (no deprecated GL) |
 | RAW decode | **LibRaw** | Decode + metadata; design for it from day one |
-| Lens correction (later) | **Lensfun** | Geometric correction; pairs with LibRaw metadata |
+| Lens correction | **Lensfun** (optional) | Geometric correction; pairs with LibRaw metadata. `LensCorrectionNode`, gated by `LUMEN_HAVE_LENSFUN` |
 | Build | **CMake + vcpkg (or Conan)** | All deps package cleanly |
 
 ### Feature → implementation notes
@@ -297,21 +296,32 @@ lumen/
 
 ---
 
-## 8. Deferred: lens correction
+## 8. Lens correction & perspective ✅
 
 LibRaw is **purely a raw decoder** (demosaic, white balance, color conversion,
 metadata). It does *not* do geometric correction. For distortion / vignetting /
-TCA, the standard pairing is **LibRaw + Lensfun** (as darktable does):
+TCA, the standard pairing is **LibRaw + Lensfun** (as darktable does), which is
+what `core/LensCorrectionNode` implements.
 
-- Look up a Lensfun profile by lens model + focal length + aperture + focus
-  distance (using the metadata LibRaw extracted), then apply correction as a
-  separate `LensCorrectionNode`.
-- **Wrinkle:** some makers (Sony, Nikon Z, Olympus) embed correction params in
-  the raw rather than baking them in — LibRaw exposes the tags, applying them is
-  on us. Others bake vignetting correction in-camera, so a Lensfun profile can
-  *double-correct*. A known friction point; handle carefully when we get here.
-
-Deferred to a post-v1 milestone.
+- **Automatic correction.** `RawLoader` extracts the camera/lens identity (maker,
+  model, lens, focal, aperture) from EXIF. The node looks up a Lensfun profile by
+  camera + lens, with a **fixed-lens-compact fallback** (when EXIF carries no lens
+  string, match the built-in lens via the camera's mount). Distortion + TCA come
+  from `ApplySubpixelGeometryDistortion` (a per-channel backward map fed to
+  `vips_mapim`); vignetting from `ApplyColorModification` on the source buffer.
+  Each correction has a toggle and a 0–1 amount (lerp toward identity).
+- **Manual perspective.** Vertical/horizontal keystone, rotation and zoom, built
+  as a centre-pinned virtual-camera homography (`K·Rᵀ·K⁻¹·S⁻¹`, re-centred so the
+  subject stays put) and applied through the same `vips_mapim` resample. Always
+  available, even without Lensfun.
+- **Preview model.** It's the first Base node, so geometry bakes into the preview
+  base (re-rendered on change, cached so heal dabs don't re-warp) — the GPU never
+  sees geometry, preserving **preview == export**.
+- **Optional dependency.** Gated by `LUMEN_HAVE_LENSFUN`; without Lensfun the node
+  degrades to perspective-only and the build still succeeds.
+- **Known wrinkle (future):** some makers (Sony, Nikon Z, Olympus) embed
+  correction params in the raw, and some bake vignetting correction in-camera, so
+  a Lensfun profile can *double-correct*. Not yet special-cased.
 
 ---
 

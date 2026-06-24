@@ -5,19 +5,27 @@
 #include "core/LayerPreview.h"
 #include "core/MaskSpec.h"
 #include "core/Project.h"
+#include "core/RawLoader.h"
 #include "core/SelectiveMask.h"
 #include "gpu/CanvasWidget.h"
 #include "input/CommandPalette.h"
 #include "ui/CurvesPanel.h"
 #include "ui/ExportDialog.h"
+#include "core/Histogram.h"
 #include "ui/HealPanel.h"
+#include "ui/HistogramWidget.h"
 #include "ui/LayersPanel.h"
+#include "ui/LensPanel.h"
 #include "ui/MaskGizmo.h"
 #include "ui/LooksPanel.h"
 #include "ui/MonoPanel.h"
+#include "ui/SharpenPanel.h"
 #include "ui/TonePanel.h"
 
 #include <memory>
+#include <utility>
+
+#include <cstdio>
 
 #include <QBuffer>
 #include <QColor>
@@ -31,6 +39,7 @@
 #include <cmath>
 #include <QLabel>
 #include <QMessageBox>
+#include <QSettings>
 #include <QShortcut>
 #include <QStandardPaths>
 #include <QTimer>
@@ -39,6 +48,26 @@
 #include <algorithm>
 
 namespace {
+
+// --- File-dialog directory memory -----------------------------------------
+// The file dialogs remember where you last were, per kind (open image, open /
+// save project, export, look LUT), persisted via QSettings. Returns the stored
+// directory if it still exists, else `fallback`.
+QString lastDir(const QString &key, const QString &fallback)
+{
+    const QString d =
+        QSettings().value(QStringLiteral("dialogDirs/") + key).toString();
+    return (!d.isEmpty() && QFileInfo(d).isDir()) ? d : fallback;
+}
+
+// Stores the directory containing `chosenPath` (a file the user just picked).
+void rememberDir(const QString &key, const QString &chosenPath)
+{
+    if (chosenPath.isEmpty())
+        return;
+    QSettings().setValue(QStringLiteral("dialogDirs/") + key,
+                         QFileInfo(chosenPath).absolutePath());
+}
 
 // Dim opacity for overlays (0–255). A tuning value, not a fixed constant
 // (DESIGN.md §4.6): too dark loses context, too light hurts contrast.
@@ -193,11 +222,15 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setWindowTitle(QStringLiteral("Lumen"));
 
-    // The graph owns the nodes; we keep raw pointers to drive them. Heal is
-    // first (it edits source pixels, baked into the preview base), then the
-    // pointwise/LUT ops the shader replicates: tune -> curves -> lut -> mono.
-    // Selective adjustments are masked layers above the Base, not a Base node.
+    // The graph owns the nodes; we keep raw pointers to drive them. The "baked"
+    // group runs first in libvips and is rendered into the preview base texture:
+    // lens (warps geometry) -> heal (edits pixels) -> sharpen (neighbourhood op).
+    // Then the pointwise/LUT ops the shader replicates: tune -> curves -> lut ->
+    // mono. Selective adjustments are masked layers above the Base, not Base nodes.
+    m_lens =
+        static_cast<LensCorrectionNode *>(m_graph.addNode(std::make_unique<LensCorrectionNode>()));
     m_heal = static_cast<HealNode *>(m_graph.addNode(std::make_unique<HealNode>()));
+    m_sharpen = static_cast<SharpenNode *>(m_graph.addNode(std::make_unique<SharpenNode>()));
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
     m_lutNode = static_cast<LutNode *>(m_graph.addNode(std::make_unique<LutNode>()));
@@ -270,6 +303,53 @@ MainWindow::MainWindow(QWidget *parent)
         updatePreview();
     });
     connect(m_monoPanel, &MonoPanel::closed, this, &MainWindow::closeMonoTool);
+
+    m_lensPanel = new LensPanel(this);
+    connect(m_lensPanel, &LensPanel::paramsChanged, this,
+            [this](const LensCorrectionNode::Params &p) {
+                if (!m_lens)
+                    return;
+                m_lens->setParams(p);
+                refreshWorkingSource();   // re-render the corrected base
+                refreshBaseImage();       // re-apply heal onto it, keep the view
+                updatePreview();
+            });
+    connect(m_lensPanel, &LensPanel::closed, this, &MainWindow::closeLensTool);
+
+    m_sharpenPanel = new SharpenPanel(this);
+    connect(m_sharpenPanel, &SharpenPanel::valuesChanged, this,
+            [this](const SharpenNode::Values &v) {
+                if (!m_sharpen)
+                    return;
+                m_sharpen->setValues(v);
+                // Sharpen bakes into the base; coalesce drags so we don't kick a
+                // full-res pass per tick.
+                m_bakeTimer->start();
+            });
+    connect(m_sharpenPanel, &SharpenPanel::closed, this, &MainWindow::closeSharpenTool);
+
+    // Debounce timers: the histogram recompute and the sharpen base re-bake both
+    // settle shortly after the user stops dragging.
+    m_bakeTimer = new QTimer(this);
+    m_bakeTimer->setSingleShot(true);
+    m_bakeTimer->setInterval(140);
+    connect(m_bakeTimer, &QTimer::timeout, this, [this] {
+        refreshBaseImage();
+        updatePreview();
+    });
+
+    m_histogram = new HistogramWidget(this);
+    m_histTimer = new QTimer(this);
+    m_histTimer->setSingleShot(true);
+    m_histTimer->setInterval(160);
+    connect(m_histTimer, &QTimer::timeout, this, &MainWindow::updateHistogram);
+    connect(&m_histWatcher, &QFutureWatcher<HistogramData>::finished, this, [this] {
+        if (!m_histWatcher.future().isValid())
+            return;
+        const HistogramData h = m_histWatcher.result();
+        if (h.valid && m_histogram->isVisible())
+            m_histogram->setData(h);
+    });
 
     // Mask colour-pick + brush painting are driven from the Layers panel now;
     // the canvas wiring stays here.
@@ -439,7 +519,10 @@ void MainWindow::buildCommands()
         {QStringLiteral("looks"), QStringLiteral("Looks (LUT)")},
         {QStringLiteral("monochrome"), QStringLiteral("Monochrome (B&W + toning)")},
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment")},
+        {QStringLiteral("lens"), QStringLiteral("Lens & perspective")},
+        {QStringLiteral("sharpen"), QStringLiteral("Sharpen")},
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
+        {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)")},
         {QStringLiteral("layers"), QStringLiteral("Layers")},
         {QStringLiteral("quit"), QStringLiteral("Quit Lumen")},
     });
@@ -469,6 +552,12 @@ void MainWindow::runCommand(const QString &id)
         ensureSelectiveLayer();
         showLayersPanel();
         openToneTool();
+    } else if (id == QLatin1String("lens")) {
+        openLensTool();
+    } else if (id == QLatin1String("sharpen")) {
+        openSharpenTool();
+    } else if (id == QLatin1String("histogram")) {
+        toggleHistogram();
     } else if (id == QLatin1String("heal")) {
         openHealTool();
     } else if (id == QLatin1String("layers")) {
@@ -495,7 +584,10 @@ bool MainWindow::openPath(const QString &path)
         return loadProjectFile(path); // a project, not a raw image
 
     QString error;
-    Image source = Image::fromFile(path, &error);
+    const bool isRaw = raw::isRawPath(path);
+    raw::LensMetadata meta;
+    Image source = isRaw ? raw::decodeFile(path, &error, &meta)
+                         : Image::fromFile(path, &error);
     if (source.isNull()) {
         QMessageBox::warning(this, QStringLiteral("Lumen"), error);
         return false;
@@ -507,9 +599,21 @@ bool MainWindow::openPath(const QString &path)
     m_sourceName = QFileInfo(path).fileName();
     m_projectPath.clear(); // opening a raw image starts a new (unsaved) project
 
-    m_sourceQImage = source.toQImage();
-    m_graph.setSource(source);            // full-res source for export
-    refreshBaseImage(false);              // new image → fit the view
+    m_graph.setSource(source); // full-res original; the lens node corrects on top
+    // Seed the lens node: a RAW carries EXIF identity for automatic correction;
+    // anything else starts neutral (manual perspective still available).
+    LensCorrectionNode::Params lp; // defaults: corrections on, perspective neutral
+    if (isRaw) {
+        lp.cameraMaker = meta.cameraMaker;
+        lp.cameraModel = meta.cameraModel;
+        lp.lensModel = meta.lensModel;
+        lp.focalLength = meta.focalLength;
+        lp.aperture = meta.aperture;
+        lp.focusDistance = meta.focusDistance;
+    }
+    m_lens->setParams(lp);
+    refreshWorkingSource();  // build the corrected source + display QImage
+    refreshBaseImage(false); // new image → fit the view
     recomputeSelectiveMask();
     updatePreview();        // apply any existing edits
     m_graph.resetHistory(); // fresh undo timeline for this image
@@ -525,10 +629,12 @@ void MainWindow::saveProject()
         return;
     }
 
-    // Default name: next to the source, "<name>.lumen".
+    // Default name "<source>.lumen", in the last-used project folder (falling
+    // back to next-to-the-source on first save).
     const QFileInfo src(m_projectPath.isEmpty() ? m_sourcePath : m_projectPath);
+    const QString dir = lastDir(QStringLiteral("saveProject"), src.dir().path());
     const QString suggested =
-        src.dir().filePath(src.completeBaseName() + QStringLiteral(".lumen"));
+        QDir(dir).filePath(src.completeBaseName() + QStringLiteral(".lumen"));
     QString path = QFileDialog::getSaveFileName(
         this, QStringLiteral("Save project"), suggested,
         QStringLiteral("Lumen project (*.lumen)"));
@@ -554,19 +660,23 @@ void MainWindow::saveProject()
         return;
     }
     m_projectPath = path;
+    rememberDir(QStringLiteral("saveProject"), path);
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
     showHint(QStringLiteral("Saved %1").arg(QFileInfo(path).fileName()));
 }
 
 void MainWindow::openProject()
 {
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    const QString dir = lastDir(
+        QStringLiteral("openProject"),
+        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Open project"), dir,
         QStringLiteral("Lumen project (*.lumen)"));
-    if (!path.isEmpty())
+    if (!path.isEmpty()) {
+        rememberDir(QStringLiteral("openProject"), path);
         loadProjectFile(path);
+    }
 }
 
 bool MainWindow::loadProjectFile(const QString &path)
@@ -578,7 +688,9 @@ bool MainWindow::loadProjectFile(const QString &path)
         return false;
     }
     Image source =
-        Image::fromBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error);
+        raw::isRawPath(proj.sourceName)
+            ? raw::decodeBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error)
+            : Image::fromBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error);
     if (source.isNull()) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Could not decode the embedded image: %1").arg(error));
@@ -591,10 +703,10 @@ bool MainWindow::loadProjectFile(const QString &path)
     m_brushUndo.clear();
     m_sourceBytes = proj.sourceBytes;
     m_sourceName = proj.sourceName;
-    m_sourceQImage = source.toQImage();
     m_graph.setSource(source);
-    m_graph.loadProjectState(proj.graph);
+    m_graph.loadProjectState(proj.graph); // restores the lens node's params too
 
+    refreshWorkingSource();  // rebuild the corrected source from the restored lens
     refreshBaseImage(false); // re-applies the heal mask, fits the view
     recomputeSelectiveMask();
     updatePreview();
@@ -628,13 +740,28 @@ bool MainWindow::loadProjectFile(const QString &path)
 
 void MainWindow::openImageDialog()
 {
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
-    const QString path = QFileDialog::getOpenFileName(
-        this, QStringLiteral("Open image"), dir,
-        QStringLiteral("Images (*.jpg *.jpeg *.png *.tif *.tiff *.webp)"));
-    if (!path.isEmpty())
+    const QString dir = lastDir(
+        QStringLiteral("openImage"),
+        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
+    // Build the filter from a single extension list, including UPPERCASE
+    // variants — native file dialogs glob case-sensitively and cameras usually
+    // write uppercase RAW extensions (.CR2, .NEF…). An "All files" fallback lets
+    // the user pick anything we didn't enumerate.
+    QStringList exts{QStringLiteral("jpg"),  QStringLiteral("jpeg"),
+                     QStringLiteral("png"),  QStringLiteral("tif"),
+                     QStringLiteral("tiff"), QStringLiteral("webp")};
+    exts += raw::extensions();
+    QStringList patterns;
+    for (const QString &e : std::as_const(exts))
+        patterns << QStringLiteral("*.%1").arg(e) << QStringLiteral("*.%1").arg(e.toUpper());
+    const QString filter = QStringLiteral("Images (%1);;All files (*)")
+                               .arg(patterns.join(QLatin1Char(' ')));
+    const QString path =
+        QFileDialog::getOpenFileName(this, QStringLiteral("Open image"), dir, filter);
+    if (!path.isEmpty()) {
+        rememberDir(QStringLiteral("openImage"), path);
         openPath(path);
+    }
 }
 
 void MainWindow::exportImage()
@@ -651,12 +778,15 @@ void MainWindow::exportImage()
         return;
     m_exportExt = dlg.extension();
     const int quality = dlg.quality();
+    const int bits = dlg.bits();
     if (quality >= 0)
         m_exportQuality = quality;
 
-    // 2. Choose the path, defaulting to "<name>-edited.<ext>" next to the source.
+    // 2. Choose the path, defaulting to "<name>-edited.<ext>" in the last-used
+    //    export folder (falling back to next-to-the-source).
     const QFileInfo src(m_sourcePath);
-    const QString suggested = src.dir().filePath(
+    const QString dir = lastDir(QStringLiteral("export"), src.dir().path());
+    const QString suggested = QDir(dir).filePath(
         src.completeBaseName() + QStringLiteral("-edited.") + m_exportExt);
     const QString filter =
         QStringLiteral("%1 (*.%2)").arg(m_exportExt.toUpper(), m_exportExt);
@@ -670,11 +800,12 @@ void MainWindow::exportImage()
     // 3. Walk the graph at full resolution, then write via libvips.
     const Image result = m_graph.result();
     QString error;
-    if (!result.saveToFile(path, quality, &error)) {
+    if (!result.saveToFile(path, quality, bits, &error)) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Export failed: %1").arg(error));
         return;
     }
+    rememberDir(QStringLiteral("export"), path);
     showHint(QStringLiteral("Exported to %1").arg(QFileInfo(path).fileName()));
 }
 
@@ -744,6 +875,11 @@ void MainWindow::updatePreview()
         extras.push_back(std::move(lp));
     }
     m_canvas->setExtraLayers(extras);
+
+    // Refresh the histogram a beat after edits settle (it consumes the full
+    // composite, so we don't want it on every drag tick).
+    if (m_histogram && m_histogram->isVisible())
+        m_histTimer->start();
 }
 
 TuneNode *MainWindow::activeTune() const
@@ -999,15 +1135,106 @@ void MainWindow::closeMonoTool()
     m_canvas->setFocus();
 }
 
+void MainWindow::openLensTool()
+{
+    if (!m_lens)
+        return;
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_lensPanel->adjustSize();
+    const int margin = 18;
+    m_lensPanel->move(width() - m_lensPanel->width() - margin, margin);
+    const LensCorrectionNode::Params &p = m_lens->params();
+    // Show the matched Lensfun profile name (which, for fixed-lens compacts,
+    // comes from the camera rather than an EXIF lens string).
+    m_lensPanel->reveal(p, m_lens->lensMatched(), m_lens->matchedLensName());
+}
+
+void MainWindow::closeLensTool()
+{
+    m_lensPanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::openSharpenTool()
+{
+    if (!m_sharpen)
+        return;
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_sharpenPanel->adjustSize();
+    const int margin = 18;
+    m_sharpenPanel->move(width() - m_sharpenPanel->width() - margin, margin);
+    m_sharpenPanel->reveal(m_sharpen->values());
+}
+
+void MainWindow::closeSharpenTool()
+{
+    m_sharpenPanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::toggleHistogram()
+{
+    if (!m_histogram)
+        return;
+    if (m_histogram->isVisible()) {
+        m_histogram->hide();
+        return;
+    }
+    m_histogram->show();
+    m_histogram->raise();
+    layoutOverlays();   // place it
+    updateHistogram();  // fill it immediately
+}
+
+void MainWindow::updateHistogram()
+{
+    if (!m_histogram || !m_histogram->isVisible())
+        return;
+    // The full-res composite is the source of truth (preview == export), but
+    // pulling its pixels is slow, so compute the histogram off the UI thread. The
+    // result() Image is a self-contained, ref-counted lazy pipeline — safe to
+    // materialise on a worker while the UI thread carries on.
+    const Image result = m_graph.result();
+    if (result.isNull())
+        return;
+    const quint64 gen = ++m_histGen;
+    m_histWatcher.setFuture(QtConcurrent::run([this, gen, result]() -> HistogramData {
+        if (gen != m_histGen)
+            return HistogramData{}; // superseded
+        return computeHistogram(result);
+    }));
+}
+
+void MainWindow::refreshWorkingSource()
+{
+    const Image &src = m_graph.source();
+    if (src.isNull()) {
+        m_workingSource = Image();
+        return;
+    }
+    // The lens node is a pure function of the source; apply it once and cache so
+    // heal dabs (which call refreshBaseImage repeatedly) don't re-warp full res.
+    m_workingSource = m_lens ? m_lens->apply(src) : src;
+    if (m_workingSource.isNull())
+        m_workingSource = src; // defensive: never lose the image
+    m_sourceQImage = m_workingSource.toQImage(); // display + colour sampling
+}
+
 void MainWindow::loadLookFile()
 {
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    const QString dir = lastDir(
+        QStringLiteral("lookFile"),
+        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Load HALD CLUT"), dir,
         QStringLiteral("HALD CLUT images (*.png *.tif *.tiff *.jpg *.jpeg)"));
     if (path.isEmpty())
         return;
+    rememberDir(QStringLiteral("lookFile"), path);
 
     QString error;
     if (!activeLut()->loadHald(path, &error)) {
@@ -1095,32 +1322,52 @@ void MainWindow::closeHealTool()
 
 void MainWindow::refreshBaseImage(bool keepView)
 {
-    // The GPU preview base is the source healed by the heal node; the shader
-    // then applies the pointwise/LUT ops on top (heal is first in the graph).
-    if (!m_heal || m_heal->healMask().isEmpty() || m_graph.source().isNull()) {
+    // The GPU preview base = the lens-corrected source with the other "baked"
+    // neighbourhood ops applied (heal, then sharpen); the shader then applies the
+    // pointwise/LUT ops on top. With no baked op active, the corrected source
+    // (m_sourceQImage) is already the base.
+    const bool healActive = m_heal && !m_heal->healMask().isEmpty();
+    const SharpenNode::Values sv =
+        m_sharpen ? m_sharpen->values() : SharpenNode::Values{};
+    const bool sharpenActive = sv.enabled && sv.amount > 0.0f;
+    if (m_graph.source().isNull() || (!healActive && !sharpenActive)) {
         if (!m_sourceQImage.isNull())
             m_canvas->setImage(m_sourceQImage, keepView);
         return;
     }
 
-    // Inpainting (esp. Detailed/Criminisi) is expensive, so run it off the UI
-    // thread; the latest request wins (m_healGen guards stale results, and the
-    // watcher only delivers its current future).
+    // These passes (esp. Detailed/Criminisi heal) are expensive, so run them off
+    // the UI thread; the latest request wins (m_healGen guards stale results, and
+    // the watcher only delivers its current future).
     const quint64 gen = ++m_healGen;
-    const Image src = m_graph.source();
-    const MaskBuffer mask = m_heal->healMask();
-    const bool hq = m_heal->highQuality();
-    static_cast<BusyBadge *>(m_healBusy)->start();
-    layoutOverlays(); // position the badge
+    // Baked ops run on top of the lens-corrected source (geometry already baked
+    // into m_workingSource), so painted spots track the corrected image.
+    const Image src = m_workingSource.isNull() ? m_graph.source() : m_workingSource;
+    const MaskBuffer mask = healActive ? m_heal->healMask() : MaskBuffer();
+    const bool hq = m_heal && m_heal->highQuality();
+    if (healActive) {
+        static_cast<BusyBadge *>(m_healBusy)->start();
+        layoutOverlays(); // position the badge
+    }
 
-    m_healWatcher.setFuture(QtConcurrent::run([this, gen, src, mask, hq]() -> QImage {
-        if (gen != m_healGen)
-            return QImage(); // superseded before we even started
-        HealNode worker;
-        worker.setHealMask(mask);
-        worker.setHighQuality(hq);
-        return worker.apply(src).toQImage();
-    }));
+    m_healWatcher.setFuture(
+        QtConcurrent::run([this, gen, src, mask, hq, sv]() -> QImage {
+            if (gen != m_healGen)
+                return QImage(); // superseded before we even started
+            Image img = src;
+            if (!mask.isEmpty()) {
+                HealNode heal;
+                heal.setHealMask(mask);
+                heal.setHighQuality(hq);
+                img = heal.apply(img);
+            }
+            if (sv.enabled && sv.amount > 0.0f) {
+                SharpenNode sharpen;
+                sharpen.setValues(sv);
+                img = sharpen.apply(img);
+            }
+            return img.toQImage();
+        }));
 }
 
 int MainWindow::ensureSelectiveLayer()
@@ -1357,6 +1604,10 @@ void MainWindow::closeActiveTool()
         closeLooksTool();
     else if (m_monoPanel->isVisible())
         closeMonoTool();
+    else if (m_lensPanel->isVisible())
+        closeLensTool();
+    else if (m_sharpenPanel->isVisible())
+        closeSharpenTool();
     else if (m_healPanel->isVisible())
         closeHealTool();
     else {
@@ -1382,7 +1633,9 @@ void MainWindow::doRedo()
 
 void MainWindow::afterHistoryChange()
 {
-    // Heal edits the base; rebuild it so undo/redo of a heal is visible.
+    // Lens/perspective and heal both bake into the base; rebuild the corrected
+    // source first, then the heal-on-top base, so undo/redo of either is visible.
+    refreshWorkingSource();
     refreshBaseImage();
     updatePreview();
     if (m_layersPanel->isVisible())
@@ -1409,6 +1662,13 @@ void MainWindow::afterHistoryChange()
         if (auto *mono = activeMono())
             m_monoPanel->reveal(mono->values());
     }
+    if (m_lensPanel->isVisible() && m_lens) {
+        m_lensPanel->reveal(m_lens->params(), m_lens->lensMatched(),
+                            m_lens->matchedLensName());
+    }
+    if (m_sharpenPanel->isVisible() && m_sharpen)
+        m_sharpenPanel->reveal(m_sharpen->values());
+    updateHistogram(); // reflect the restored state (no-op when hidden)
     // If a mask brush is active, resync the working mask to the restored state.
     if (m_brushTarget == BrushTarget::Selective
         && m_graph.activeLayer().mask().type == MaskSpec::Brush) {
@@ -1454,8 +1714,16 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_curvesPanel);
     clampIntoView(m_looksPanel);
     clampIntoView(m_monoPanel);
+    clampIntoView(m_lensPanel);
+    clampIntoView(m_sharpenPanel);
     clampIntoView(m_healPanel);
     clampIntoView(m_layersPanel);
+
+    // Histogram: bottom-left of the canvas, above the hint bar.
+    if (m_histogram && m_histogram->isVisible()) {
+        m_histogram->move(18, height() - m_histogram->height() - 64);
+        m_histogram->raise();
+    }
 
     // The mask gizmo overlays the canvas area. Keep it above the canvas but below
     // the floating panels so their controls stay clickable (the gizmo passes
@@ -1467,6 +1735,8 @@ void MainWindow::layoutOverlays()
                                static_cast<QWidget *>(m_curvesPanel),
                                static_cast<QWidget *>(m_looksPanel),
                                static_cast<QWidget *>(m_monoPanel),
+                               static_cast<QWidget *>(m_lensPanel),
+                               static_cast<QWidget *>(m_sharpenPanel),
                                static_cast<QWidget *>(m_healPanel),
                                static_cast<QWidget *>(m_layersPanel)}) {
             if (panel && panel->isVisible())

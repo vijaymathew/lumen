@@ -41,8 +41,14 @@ public:
 
     // Builds an Image from an interleaved 8-bit buffer (`bands` per pixel),
     // tagged sRGB so it round-trips through toQImage without colour mangling.
-    // Copies the data. Used by nodes that edit pixels in a raw buffer.
+    // Copies the data, promoting to the float working format. Used by nodes that
+    // edit pixels in a raw 8-bit buffer.
     static Image fromInterleaved(const void *data, int width, int height, int bands);
+
+    // As above but from a float buffer (sRGB-encoded, 0..255, may exceed for
+    // highlight headroom). The pipeline's native form — used by nodes that edit
+    // pixels at full float precision.
+    static Image fromInterleavedFloat(const float *data, int width, int height, int bands);
 
     Image(const Image &other);
     Image &operator=(const Image &other);
@@ -57,17 +63,25 @@ public:
     // Materialises to a packed RGBA8 QImage for display / GPU upload.
     QImage toQImage() const;
 
-    // Writes to `path` (format chosen from the extension) via libvips. A
-    // trailing alpha channel is dropped so formats like JPEG work. Returns false
-    // and sets *error on failure.
+    // Writes to `path` (format chosen from the extension) via libvips. The float
+    // working image is converted to display-referred sRGB at `bits` (8 or 16) per
+    // channel; a trailing alpha channel is dropped so formats like JPEG work.
+    // Returns false and sets *error on failure.
     bool saveToFile(const QString &path, QString *error = nullptr) const
     {
-        return saveToFile(path, -1, error);
+        return saveToFile(path, -1, 8, error);
     }
 
     // As above, but `quality` (0-100) is applied to lossy formats (JPEG/WebP);
     // ignored for lossless formats. quality < 0 uses the encoder default.
-    bool saveToFile(const QString &path, int quality, QString *error = nullptr) const;
+    bool saveToFile(const QString &path, int quality, QString *error = nullptr) const
+    {
+        return saveToFile(path, quality, 8, error);
+    }
+
+    // As above, with `bits` (8 or 16) per channel. 16-bit only benefits lossless
+    // formats (PNG/TIFF); JPEG/WebP are 8-bit regardless.
+    bool saveToFile(const QString &path, int quality, int bits, QString *error = nullptr) const;
 
     // Raw handle for node implementations (only meaningful in vips-aware TUs).
     _VipsImage *handle() const { return m_image; }
