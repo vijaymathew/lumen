@@ -71,6 +71,11 @@ public:
     // non-Base layers, which can be added/removed (structural undo). Any external
     // pointers into this layer's nodes are invalidated.
     void restoreStructure(const QJsonObject &state);
+    // Restores layer properties and each saved node's state into the EXISTING
+    // node of the same type (not by id). Used to load the Base layer from a
+    // project saved in another session, where node ids differ but the Base has
+    // exactly one node per type. Keeps external pointers valid.
+    void restoreByType(const QJsonObject &state);
 
 private:
     int indexOf(const QString &id) const;

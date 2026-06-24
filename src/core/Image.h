@@ -33,6 +33,12 @@ public:
     // libvips. On failure returns a null Image and sets *error (if provided).
     static Image fromFile(const QString &path, QString *error = nullptr);
 
+    // Decodes an encoded image (jpg/png/…) from an in-memory buffer, normalised
+    // like fromFile. The result is materialised into its own memory, so it does
+    // not reference `data` after returning (safe to free the buffer). Used to
+    // load the source embedded in a .lumen project.
+    static Image fromBytes(const void *data, qsizetype size, QString *error = nullptr);
+
     // Builds an Image from an interleaved 8-bit buffer (`bands` per pixel),
     // tagged sRGB so it round-trips through toQImage without colour mangling.
     // Copies the data. Used by nodes that edit pixels in a raw buffer.

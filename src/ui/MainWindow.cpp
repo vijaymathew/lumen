@@ -4,6 +4,7 @@
 #include "core/Image.h"
 #include "core/LayerPreview.h"
 #include "core/MaskSpec.h"
+#include "core/Project.h"
 #include "core/SelectiveMask.h"
 #include "gpu/CanvasWidget.h"
 #include "input/CommandPalette.h"
@@ -18,8 +19,10 @@
 
 #include <memory>
 
+#include <QBuffer>
 #include <QColor>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QKeyEvent>
@@ -399,7 +402,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_hint->setStyleSheet(QStringLiteral(
         "background: rgba(20,20,22,0.85); border-radius: 8px;"
         "padding: 6px 16px; color: #c8c8cc; font-size: 12px;"));
-    m_hint->setText(QStringLiteral("/  command palette   ·   Ctrl+O open   ·   F11 fullscreen"));
+    m_hint->setText(QStringLiteral(
+        "/  command palette   ·   Ctrl+O open   ·   Ctrl+S save project   ·   F11 fullscreen"));
     m_hint->adjustSize();
 
     buildCommands();
@@ -407,6 +411,8 @@ MainWindow::MainWindow(QWidget *parent)
     // Shell shortcuts. Bare keys are avoided so they don't clash with typing in
     // the palette; "/" and Esc are handled in keyPressEvent instead.
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+O")), this, [this] { openImageDialog(); });
+    new QShortcut(QKeySequence(QStringLiteral("Ctrl+S")), this, [this] { saveProject(); });
+    new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")), this, [this] { openProject(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Q")), this, [this] { close(); });
     new QShortcut(QKeySequence(Qt::Key_F11), this, [this] { toggleFullScreen(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+0")), this, [this] { m_canvas->resetView(); });
@@ -421,6 +427,8 @@ void MainWindow::buildCommands()
     // ids consumed by runCommand(). Editing tools are placeholders for now.
     m_palette->setCommands({
         {QStringLiteral("open"), QStringLiteral("Open image…")},
+        {QStringLiteral("open-project"), QStringLiteral("Open project (.lumen)…")},
+        {QStringLiteral("save-project"), QStringLiteral("Save project (.lumen)…")},
         {QStringLiteral("export"), QStringLiteral("Export image…")},
         {QStringLiteral("tone"), QStringLiteral("Tone (exposure, contrast, saturation)")},
         {QStringLiteral("curves"), QStringLiteral("Curves")},
@@ -441,6 +449,10 @@ void MainWindow::runCommand(const QString &id)
 {
     if (id == QLatin1String("open")) {
         openImageDialog();
+    } else if (id == QLatin1String("open-project")) {
+        openProject();
+    } else if (id == QLatin1String("save-project")) {
+        saveProject();
     } else if (id == QLatin1String("export")) {
         exportImage();
     } else if (id == QLatin1String("tone")) {
@@ -479,12 +491,21 @@ void MainWindow::runCommand(const QString &id)
 
 bool MainWindow::openPath(const QString &path)
 {
+    if (path.endsWith(QStringLiteral(".lumen"), Qt::CaseInsensitive))
+        return loadProjectFile(path); // a project, not a raw image
+
     QString error;
     Image source = Image::fromFile(path, &error);
     if (source.isNull()) {
         QMessageBox::warning(this, QStringLiteral("Lumen"), error);
         return false;
     }
+
+    // Keep the original encoded bytes so we can embed them verbatim in a .lumen.
+    QFile srcFile(path);
+    m_sourceBytes = srcFile.open(QIODevice::ReadOnly) ? srcFile.readAll() : QByteArray();
+    m_sourceName = QFileInfo(path).fileName();
+    m_projectPath.clear(); // opening a raw image starts a new (unsaved) project
 
     m_sourceQImage = source.toQImage();
     m_graph.setSource(source);            // full-res source for export
@@ -494,6 +515,114 @@ bool MainWindow::openPath(const QString &path)
     m_graph.resetHistory(); // fresh undo timeline for this image
     m_sourcePath = path;
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
+    return true;
+}
+
+void MainWindow::saveProject()
+{
+    if (m_graph.source().isNull()) {
+        showHint(QStringLiteral("Open an image before saving a project"));
+        return;
+    }
+
+    // Default name: next to the source, "<name>.lumen".
+    const QFileInfo src(m_projectPath.isEmpty() ? m_sourcePath : m_projectPath);
+    const QString suggested =
+        src.dir().filePath(src.completeBaseName() + QStringLiteral(".lumen"));
+    QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Save project"), suggested,
+        QStringLiteral("Lumen project (*.lumen)"));
+    if (path.isEmpty())
+        return;
+    if (!path.endsWith(QStringLiteral(".lumen"), Qt::CaseInsensitive))
+        path += QStringLiteral(".lumen");
+
+    // Embed the original bytes; fall back to a PNG of the source if unavailable.
+    QByteArray bytes = m_sourceBytes;
+    QString name = m_sourceName;
+    if (bytes.isEmpty() && !m_sourceQImage.isNull()) {
+        QBuffer buf(&bytes);
+        buf.open(QIODevice::WriteOnly);
+        m_sourceQImage.save(&buf, "PNG");
+        name = QStringLiteral("source.png");
+    }
+
+    QString error;
+    if (!project::save(path, m_graph.saveState(), bytes, name, &error)) {
+        QMessageBox::warning(this, QStringLiteral("Lumen"),
+                             QStringLiteral("Could not save project: %1").arg(error));
+        return;
+    }
+    m_projectPath = path;
+    setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
+    showHint(QStringLiteral("Saved %1").arg(QFileInfo(path).fileName()));
+}
+
+void MainWindow::openProject()
+{
+    const QString dir =
+        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("Open project"), dir,
+        QStringLiteral("Lumen project (*.lumen)"));
+    if (!path.isEmpty())
+        loadProjectFile(path);
+}
+
+bool MainWindow::loadProjectFile(const QString &path)
+{
+    QString error;
+    project::Project proj;
+    if (!project::load(path, &proj, &error)) {
+        QMessageBox::warning(this, QStringLiteral("Lumen"), error);
+        return false;
+    }
+    Image source =
+        Image::fromBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error);
+    if (source.isNull()) {
+        QMessageBox::warning(this, QStringLiteral("Lumen"),
+                             QStringLiteral("Could not decode the embedded image: %1").arg(error));
+        return false;
+    }
+
+    // Reset any active editing state, then load the document.
+    m_brushTarget = BrushTarget::None;
+    m_maskView = 0;
+    m_brushUndo.clear();
+    m_sourceBytes = proj.sourceBytes;
+    m_sourceName = proj.sourceName;
+    m_sourceQImage = source.toQImage();
+    m_graph.setSource(source);
+    m_graph.loadProjectState(proj.graph);
+
+    refreshBaseImage(false); // re-applies the heal mask, fits the view
+    recomputeSelectiveMask();
+    updatePreview();
+    m_graph.resetHistory();
+
+    m_projectPath = path;
+    m_sourcePath = path; // export defaults to "<project>-edited.<ext>"
+    if (m_layersPanel->isVisible())
+        refreshLayersPanel();
+    // Reseed any open adjustment tool from the newly-active layer (guarded).
+    if (m_tonePanel->isVisible()) {
+        if (auto *t = activeTune())
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation()});
+    }
+    if (m_curvesPanel->isVisible()) {
+        if (auto *c = activeCurves())
+            m_curvesPanel->reveal(c->curves());
+    }
+    if (m_looksPanel->isVisible()) {
+        if (auto *l = activeLut())
+            m_looksPanel->reveal(QFileInfo(l->sourcePath()).fileName(), l->intensity());
+    }
+    if (m_monoPanel->isVisible()) {
+        if (auto *mono = activeMono())
+            m_monoPanel->reveal(mono->values());
+    }
+    setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
+    showHint(QStringLiteral("Opened %1").arg(QFileInfo(path).fileName()));
     return true;
 }
 

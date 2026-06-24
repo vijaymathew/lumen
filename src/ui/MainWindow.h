@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QFutureWatcher>
 #include <QImage>
 #include <QMainWindow>
@@ -54,6 +55,9 @@ private:
     void buildCommands();
     void runCommand(const QString &id);
     void openImageDialog();
+    void saveProject();   // write the current work to a .lumen file
+    void openProject();   // pick a .lumen file via dialog, then load it
+    bool loadProjectFile(const QString &path); // load a .lumen (source + layers)
     void toggleFullScreen();
     void showHint(const QString &text);
     void layoutOverlays();
@@ -140,6 +144,9 @@ private:
     QString m_exportExt = QStringLiteral("jpg"); // remembered export format
     int m_exportQuality = 90;                    // remembered export quality
     QImage m_sourceQImage;               // for colour sampling + preview mask
+    QByteArray m_sourceBytes;            // original encoded source, for embedding in .lumen
+    QString m_sourceName;                // original source file name
+    QString m_projectPath;               // current .lumen path (empty until saved/opened)
     int m_maskView = 0;                  // selective mask overlay (preview-only)
 
     // Shared brush-paint session (used by the selective brush and the heal

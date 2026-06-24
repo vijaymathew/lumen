@@ -118,6 +118,31 @@ void EditGraph::restoreState(const QJsonObject &state)
         m_activeLayer = 0;
 }
 
+void EditGraph::loadProjectState(const QJsonObject &state)
+{
+    const QJsonArray layers = state.value(QStringLiteral("layers")).toArray();
+    if (layers.isEmpty())
+        return; // malformed manifest — leave the graph as-is
+
+    // Base layer (index 0): restore by node type so it lands on this session's
+    // existing Base nodes (their ids differ from the saved file). Non-Base layers
+    // are rebuilt structurally from the manifest.
+    m_layers.resize(1);
+    m_layers[0]->restoreByType(layers[0].toObject());
+    for (int i = 1; i < layers.size(); ++i) {
+        auto layer = std::make_unique<Layer>(QStringLiteral("Layer"));
+        layer->restoreStructure(layers[i].toObject());
+        m_layers.push_back(std::move(layer));
+    }
+
+    m_activeLayer = state.value(QStringLiteral("active")).toInt(0);
+    if (m_activeLayer < 0 || m_activeLayer >= static_cast<int>(m_layers.size()))
+        m_activeLayer = 0;
+
+    for (auto &layer : m_layers)
+        layer->invalidateFrom(0); // recompute against the loaded source
+}
+
 void EditGraph::resetHistory()
 {
     m_history.clear();

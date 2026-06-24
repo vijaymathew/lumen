@@ -173,6 +173,48 @@ Image Image::fromFile(const QString &path, QString *error)
     return Image::adopt(norm);
 }
 
+Image Image::fromBytes(const void *data, qsizetype size, QString *error)
+{
+    if (!data || size <= 0) {
+        if (error)
+            *error = QStringLiteral("Empty image data");
+        return Image();
+    }
+    VipsImage *img =
+        vips_image_new_from_buffer(data, static_cast<size_t>(size), "", nullptr);
+    if (!img) {
+        if (error)
+            *error = QStringLiteral("Could not decode image: %1")
+                         .arg(QString::fromUtf8(vips_error_buffer()));
+        vips_error_clear();
+        return Image();
+    }
+    VipsImage *norm = toDisplayRGBA(img);
+    g_object_unref(img);
+    if (!norm) {
+        if (error)
+            *error = QStringLiteral("Could not normalise image: %1")
+                         .arg(QString::fromUtf8(vips_error_buffer()));
+        vips_error_clear();
+        return Image();
+    }
+    // Materialise into an independent memory image so the result no longer
+    // references `data` (which the caller may free immediately).
+    const int w = vips_image_get_width(norm);
+    const int h = vips_image_get_height(norm);
+    const int bands = vips_image_get_bands(norm);
+    void *buf = vips_image_write_to_memory(norm, nullptr);
+    g_object_unref(norm);
+    if (!buf) {
+        if (error)
+            *error = QStringLiteral("Could not materialise image");
+        return Image();
+    }
+    Image result = Image::fromInterleaved(buf, w, h, bands);
+    g_free(buf);
+    return result;
+}
+
 QImage Image::toQImage() const
 {
     if (!m_image)

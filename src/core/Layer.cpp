@@ -240,6 +240,16 @@ void Layer::restoreState(const QJsonObject &o)
     }
 }
 
+void Layer::restoreByType(const QJsonObject &o)
+{
+    restoreProperties(o);
+    for (const QJsonValue &v : o.value(QStringLiteral("nodes")).toArray()) {
+        const QJsonObject e = v.toObject();
+        if (EditNode *node = nodeOfType(e.value(QStringLiteral("type")).toString()))
+            node->restoreState(e.value(QStringLiteral("state")).toObject());
+    }
+}
+
 void Layer::restoreStructure(const QJsonObject &o)
 {
     restoreProperties(o);

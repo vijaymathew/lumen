@@ -72,6 +72,11 @@ public:
 
     QJsonObject saveState() const;
     void restoreState(const QJsonObject &state);
+    // Loads a project's layer stack (from project::Project::graph). Like
+    // restoreState, but matches the Base layer's nodes by type rather than id,
+    // since a project saved in another session has different node ids. Call
+    // setSource() first, then resetHistory() after.
+    void loadProjectState(const QJsonObject &state);
 
 private:
     Image m_source;
