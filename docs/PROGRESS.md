@@ -130,12 +130,12 @@ plain Qt widgets.
 | Lens correction + perspective (`LensCorrectionNode`) | ✅ | First Base node (geometry baked into the preview base, before heal/tone). **Automatic** distortion / TCA / vignetting from EXIF via **Lensfun** (optional dep — `LUMEN_HAVE_LENSFUN`; perspective-only without it). `RawLoader` extracts camera/lens identity; matched by camera/lens with a **fixed-lens-compact fallback** (camera-mount lookup). **Manual perspective**: vertical/horizontal keystone + rotate + zoom via a centre-pinned homography (`vips_mapim` backward-resample). `LensPanel` tool; per-correction toggles + amounts. Re-renders the corrected source on change (cached so heal dabs don't re-warp), **preview == export** preserved. `lens_node_test` covers the homography + serialise; **verified on a real CR2** (Canon G7 X Mark II compact: auto-corrected, mean Δ≈12) |
 | Built-in presets (film looks) | ⬜ | Decided approach: **parametric recipes applied as a layer** (Tune/Curves/Mono node bundles; B&W films → Mono mixer). Velvia, Kodachrome 64, HP5, Delta 400, FP4. No new deps |
 | Interactive crop / rotate UI | ⬜ | On-canvas crop rectangle + free-rotate handles. The perspective/zoom homography already exists in `LensCorrectionNode`; this is the framing/gesture layer on top |
-| Built-in presets -- Kodachrome 64, Fuji Velvia, Ilford HP5 Plus (ISO 400), Ilford Delta 400 (ISO 400) and Ilford FP4 Plus (ISO 125) (maybe reuse existing LUTs?)
+| Sharpen (`SharpenNode`) | ✅ | Unsharp mask via `vips_sharpen` (L* only — no colour fringing); Amount + Radius. A Base node in the "baked" group (after heal, before tone) → bakes into the preview base off the UI thread (debounced), so it's capture-style sharpening. Output cast back to float to keep the pipeline invariant. `SharpenPanel` tool. `sharpen_test` (flat unchanged, edge overshoot, serialise); verified at full-res on a 20 MP CR2 |
+| Histogram | ✅ | `core/Histogram` (`computeHistogram` → 256-bin RGB from a downsampled, display-clamped copy via `vips_hist_find`); `HistogramWidget` additive RGB overlay (bottom-left), toggled from the palette. Consumes the full composite (`m_graph.result()`) computed **off the UI thread** (debounced, latest-wins), so big RAWs don't hitch. `histogram_test` covers bin placement |
+| Built-in presets (film looks) | ⬜ | Decided approach: **parametric recipes applied as a layer** (Tune/Curves/Mono node bundles; B&W films → Mono mixer). Velvia, Kodachrome 64, HP5, Delta 400, FP4. No new deps |
 | A proper whitebalance adjustment module -- if not already implemented
-| Sharpen module
 | Denoise/add-noise module
 | Show highlight/shadow clipping on the image
-| Histogram
 
 ---
 

@@ -11,12 +11,15 @@
 #include "input/CommandPalette.h"
 #include "ui/CurvesPanel.h"
 #include "ui/ExportDialog.h"
+#include "core/Histogram.h"
 #include "ui/HealPanel.h"
+#include "ui/HistogramWidget.h"
 #include "ui/LayersPanel.h"
 #include "ui/LensPanel.h"
 #include "ui/MaskGizmo.h"
 #include "ui/LooksPanel.h"
 #include "ui/MonoPanel.h"
+#include "ui/SharpenPanel.h"
 #include "ui/TonePanel.h"
 
 #include <memory>
@@ -198,14 +201,15 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setWindowTitle(QStringLiteral("Lumen"));
 
-    // The graph owns the nodes; we keep raw pointers to drive them. Lens
-    // correction is first (it warps geometry on the raw source), then heal (edits
-    // source pixels) — both baked into the preview base — then the pointwise/LUT
-    // ops the shader replicates: tune -> curves -> lut -> mono. Selective
-    // adjustments are masked layers above the Base, not a Base node.
+    // The graph owns the nodes; we keep raw pointers to drive them. The "baked"
+    // group runs first in libvips and is rendered into the preview base texture:
+    // lens (warps geometry) -> heal (edits pixels) -> sharpen (neighbourhood op).
+    // Then the pointwise/LUT ops the shader replicates: tune -> curves -> lut ->
+    // mono. Selective adjustments are masked layers above the Base, not Base nodes.
     m_lens =
         static_cast<LensCorrectionNode *>(m_graph.addNode(std::make_unique<LensCorrectionNode>()));
     m_heal = static_cast<HealNode *>(m_graph.addNode(std::make_unique<HealNode>()));
+    m_sharpen = static_cast<SharpenNode *>(m_graph.addNode(std::make_unique<SharpenNode>()));
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
     m_lutNode = static_cast<LutNode *>(m_graph.addNode(std::make_unique<LutNode>()));
@@ -290,6 +294,41 @@ MainWindow::MainWindow(QWidget *parent)
                 updatePreview();
             });
     connect(m_lensPanel, &LensPanel::closed, this, &MainWindow::closeLensTool);
+
+    m_sharpenPanel = new SharpenPanel(this);
+    connect(m_sharpenPanel, &SharpenPanel::valuesChanged, this,
+            [this](const SharpenNode::Values &v) {
+                if (!m_sharpen)
+                    return;
+                m_sharpen->setValues(v);
+                // Sharpen bakes into the base; coalesce drags so we don't kick a
+                // full-res pass per tick.
+                m_bakeTimer->start();
+            });
+    connect(m_sharpenPanel, &SharpenPanel::closed, this, &MainWindow::closeSharpenTool);
+
+    // Debounce timers: the histogram recompute and the sharpen base re-bake both
+    // settle shortly after the user stops dragging.
+    m_bakeTimer = new QTimer(this);
+    m_bakeTimer->setSingleShot(true);
+    m_bakeTimer->setInterval(140);
+    connect(m_bakeTimer, &QTimer::timeout, this, [this] {
+        refreshBaseImage();
+        updatePreview();
+    });
+
+    m_histogram = new HistogramWidget(this);
+    m_histTimer = new QTimer(this);
+    m_histTimer->setSingleShot(true);
+    m_histTimer->setInterval(160);
+    connect(m_histTimer, &QTimer::timeout, this, &MainWindow::updateHistogram);
+    connect(&m_histWatcher, &QFutureWatcher<HistogramData>::finished, this, [this] {
+        if (!m_histWatcher.future().isValid())
+            return;
+        const HistogramData h = m_histWatcher.result();
+        if (h.valid && m_histogram->isVisible())
+            m_histogram->setData(h);
+    });
 
     // Mask colour-pick + brush painting are driven from the Layers panel now;
     // the canvas wiring stays here.
@@ -460,7 +499,9 @@ void MainWindow::buildCommands()
         {QStringLiteral("monochrome"), QStringLiteral("Monochrome (B&W + toning)")},
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment")},
         {QStringLiteral("lens"), QStringLiteral("Lens & perspective")},
+        {QStringLiteral("sharpen"), QStringLiteral("Sharpen")},
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
+        {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)")},
         {QStringLiteral("layers"), QStringLiteral("Layers")},
         {QStringLiteral("quit"), QStringLiteral("Quit Lumen")},
     });
@@ -492,6 +533,10 @@ void MainWindow::runCommand(const QString &id)
         openToneTool();
     } else if (id == QLatin1String("lens")) {
         openLensTool();
+    } else if (id == QLatin1String("sharpen")) {
+        openSharpenTool();
+    } else if (id == QLatin1String("histogram")) {
+        toggleHistogram();
     } else if (id == QLatin1String("heal")) {
         openHealTool();
     } else if (id == QLatin1String("layers")) {
@@ -797,6 +842,11 @@ void MainWindow::updatePreview()
         extras.push_back(std::move(lp));
     }
     m_canvas->setExtraLayers(extras);
+
+    // Refresh the histogram a beat after edits settle (it consumes the full
+    // composite, so we don't want it on every drag tick).
+    if (m_histogram && m_histogram->isVisible())
+        m_histTimer->start();
 }
 
 TuneNode *MainWindow::activeTune() const
@@ -1074,6 +1124,58 @@ void MainWindow::closeLensTool()
     m_canvas->setFocus();
 }
 
+void MainWindow::openSharpenTool()
+{
+    if (!m_sharpen)
+        return;
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_sharpenPanel->adjustSize();
+    const int margin = 18;
+    m_sharpenPanel->move(width() - m_sharpenPanel->width() - margin, margin);
+    m_sharpenPanel->reveal(m_sharpen->values());
+}
+
+void MainWindow::closeSharpenTool()
+{
+    m_sharpenPanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::toggleHistogram()
+{
+    if (!m_histogram)
+        return;
+    if (m_histogram->isVisible()) {
+        m_histogram->hide();
+        return;
+    }
+    m_histogram->show();
+    m_histogram->raise();
+    layoutOverlays();   // place it
+    updateHistogram();  // fill it immediately
+}
+
+void MainWindow::updateHistogram()
+{
+    if (!m_histogram || !m_histogram->isVisible())
+        return;
+    // The full-res composite is the source of truth (preview == export), but
+    // pulling its pixels is slow, so compute the histogram off the UI thread. The
+    // result() Image is a self-contained, ref-counted lazy pipeline — safe to
+    // materialise on a worker while the UI thread carries on.
+    const Image result = m_graph.result();
+    if (result.isNull())
+        return;
+    const quint64 gen = ++m_histGen;
+    m_histWatcher.setFuture(QtConcurrent::run([this, gen, result]() -> HistogramData {
+        if (gen != m_histGen)
+            return HistogramData{}; // superseded
+        return computeHistogram(result);
+    }));
+}
+
 void MainWindow::refreshWorkingSource()
 {
     const Image &src = m_graph.source();
@@ -1185,34 +1287,52 @@ void MainWindow::closeHealTool()
 
 void MainWindow::refreshBaseImage(bool keepView)
 {
-    // The GPU preview base is the source healed by the heal node; the shader
-    // then applies the pointwise/LUT ops on top (heal is first in the graph).
-    if (!m_heal || m_heal->healMask().isEmpty() || m_graph.source().isNull()) {
+    // The GPU preview base = the lens-corrected source with the other "baked"
+    // neighbourhood ops applied (heal, then sharpen); the shader then applies the
+    // pointwise/LUT ops on top. With no baked op active, the corrected source
+    // (m_sourceQImage) is already the base.
+    const bool healActive = m_heal && !m_heal->healMask().isEmpty();
+    const SharpenNode::Values sv =
+        m_sharpen ? m_sharpen->values() : SharpenNode::Values{};
+    const bool sharpenActive = sv.enabled && sv.amount > 0.0f;
+    if (m_graph.source().isNull() || (!healActive && !sharpenActive)) {
         if (!m_sourceQImage.isNull())
             m_canvas->setImage(m_sourceQImage, keepView);
         return;
     }
 
-    // Inpainting (esp. Detailed/Criminisi) is expensive, so run it off the UI
-    // thread; the latest request wins (m_healGen guards stale results, and the
-    // watcher only delivers its current future).
+    // These passes (esp. Detailed/Criminisi heal) are expensive, so run them off
+    // the UI thread; the latest request wins (m_healGen guards stale results, and
+    // the watcher only delivers its current future).
     const quint64 gen = ++m_healGen;
-    // Heal runs on top of the lens-corrected source (the geometry is already
-    // baked into m_workingSource), so painted spots track the corrected image.
+    // Baked ops run on top of the lens-corrected source (geometry already baked
+    // into m_workingSource), so painted spots track the corrected image.
     const Image src = m_workingSource.isNull() ? m_graph.source() : m_workingSource;
-    const MaskBuffer mask = m_heal->healMask();
-    const bool hq = m_heal->highQuality();
-    static_cast<BusyBadge *>(m_healBusy)->start();
-    layoutOverlays(); // position the badge
+    const MaskBuffer mask = healActive ? m_heal->healMask() : MaskBuffer();
+    const bool hq = m_heal && m_heal->highQuality();
+    if (healActive) {
+        static_cast<BusyBadge *>(m_healBusy)->start();
+        layoutOverlays(); // position the badge
+    }
 
-    m_healWatcher.setFuture(QtConcurrent::run([this, gen, src, mask, hq]() -> QImage {
-        if (gen != m_healGen)
-            return QImage(); // superseded before we even started
-        HealNode worker;
-        worker.setHealMask(mask);
-        worker.setHighQuality(hq);
-        return worker.apply(src).toQImage();
-    }));
+    m_healWatcher.setFuture(
+        QtConcurrent::run([this, gen, src, mask, hq, sv]() -> QImage {
+            if (gen != m_healGen)
+                return QImage(); // superseded before we even started
+            Image img = src;
+            if (!mask.isEmpty()) {
+                HealNode heal;
+                heal.setHealMask(mask);
+                heal.setHighQuality(hq);
+                img = heal.apply(img);
+            }
+            if (sv.enabled && sv.amount > 0.0f) {
+                SharpenNode sharpen;
+                sharpen.setValues(sv);
+                img = sharpen.apply(img);
+            }
+            return img.toQImage();
+        }));
 }
 
 int MainWindow::ensureSelectiveLayer()
@@ -1451,6 +1571,8 @@ void MainWindow::closeActiveTool()
         closeMonoTool();
     else if (m_lensPanel->isVisible())
         closeLensTool();
+    else if (m_sharpenPanel->isVisible())
+        closeSharpenTool();
     else if (m_healPanel->isVisible())
         closeHealTool();
     else {
@@ -1509,6 +1631,9 @@ void MainWindow::afterHistoryChange()
         m_lensPanel->reveal(m_lens->params(), m_lens->lensMatched(),
                             m_lens->matchedLensName());
     }
+    if (m_sharpenPanel->isVisible() && m_sharpen)
+        m_sharpenPanel->reveal(m_sharpen->values());
+    updateHistogram(); // reflect the restored state (no-op when hidden)
     // If a mask brush is active, resync the working mask to the restored state.
     if (m_brushTarget == BrushTarget::Selective
         && m_graph.activeLayer().mask().type == MaskSpec::Brush) {
@@ -1554,8 +1679,16 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_curvesPanel);
     clampIntoView(m_looksPanel);
     clampIntoView(m_monoPanel);
+    clampIntoView(m_lensPanel);
+    clampIntoView(m_sharpenPanel);
     clampIntoView(m_healPanel);
     clampIntoView(m_layersPanel);
+
+    // Histogram: bottom-left of the canvas, above the hint bar.
+    if (m_histogram && m_histogram->isVisible()) {
+        m_histogram->move(18, height() - m_histogram->height() - 64);
+        m_histogram->raise();
+    }
 
     // The mask gizmo overlays the canvas area. Keep it above the canvas but below
     // the floating panels so their controls stay clickable (the gizmo passes
@@ -1567,6 +1700,8 @@ void MainWindow::layoutOverlays()
                                static_cast<QWidget *>(m_curvesPanel),
                                static_cast<QWidget *>(m_looksPanel),
                                static_cast<QWidget *>(m_monoPanel),
+                               static_cast<QWidget *>(m_lensPanel),
+                               static_cast<QWidget *>(m_sharpenPanel),
                                static_cast<QWidget *>(m_healPanel),
                                static_cast<QWidget *>(m_layersPanel)}) {
             if (panel && panel->isVisible())

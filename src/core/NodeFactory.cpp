@@ -6,6 +6,7 @@
 #include "core/LensCorrectionNode.h"
 #include "core/LutNode.h"
 #include "core/MonoNode.h"
+#include "core/SharpenNode.h"
 #include "core/TuneNode.h"
 
 #include <QString>
@@ -24,5 +25,7 @@ std::unique_ptr<EditNode> createNode(const QString &typeName)
         return std::make_unique<HealNode>();
     if (typeName == QLatin1String("lens"))
         return std::make_unique<LensCorrectionNode>();
+    if (typeName == QLatin1String("sharpen"))
+        return std::make_unique<SharpenNode>();
     return nullptr;
 }

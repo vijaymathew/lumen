@@ -97,6 +97,10 @@ add_library(lumen_core STATIC
     src/core/HealNode.cpp
     src/core/LensCorrectionNode.h
     src/core/LensCorrectionNode.cpp
+    src/core/SharpenNode.h
+    src/core/SharpenNode.cpp
+    src/core/Histogram.h
+    src/core/Histogram.cpp
 )
 target_include_directories(lumen_core PUBLIC src)
 target_link_libraries(lumen_core PUBLIC Qt6::Core Qt6::Gui PkgConfig::VIPS PkgConfig::LIBRAW)
@@ -131,6 +135,10 @@ qt_add_executable(lumen
     src/ui/MonoPanel.cpp
     src/ui/LensPanel.h
     src/ui/LensPanel.cpp
+    src/ui/SharpenPanel.h
+    src/ui/SharpenPanel.cpp
+    src/ui/HistogramWidget.h
+    src/ui/HistogramWidget.cpp
     src/ui/MaskGizmo.h
     src/ui/MaskGizmo.cpp
     src/ui/ExportDialog.h
@@ -268,4 +276,15 @@ if(BUILD_TESTING)
     target_link_libraries(lens_node_test PRIVATE lumen_core)
     target_compile_options(lens_node_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME lens_node_test COMMAND lens_node_test)
+
+    add_executable(sharpen_test tests/sharpen_test.cpp)
+    target_link_libraries(sharpen_test PRIVATE lumen_core)
+    target_compile_options(sharpen_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME sharpen_test COMMAND sharpen_test)
+
+    add_executable(histogram_test tests/histogram_test.cpp)
+    target_link_libraries(histogram_test PRIVATE lumen_core)
+    target_compile_options(histogram_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME histogram_test COMMAND histogram_test)
 endif()
+
