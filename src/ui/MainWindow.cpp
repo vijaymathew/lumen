@@ -13,6 +13,7 @@
 #include "ui/ExportDialog.h"
 #include "ui/HealPanel.h"
 #include "ui/LayersPanel.h"
+#include "ui/LensPanel.h"
 #include "ui/MaskGizmo.h"
 #include "ui/LooksPanel.h"
 #include "ui/MonoPanel.h"
@@ -197,10 +198,13 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setWindowTitle(QStringLiteral("Lumen"));
 
-    // The graph owns the nodes; we keep raw pointers to drive them. Heal is
-    // first (it edits source pixels, baked into the preview base), then the
-    // pointwise/LUT ops the shader replicates: tune -> curves -> lut -> mono.
-    // Selective adjustments are masked layers above the Base, not a Base node.
+    // The graph owns the nodes; we keep raw pointers to drive them. Lens
+    // correction is first (it warps geometry on the raw source), then heal (edits
+    // source pixels) — both baked into the preview base — then the pointwise/LUT
+    // ops the shader replicates: tune -> curves -> lut -> mono. Selective
+    // adjustments are masked layers above the Base, not a Base node.
+    m_lens =
+        static_cast<LensCorrectionNode *>(m_graph.addNode(std::make_unique<LensCorrectionNode>()));
     m_heal = static_cast<HealNode *>(m_graph.addNode(std::make_unique<HealNode>()));
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
@@ -274,6 +278,18 @@ MainWindow::MainWindow(QWidget *parent)
         updatePreview();
     });
     connect(m_monoPanel, &MonoPanel::closed, this, &MainWindow::closeMonoTool);
+
+    m_lensPanel = new LensPanel(this);
+    connect(m_lensPanel, &LensPanel::paramsChanged, this,
+            [this](const LensCorrectionNode::Params &p) {
+                if (!m_lens)
+                    return;
+                m_lens->setParams(p);
+                refreshWorkingSource();   // re-render the corrected base
+                refreshBaseImage();       // re-apply heal onto it, keep the view
+                updatePreview();
+            });
+    connect(m_lensPanel, &LensPanel::closed, this, &MainWindow::closeLensTool);
 
     // Mask colour-pick + brush painting are driven from the Layers panel now;
     // the canvas wiring stays here.
@@ -443,6 +459,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("looks"), QStringLiteral("Looks (LUT)")},
         {QStringLiteral("monochrome"), QStringLiteral("Monochrome (B&W + toning)")},
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment")},
+        {QStringLiteral("lens"), QStringLiteral("Lens & perspective")},
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
         {QStringLiteral("layers"), QStringLiteral("Layers")},
         {QStringLiteral("quit"), QStringLiteral("Quit Lumen")},
@@ -473,6 +490,8 @@ void MainWindow::runCommand(const QString &id)
         ensureSelectiveLayer();
         showLayersPanel();
         openToneTool();
+    } else if (id == QLatin1String("lens")) {
+        openLensTool();
     } else if (id == QLatin1String("heal")) {
         openHealTool();
     } else if (id == QLatin1String("layers")) {
@@ -499,8 +518,10 @@ bool MainWindow::openPath(const QString &path)
         return loadProjectFile(path); // a project, not a raw image
 
     QString error;
-    Image source = raw::isRawPath(path) ? raw::decodeFile(path, &error)
-                                        : Image::fromFile(path, &error);
+    const bool isRaw = raw::isRawPath(path);
+    raw::LensMetadata meta;
+    Image source = isRaw ? raw::decodeFile(path, &error, &meta)
+                         : Image::fromFile(path, &error);
     if (source.isNull()) {
         QMessageBox::warning(this, QStringLiteral("Lumen"), error);
         return false;
@@ -512,9 +533,21 @@ bool MainWindow::openPath(const QString &path)
     m_sourceName = QFileInfo(path).fileName();
     m_projectPath.clear(); // opening a raw image starts a new (unsaved) project
 
-    m_sourceQImage = source.toQImage();
-    m_graph.setSource(source);            // full-res source for export
-    refreshBaseImage(false);              // new image → fit the view
+    m_graph.setSource(source); // full-res original; the lens node corrects on top
+    // Seed the lens node: a RAW carries EXIF identity for automatic correction;
+    // anything else starts neutral (manual perspective still available).
+    LensCorrectionNode::Params lp; // defaults: corrections on, perspective neutral
+    if (isRaw) {
+        lp.cameraMaker = meta.cameraMaker;
+        lp.cameraModel = meta.cameraModel;
+        lp.lensModel = meta.lensModel;
+        lp.focalLength = meta.focalLength;
+        lp.aperture = meta.aperture;
+        lp.focusDistance = meta.focusDistance;
+    }
+    m_lens->setParams(lp);
+    refreshWorkingSource();  // build the corrected source + display QImage
+    refreshBaseImage(false); // new image → fit the view
     recomputeSelectiveMask();
     updatePreview();        // apply any existing edits
     m_graph.resetHistory(); // fresh undo timeline for this image
@@ -598,10 +631,10 @@ bool MainWindow::loadProjectFile(const QString &path)
     m_brushUndo.clear();
     m_sourceBytes = proj.sourceBytes;
     m_sourceName = proj.sourceName;
-    m_sourceQImage = source.toQImage();
     m_graph.setSource(source);
-    m_graph.loadProjectState(proj.graph);
+    m_graph.loadProjectState(proj.graph); // restores the lens node's params too
 
+    refreshWorkingSource();  // rebuild the corrected source from the restored lens
     refreshBaseImage(false); // re-applies the heal mask, fits the view
     recomputeSelectiveMask();
     updatePreview();
@@ -1019,6 +1052,43 @@ void MainWindow::closeMonoTool()
     m_canvas->setFocus();
 }
 
+void MainWindow::openLensTool()
+{
+    if (!m_lens)
+        return;
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_lensPanel->adjustSize();
+    const int margin = 18;
+    m_lensPanel->move(width() - m_lensPanel->width() - margin, margin);
+    const LensCorrectionNode::Params &p = m_lens->params();
+    // Show the matched Lensfun profile name (which, for fixed-lens compacts,
+    // comes from the camera rather than an EXIF lens string).
+    m_lensPanel->reveal(p, m_lens->lensMatched(), m_lens->matchedLensName());
+}
+
+void MainWindow::closeLensTool()
+{
+    m_lensPanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::refreshWorkingSource()
+{
+    const Image &src = m_graph.source();
+    if (src.isNull()) {
+        m_workingSource = Image();
+        return;
+    }
+    // The lens node is a pure function of the source; apply it once and cache so
+    // heal dabs (which call refreshBaseImage repeatedly) don't re-warp full res.
+    m_workingSource = m_lens ? m_lens->apply(src) : src;
+    if (m_workingSource.isNull())
+        m_workingSource = src; // defensive: never lose the image
+    m_sourceQImage = m_workingSource.toQImage(); // display + colour sampling
+}
+
 void MainWindow::loadLookFile()
 {
     const QString dir =
@@ -1127,7 +1197,9 @@ void MainWindow::refreshBaseImage(bool keepView)
     // thread; the latest request wins (m_healGen guards stale results, and the
     // watcher only delivers its current future).
     const quint64 gen = ++m_healGen;
-    const Image src = m_graph.source();
+    // Heal runs on top of the lens-corrected source (the geometry is already
+    // baked into m_workingSource), so painted spots track the corrected image.
+    const Image src = m_workingSource.isNull() ? m_graph.source() : m_workingSource;
     const MaskBuffer mask = m_heal->healMask();
     const bool hq = m_heal->highQuality();
     static_cast<BusyBadge *>(m_healBusy)->start();
@@ -1377,6 +1449,8 @@ void MainWindow::closeActiveTool()
         closeLooksTool();
     else if (m_monoPanel->isVisible())
         closeMonoTool();
+    else if (m_lensPanel->isVisible())
+        closeLensTool();
     else if (m_healPanel->isVisible())
         closeHealTool();
     else {
@@ -1402,7 +1476,9 @@ void MainWindow::doRedo()
 
 void MainWindow::afterHistoryChange()
 {
-    // Heal edits the base; rebuild it so undo/redo of a heal is visible.
+    // Lens/perspective and heal both bake into the base; rebuild the corrected
+    // source first, then the heal-on-top base, so undo/redo of either is visible.
+    refreshWorkingSource();
     refreshBaseImage();
     updatePreview();
     if (m_layersPanel->isVisible())
@@ -1428,6 +1504,10 @@ void MainWindow::afterHistoryChange()
     if (m_monoPanel->isVisible()) {
         if (auto *mono = activeMono())
             m_monoPanel->reveal(mono->values());
+    }
+    if (m_lensPanel->isVisible() && m_lens) {
+        m_lensPanel->reveal(m_lens->params(), m_lens->lensMatched(),
+                            m_lens->matchedLensName());
     }
     // If a mask brush is active, resync the working mask to the restored state.
     if (m_brushTarget == BrushTarget::Selective

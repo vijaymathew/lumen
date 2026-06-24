@@ -28,11 +28,22 @@ find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets ShaderTools Concurrent
 
 qt_standard_project_setup()
 
-# libvips is the image pipeline. LibRaw decodes camera RAW (post-v1). OpenCV /
-# Lensfun are intentionally NOT wired up yet — they arrive with later milestones.
+# libvips is the image pipeline. LibRaw decodes camera RAW. OpenCV is not wired
+# up yet — it arrives with a later milestone.
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(VIPS REQUIRED IMPORTED_TARGET vips-cpp)
 pkg_check_modules(LIBRAW REQUIRED IMPORTED_TARGET libraw)
+
+# Lensfun (lens-correction database + geometry models) is OPTIONAL: when present
+# the LensCorrectionNode does automatic distortion/TCA/vignetting from EXIF; when
+# absent the node still offers manual perspective. Keeping it optional avoids the
+# hard-dependency CI breakage a REQUIRED check would cause on bare runners.
+pkg_check_modules(LENSFUN IMPORTED_TARGET lensfun)
+if(LENSFUN_FOUND)
+    message(STATUS "Lensfun ${LENSFUN_VERSION} found — automatic lens correction enabled")
+else()
+    message(STATUS "Lensfun not found — lens correction is perspective-only")
+endif()
 
 if(MSVC)
     set(LUMEN_WARNINGS /W3)
@@ -84,9 +95,15 @@ add_library(lumen_core STATIC
     src/core/Inpaint.cpp
     src/core/HealNode.h
     src/core/HealNode.cpp
+    src/core/LensCorrectionNode.h
+    src/core/LensCorrectionNode.cpp
 )
 target_include_directories(lumen_core PUBLIC src)
 target_link_libraries(lumen_core PUBLIC Qt6::Core Qt6::Gui PkgConfig::VIPS PkgConfig::LIBRAW)
+if(LENSFUN_FOUND)
+    target_link_libraries(lumen_core PUBLIC PkgConfig::LENSFUN)
+    target_compile_definitions(lumen_core PUBLIC LUMEN_HAVE_LENSFUN)
+endif()
 target_compile_options(lumen_core PRIVATE ${LUMEN_WARNINGS})
 
 # --- Application ----------------------------------------------------------
@@ -112,6 +129,8 @@ qt_add_executable(lumen
     src/ui/LayersPanel.cpp
     src/ui/MonoPanel.h
     src/ui/MonoPanel.cpp
+    src/ui/LensPanel.h
+    src/ui/LensPanel.cpp
     src/ui/MaskGizmo.h
     src/ui/MaskGizmo.cpp
     src/ui/ExportDialog.h
@@ -244,4 +263,9 @@ if(BUILD_TESTING)
     target_link_libraries(heal_test PRIVATE lumen_core)
     target_compile_options(heal_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME heal_test COMMAND heal_test)
+
+    add_executable(lens_node_test tests/lens_node_test.cpp)
+    target_link_libraries(lens_node_test PRIVATE lumen_core)
+    target_compile_options(lens_node_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME lens_node_test COMMAND lens_node_test)
 endif()

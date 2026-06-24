@@ -9,13 +9,36 @@
 
 namespace {
 
-// Configure LibRaw for a viewable 8-bit sRGB result (camera white balance), then
+// Pulls the camera/lens identity LibRaw parsed from EXIF (valid after open).
+void fillMetadata(LibRaw &raw, raw::LensMetadata *meta)
+{
+    if (!meta)
+        return;
+    const auto &id = raw.imgdata.idata;
+    const auto &lens = raw.imgdata.lens;
+    const auto &other = raw.imgdata.other;
+    meta->cameraMaker = QString::fromUtf8(id.make).trimmed();
+    meta->cameraModel = QString::fromUtf8(id.model).trimmed();
+    // Prefer the EXIF lens name; fall back to the maker-notes lens string.
+    meta->lensModel = QString::fromUtf8(lens.Lens).trimmed();
+    if (meta->lensModel.isEmpty())
+        meta->lensModel = QString::fromUtf8(lens.makernotes.Lens).trimmed();
+    meta->focalLength = static_cast<float>(other.focal_len);
+    meta->aperture = static_cast<float>(other.aperture);
+    // The focus distance at capture isn't reliably exposed by LibRaw; leave it
+    // unknown (0) so the correction assumes ≈∞, which is right for landscapes.
+    meta->focusDistance = 0.0f;
+}
+
+// Configure LibRaw for a viewable 16-bit sRGB result (camera white balance), then
 // demosaic and hand back an Image. Assumes the file/buffer is already opened.
-Image processToImage(LibRaw &raw, QString *error)
+Image processToImage(LibRaw &raw, QString *error, raw::LensMetadata *meta)
 {
     raw.imgdata.params.output_bps = 16;    // 16-bit per channel → float pipeline
     raw.imgdata.params.output_color = 1;   // sRGB
     raw.imgdata.params.use_camera_wb = 1;  // as-shot white balance
+
+    fillMetadata(raw, meta);
 
     if (const int e = raw.unpack()) {
         if (error)
@@ -79,7 +102,7 @@ bool raw::isRawPath(const QString &path)
     return extensions().contains(QFileInfo(path).suffix().toLower());
 }
 
-Image raw::decodeFile(const QString &path, QString *error)
+Image raw::decodeFile(const QString &path, QString *error, LensMetadata *meta)
 {
     LibRaw raw;
     if (const int e = raw.open_file(path.toUtf8().constData())) {
@@ -88,10 +111,10 @@ Image raw::decodeFile(const QString &path, QString *error)
                          .arg(path, QString::fromUtf8(LibRaw::strerror(e)));
         return Image();
     }
-    return processToImage(raw, error);
+    return processToImage(raw, error, meta);
 }
 
-Image raw::decodeBytes(const void *data, qsizetype size, QString *error)
+Image raw::decodeBytes(const void *data, qsizetype size, QString *error, LensMetadata *meta)
 {
     if (!data || size <= 0) {
         if (error)
@@ -105,5 +128,5 @@ Image raw::decodeBytes(const void *data, qsizetype size, QString *error)
                          .arg(QString::fromUtf8(LibRaw::strerror(e)));
         return Image();
     }
-    return processToImage(raw, error);
+    return processToImage(raw, error, meta);
 }

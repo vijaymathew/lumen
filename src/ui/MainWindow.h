@@ -11,9 +11,11 @@
 #include "core/CurvesNode.h"
 #include "core/EditGraph.h"
 #include "core/HealNode.h"
+#include "core/LensCorrectionNode.h"
 #include "core/LutNode.h"
 #include "core/MaskSpec.h"
 #include "core/MonoNode.h"
+#include "core/RawLoader.h"
 #include "core/SelectiveMask.h"
 #include "core/TuneNode.h"
 #include "input/InputController.h"
@@ -25,6 +27,7 @@ class CommandPalette;
 class CurvesPanel;
 class HealPanel;
 class LayersPanel;
+class LensPanel;
 class MaskGizmo;
 class LooksPanel;
 class MonoPanel;
@@ -90,6 +93,12 @@ private:
     void loadLookFile();
     void openMonoTool();
     void closeMonoTool();
+    void openLensTool();  // toggles the Lens & Perspective panel
+    void closeLensTool();
+    // Recomputes the cached lens-corrected working source (and its display
+    // QImage) from the original; cheap no-op when no correction is active. Called
+    // when the lens parameters or the source image change — NOT per heal dab.
+    void refreshWorkingSource();
     void recomputeSelectiveMask(); // uploads the active layer's mask as the overlay
     void onColorPicked(const QPointF &imageNormalized);
     // A selective adjustment is a masked layer (mask = Luminosity/Colour/Brush +
@@ -127,6 +136,7 @@ private:
     CurvesPanel *m_curvesPanel = nullptr;
     LooksPanel *m_looksPanel = nullptr;
     MonoPanel *m_monoPanel = nullptr;
+    LensPanel *m_lensPanel = nullptr;
     HealPanel *m_healPanel = nullptr;
     LayersPanel *m_layersPanel = nullptr;
     MaskGizmo *m_maskGizmo = nullptr; // on-canvas gradient/radial mask editor
@@ -139,7 +149,9 @@ private:
     CurvesNode *m_curves = nullptr;      // owned by m_graph
     LutNode *m_lutNode = nullptr;        // owned by m_graph
     MonoNode *m_mono = nullptr;          // owned by m_graph
-    HealNode *m_heal = nullptr;          // owned by m_graph (first in the chain)
+    HealNode *m_heal = nullptr;          // owned by m_graph (second in the chain)
+    LensCorrectionNode *m_lens = nullptr; // owned by m_graph (first in the chain)
+    Image m_workingSource;               // cached lens-corrected source (preview base input)
     QString m_sourcePath;                // for a sensible default export name
     QString m_exportExt = QStringLiteral("jpg"); // remembered export format
     int m_exportQuality = 90;                    // remembered export quality

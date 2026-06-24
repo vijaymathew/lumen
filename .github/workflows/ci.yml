@@ -19,15 +19,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install libvips + LibRaw + Ninja (Linux)
+      - name: Install libvips + LibRaw + Lensfun + Ninja (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libvips-dev libraw-dev ninja-build
+          sudo apt-get install -y libvips-dev libraw-dev liblensfun-dev liblensfun-data-v1 ninja-build
 
-      - name: Install libvips + LibRaw + Ninja (macOS)
+      - name: Install libvips + LibRaw + Lensfun + Ninja (macOS)
         if: runner.os == 'macOS'
-        run: brew install vips libraw ninja
+        run: brew install vips libraw lensfun ninja
 
       # QRhiWidget requires Qt 6.7+, newer than distro packages, so pull Qt via
       # aqt. ShaderTools (qsb / qt_add_shaders) is NOT in the base desktop
