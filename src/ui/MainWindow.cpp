@@ -39,6 +39,7 @@
 #include <cmath>
 #include <QLabel>
 #include <QMessageBox>
+#include <QSettings>
 #include <QShortcut>
 #include <QStandardPaths>
 #include <QTimer>
@@ -47,6 +48,26 @@
 #include <algorithm>
 
 namespace {
+
+// --- File-dialog directory memory -----------------------------------------
+// The file dialogs remember where you last were, per kind (open image, open /
+// save project, export, look LUT), persisted via QSettings. Returns the stored
+// directory if it still exists, else `fallback`.
+QString lastDir(const QString &key, const QString &fallback)
+{
+    const QString d =
+        QSettings().value(QStringLiteral("dialogDirs/") + key).toString();
+    return (!d.isEmpty() && QFileInfo(d).isDir()) ? d : fallback;
+}
+
+// Stores the directory containing `chosenPath` (a file the user just picked).
+void rememberDir(const QString &key, const QString &chosenPath)
+{
+    if (chosenPath.isEmpty())
+        return;
+    QSettings().setValue(QStringLiteral("dialogDirs/") + key,
+                         QFileInfo(chosenPath).absolutePath());
+}
 
 // Dim opacity for overlays (0–255). A tuning value, not a fixed constant
 // (DESIGN.md §4.6): too dark loses context, too light hurts contrast.
@@ -608,10 +629,12 @@ void MainWindow::saveProject()
         return;
     }
 
-    // Default name: next to the source, "<name>.lumen".
+    // Default name "<source>.lumen", in the last-used project folder (falling
+    // back to next-to-the-source on first save).
     const QFileInfo src(m_projectPath.isEmpty() ? m_sourcePath : m_projectPath);
+    const QString dir = lastDir(QStringLiteral("saveProject"), src.dir().path());
     const QString suggested =
-        src.dir().filePath(src.completeBaseName() + QStringLiteral(".lumen"));
+        QDir(dir).filePath(src.completeBaseName() + QStringLiteral(".lumen"));
     QString path = QFileDialog::getSaveFileName(
         this, QStringLiteral("Save project"), suggested,
         QStringLiteral("Lumen project (*.lumen)"));
@@ -637,19 +660,23 @@ void MainWindow::saveProject()
         return;
     }
     m_projectPath = path;
+    rememberDir(QStringLiteral("saveProject"), path);
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
     showHint(QStringLiteral("Saved %1").arg(QFileInfo(path).fileName()));
 }
 
 void MainWindow::openProject()
 {
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    const QString dir = lastDir(
+        QStringLiteral("openProject"),
+        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Open project"), dir,
         QStringLiteral("Lumen project (*.lumen)"));
-    if (!path.isEmpty())
+    if (!path.isEmpty()) {
+        rememberDir(QStringLiteral("openProject"), path);
         loadProjectFile(path);
+    }
 }
 
 bool MainWindow::loadProjectFile(const QString &path)
@@ -713,8 +740,9 @@ bool MainWindow::loadProjectFile(const QString &path)
 
 void MainWindow::openImageDialog()
 {
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    const QString dir = lastDir(
+        QStringLiteral("openImage"),
+        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
     // Build the filter from a single extension list, including UPPERCASE
     // variants — native file dialogs glob case-sensitively and cameras usually
     // write uppercase RAW extensions (.CR2, .NEF…). An "All files" fallback lets
@@ -730,8 +758,10 @@ void MainWindow::openImageDialog()
                                .arg(patterns.join(QLatin1Char(' ')));
     const QString path =
         QFileDialog::getOpenFileName(this, QStringLiteral("Open image"), dir, filter);
-    if (!path.isEmpty())
+    if (!path.isEmpty()) {
+        rememberDir(QStringLiteral("openImage"), path);
         openPath(path);
+    }
 }
 
 void MainWindow::exportImage()
@@ -752,9 +782,11 @@ void MainWindow::exportImage()
     if (quality >= 0)
         m_exportQuality = quality;
 
-    // 2. Choose the path, defaulting to "<name>-edited.<ext>" next to the source.
+    // 2. Choose the path, defaulting to "<name>-edited.<ext>" in the last-used
+    //    export folder (falling back to next-to-the-source).
     const QFileInfo src(m_sourcePath);
-    const QString suggested = src.dir().filePath(
+    const QString dir = lastDir(QStringLiteral("export"), src.dir().path());
+    const QString suggested = QDir(dir).filePath(
         src.completeBaseName() + QStringLiteral("-edited.") + m_exportExt);
     const QString filter =
         QStringLiteral("%1 (*.%2)").arg(m_exportExt.toUpper(), m_exportExt);
@@ -773,6 +805,7 @@ void MainWindow::exportImage()
                              QStringLiteral("Export failed: %1").arg(error));
         return;
     }
+    rememberDir(QStringLiteral("export"), path);
     showHint(QStringLiteral("Exported to %1").arg(QFileInfo(path).fileName()));
 }
 
@@ -1193,13 +1226,15 @@ void MainWindow::refreshWorkingSource()
 
 void MainWindow::loadLookFile()
 {
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    const QString dir = lastDir(
+        QStringLiteral("lookFile"),
+        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Load HALD CLUT"), dir,
         QStringLiteral("HALD CLUT images (*.png *.tif *.tiff *.jpg *.jpeg)"));
     if (path.isEmpty())
         return;
+    rememberDir(QStringLiteral("lookFile"), path);
 
     QString error;
     if (!activeLut()->loadHald(path, &error)) {
