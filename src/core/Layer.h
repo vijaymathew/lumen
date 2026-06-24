@@ -63,12 +63,18 @@ public:
     // --- Serialisation -----------------------------------------------------
     QJsonObject saveState() const;
     // Restores layer properties and node parameters by matching node ids — does
-    // NOT recreate nodes, so external pointers stay valid (structural undo is a
-    // later step).
+    // NOT recreate nodes, so external pointers stay valid. Used for the Base
+    // layer, whose node set is fixed for the app's lifetime.
     void restoreState(const QJsonObject &state);
+    // Restores layer properties AND rebuilds the node chain from the snapshot
+    // (recreating nodes via the node factory, preserving their ids). Used for
+    // non-Base layers, which can be added/removed (structural undo). Any external
+    // pointers into this layer's nodes are invalidated.
+    void restoreStructure(const QJsonObject &state);
 
 private:
     int indexOf(const QString &id) const;
+    void restoreProperties(const QJsonObject &state); // name/enabled/opacity/mask
 
     QString m_name;
     bool m_enabled = true;

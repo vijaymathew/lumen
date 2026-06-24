@@ -4,6 +4,7 @@
 #include "core/Layer.h"
 
 #include "core/EditNode.h"
+#include "core/NodeFactory.h"
 
 #include <QJsonArray>
 
@@ -219,17 +220,42 @@ QJsonObject Layer::saveState() const
     return o;
 }
 
-void Layer::restoreState(const QJsonObject &o)
+void Layer::restoreProperties(const QJsonObject &o)
 {
     if (o.contains(QStringLiteral("name")))
         m_name = o.value(QStringLiteral("name")).toString();
     m_enabled = o.value(QStringLiteral("enabled")).toBool(true);
     m_opacity = static_cast<float>(o.value(QStringLiteral("opacity")).toDouble(1.0));
     m_mask = MaskSpec::fromJson(o.value(QStringLiteral("mask")).toObject());
+}
+
+void Layer::restoreState(const QJsonObject &o)
+{
+    restoreProperties(o);
     // Restore parameters into existing nodes by id (no recreation).
     for (const QJsonValue &v : o.value(QStringLiteral("nodes")).toArray()) {
         const QJsonObject e = v.toObject();
         if (EditNode *node = findNode(e.value(QStringLiteral("id")).toString()))
             node->restoreState(e.value(QStringLiteral("state")).toObject());
+    }
+}
+
+void Layer::restoreStructure(const QJsonObject &o)
+{
+    restoreProperties(o);
+    // Rebuild the node chain from the snapshot, recreating each node via the
+    // factory and preserving its id (so later id-based restores still match).
+    m_nodes.clear();
+    m_cache.clear();
+    for (const QJsonValue &v : o.value(QStringLiteral("nodes")).toArray()) {
+        const QJsonObject e = v.toObject();
+        std::unique_ptr<EditNode> node =
+            createNode(e.value(QStringLiteral("type")).toString());
+        if (!node)
+            continue; // unknown type — skip rather than corrupt the chain
+        node->setId(e.value(QStringLiteral("id")).toString());
+        node->restoreState(e.value(QStringLiteral("state")).toObject());
+        m_nodes.push_back(std::move(node));
+        m_cache.emplace_back(); // fresh node starts dirty (null cache)
     }
 }

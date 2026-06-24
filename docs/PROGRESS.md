@@ -5,7 +5,7 @@ Living tracker for implementation, organised by the phases in
 
 **Status legend:** ✅ done · 🟡 in progress · ⬜ not started · ⏸️ deferred
 
-**Last updated:** 2026-06-22
+**Last updated:** 2026-06-24
 
 ---
 
@@ -104,7 +104,7 @@ plain Qt widgets.
 
 ---
 
-## Phase 7 — Layers, masks, monochrome 🟡
+## Phase 7 — Layers, masks, monochrome ✅
 
 > Decided sequencing (2026-06-23): do these **before** RAW. RAW lands later as an
 > 8-bit loader; a 16-bit-linear precision upgrade is a separate future effort.
@@ -113,7 +113,7 @@ plain Qt widgets.
 | Item | Status | Notes |
 |---|---|---|
 | Mask inversion | ✅ | `SelectiveValues.invert` — complements the mask in both libvips export and the shader (`selInvert` uniform); **Invert** toggle in the panel; mask overlay reflects it; unit-tested |
-| Layers (per-layer adjustments, add/delete) | 🟡 | Done: `MaskSpec`/`evaluateMask`; layered `EditGraph` + libvips composite export; **multi-pass GPU preview** (ping-pong, per-layer pass); **Layers panel** (add/delete/select/visibility/opacity) + active-layer routing of Tone/Curves/Looks; **per-layer mask UI** (None/Gradient/Radial + Feather + Invert) with an **on-canvas `MaskGizmo`** (draggable gradient line / radial ellipse; follows zoom/pan; passes non-handle events through to the canvas); **`SelectiveNode` dissolved** — selective edits are now masked adjustment layers (Luminosity/Colour/Brush mask + the layer's `TuneNode`), the Selective panel retargeted to drive the active layer; the "show mask" overlay reflects the active layer's mask; preview path evaluates data-driven masks against the source. Remaining: structural undo of layer add/delete; fold the Selective panel fully into the Layers panel (Option 2, deferred). See [LAYERS.md](LAYERS.md) |
+| Layers (per-layer adjustments, add/delete) | ✅ | Done: `MaskSpec`/`evaluateMask`; layered `EditGraph` + libvips composite export; **multi-pass GPU preview** (ping-pong, per-layer pass); **Layers panel** (add/delete/select/visibility/opacity) + active-layer routing of Tone/Curves/Looks; **per-layer mask UI** (None/Gradient/Radial + Feather + Invert) with an **on-canvas `MaskGizmo`** (draggable gradient line / radial ellipse; follows zoom/pan; passes non-handle events through to the canvas); **`SelectiveNode` dissolved** — selective edits are now masked adjustment layers (Luminosity/Colour/Brush mask + the layer's `TuneNode`), the Selective panel retargeted to drive the active layer; the "show mask" overlay reflects the active layer's mask; preview path evaluates data-driven masks against the source; **structural undo of layer add/delete** — a `createNode` factory rebuilds non-Base layer node chains from the snapshot (ids preserved), while the Base layer restores in place to keep external node pointers valid; verified add→undo→redo round-trips in the UI + unit-tested (`layer_undo_test`). Remaining: fold the Selective panel fully into the Layers panel (Option 2, deferred). See [LAYERS.md](LAYERS.md) |
 | Drawn / geometric masks (gradient, radial) | ✅ | Linear-gradient + radial/elliptical via `MaskSpec`/`evaluateMask` (free-hand already = brush mask), parametric → shader + libvips. Per-layer mask controls in the Layers panel + on-canvas `MaskGizmo` for direct manipulation; feather + invert; verified on-screen (radial = feathered bright ellipse, gradient = left→right ramp matching the gizmo). [LAYERS.md](LAYERS.md) §3 |
 | Monochrome (B&W mixer, toning) | ✅ | `MonoNode` (pointwise — same math in libvips `apply()` and the shader, step 3.5): a weighted B&W mixer (R/G/B, normalised) + hue-tinted toning (strength + hue). In the Base chain after the look and added to every adjustment layer (added on demand for layers that lack it); `MonoPanel` mirrors `TonePanel` (enable toggle + 5 sliders); unit-tested (`mono_test`) + verified on-screen (neutral grey + warm-sepia toning). **Grain** deferred — it's spatial/stochastic, so it doesn't fold into the pointwise `PreviewState`; needs its own pass |
 

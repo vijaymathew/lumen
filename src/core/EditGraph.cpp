@@ -97,12 +97,22 @@ QJsonObject EditGraph::saveState() const
 
 void EditGraph::restoreState(const QJsonObject &state)
 {
-    // Structure is stable in this step (only the Base layer is created by the
-    // app), so restore properties/params into the existing layers by index —
-    // keeping external node pointers valid. Structural undo arrives later.
     const QJsonArray layers = state.value(QStringLiteral("layers")).toArray();
-    for (int i = 0; i < static_cast<int>(m_layers.size()) && i < layers.size(); ++i)
-        m_layers[i]->restoreState(layers[i].toObject());
+    if (layers.isEmpty())
+        return; // malformed snapshot — leave the graph as-is
+
+    // The Base layer (index 0) always exists and its node set is fixed, so
+    // restore it in place by id — this keeps external pointers into Base nodes
+    // (e.g. the heal node) valid. Non-Base layers can be added/removed, so
+    // reconcile the list length and rebuild their node chains from the snapshot.
+    m_layers.resize(1); // drop any current non-Base layers; rebuild below
+    m_layers[0]->restoreState(layers[0].toObject());
+    for (int i = 1; i < layers.size(); ++i) {
+        auto layer = std::make_unique<Layer>(QStringLiteral("Layer"));
+        layer->restoreStructure(layers[i].toObject());
+        m_layers.push_back(std::move(layer));
+    }
+
     m_activeLayer = state.value(QStringLiteral("active")).toInt(0);
     if (m_activeLayer < 0 || m_activeLayer >= static_cast<int>(m_layers.size()))
         m_activeLayer = 0;

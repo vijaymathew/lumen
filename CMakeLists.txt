@@ -67,6 +67,8 @@ add_library(lumen_core STATIC
     src/core/LutNode.cpp
     src/core/MonoNode.h
     src/core/MonoNode.cpp
+    src/core/NodeFactory.h
+    src/core/NodeFactory.cpp
     src/core/GuidedFilter.h
     src/core/GuidedFilter.cpp
     src/core/SelectiveMask.h
@@ -219,6 +221,11 @@ if(BUILD_TESTING)
     target_link_libraries(mono_test PRIVATE lumen_core)
     target_compile_options(mono_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME mono_test COMMAND mono_test)
+
+    add_executable(layer_undo_test tests/layer_undo_test.cpp)
+    target_link_libraries(layer_undo_test PRIVATE lumen_core)
+    target_compile_options(layer_undo_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME layer_undo_test COMMAND layer_undo_test)
 
     add_executable(heal_test tests/heal_test.cpp)
     target_link_libraries(heal_test PRIVATE lumen_core)
