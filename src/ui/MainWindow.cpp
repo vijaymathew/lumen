@@ -273,6 +273,8 @@ MainWindow::MainWindow(QWidget *parent)
             t->setExposure(v.exposure);
             t->setContrast(v.contrast);
             t->setSaturation(v.saturation);
+            t->setTemperature(v.temperature);
+            t->setTint(v.tint);
         }
         updatePreview(); // preview is driven by walking the graph
     });
@@ -737,7 +739,8 @@ bool MainWindow::loadProjectFile(const QString &path)
     // Reseed any open adjustment tool from the newly-active layer (guarded).
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation()});
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+                                 t->temperature(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
         if (auto *c = activeCurves())
@@ -1003,7 +1006,8 @@ void MainWindow::selectLayer(int index)
     // (guarded — a layer may not carry every node type, e.g. a selective layer).
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation()});
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+                                 t->temperature(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
         if (auto *c = activeCurves())
@@ -1085,7 +1089,9 @@ void MainWindow::openToneTool()
     m_tonePanel->adjustSize();
     const int margin = 18;
     m_tonePanel->move(width() - m_tonePanel->width() - margin, margin);
-    m_tonePanel->reveal({activeTune()->exposure(), activeTune()->contrast(), activeTune()->saturation()});
+    m_tonePanel->reveal({activeTune()->exposure(), activeTune()->contrast(),
+                         activeTune()->saturation(), activeTune()->temperature(),
+                         activeTune()->tint()});
 }
 
 void MainWindow::closeToneTool()
@@ -1695,7 +1701,8 @@ void MainWindow::afterHistoryChange()
     // a layer may not carry every node type, e.g. a selective layer has tune only).
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation()});
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+                                 t->temperature(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
         if (auto *c = activeCurves())

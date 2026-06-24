@@ -45,6 +45,11 @@ struct PreviewState {
     float monoToneR = 1.0f;         // tint colour, normalised to luma 1
     float monoToneG = 1.0f;
     float monoToneB = 1.0f;
+    // TuneNode — basic white balance, pre-multiplied per-channel gains (applied
+    // before exposure; 1 = neutral). Matches TuneNode::wbGains / apply().
+    float wbR = 1.0f;
+    float wbG = 1.0f;
+    float wbB = 1.0f;
 
     friend bool operator==(const PreviewState &, const PreviewState &) = default;
 };

@@ -46,9 +46,39 @@ void TuneNode::setSaturation(float amount)
     }
 }
 
+void TuneNode::setTemperature(float amount)
+{
+    amount = std::clamp(amount, kMinAmount, kMaxAmount);
+    if (amount != m_temperature) {
+        m_temperature = amount;
+        invalidate();
+    }
+}
+
+void TuneNode::setTint(float amount)
+{
+    amount = std::clamp(amount, kMinAmount, kMaxAmount);
+    if (amount != m_tint) {
+        m_tint = amount;
+        invalidate();
+    }
+}
+
+void TuneNode::wbGains(float temperature, float tint, float &r, float &g, float &b)
+{
+    const float t = temperature / 100.0f;  // -1..1, warm(+)/cool(-)
+    const float ti = tint / 100.0f;         // -1..1, magenta(+)/green(-)
+    // Temperature is the R↔B axis; tint is mainly G, with a small R/B nudge so
+    // magenta/green read cleanly. Neutral (0,0) → unit gains.
+    r = 1.0f + 0.30f * t + 0.10f * ti;
+    g = 1.0f - 0.20f * ti;
+    b = 1.0f - 0.30f * t + 0.10f * ti;
+}
+
 bool TuneNode::isNeutral() const
 {
-    return m_exposure == 0.0f && m_contrast == 0.0f && m_saturation == 0.0f;
+    return m_exposure == 0.0f && m_contrast == 0.0f && m_saturation == 0.0f
+        && m_temperature == 0.0f && m_tint == 0.0f;
 }
 
 void TuneNode::contributeToPreview(PreviewState &state) const
@@ -57,6 +87,11 @@ void TuneNode::contributeToPreview(PreviewState &state) const
     state.exposure += m_exposure;
     state.contrast *= 1.0f + m_contrast / 100.0f;
     state.saturation *= 1.0f + m_saturation / 100.0f;
+    float gr, gg, gb;
+    wbGains(m_temperature, m_tint, gr, gg, gb);
+    state.wbR *= gr;
+    state.wbG *= gg;
+    state.wbB *= gb;
 }
 
 QJsonObject TuneNode::saveState() const
@@ -65,6 +100,8 @@ QJsonObject TuneNode::saveState() const
     state[QStringLiteral("exposure")] = m_exposure;
     state[QStringLiteral("contrast")] = m_contrast;
     state[QStringLiteral("saturation")] = m_saturation;
+    state[QStringLiteral("temperature")] = m_temperature;
+    state[QStringLiteral("tint")] = m_tint;
     return state;
 }
 
@@ -74,6 +111,8 @@ void TuneNode::restoreState(const QJsonObject &state)
     setExposure(static_cast<float>(state.value(QStringLiteral("exposure")).toDouble()));
     setContrast(static_cast<float>(state.value(QStringLiteral("contrast")).toDouble()));
     setSaturation(static_cast<float>(state.value(QStringLiteral("saturation")).toDouble()));
+    setTemperature(static_cast<float>(state.value(QStringLiteral("temperature")).toDouble()));
+    setTint(static_cast<float>(state.value(QStringLiteral("tint")).toDouble()));
 }
 
 Image TuneNode::apply(const Image &input) const
@@ -96,14 +135,21 @@ Image TuneNode::apply(const Image &input) const
     const int bands = vips_image_get_bands(cur);
     const int colorBands = std::min(bands, 3);
 
-    // 1. Exposure + contrast as a single per-band affine, in 8-bit value space:
-    //    out = c*f*v + 127.5*(1-c). (Operate in encoded space; pivot at mid-grey.)
-    if (m_exposure != 0.0f || m_contrast != 0.0f) {
+    // White-balance per-channel gains (applied before exposure, matching the
+    // shader's `col *= wb` ahead of applyTone).
+    float gr = 1.0f, gg = 1.0f, gb = 1.0f;
+    wbGains(m_temperature, m_tint, gr, gg, gb);
+    const double gain[3] = {gr, gg, gb};
+    const bool wbActive = m_temperature != 0.0f || m_tint != 0.0f;
+
+    // 1. WB + exposure + contrast as a single per-band affine, in 8-bit value
+    //    space: out = c*f*gain*v + 127.5*(1-c). (Encoded space; pivot mid-grey.)
+    if (m_exposure != 0.0f || m_contrast != 0.0f || wbActive) {
         std::vector<double> a(bands, 1.0);
         std::vector<double> b(bands, 0.0);
         const double pivot = 127.5 * (1.0 - c);
         for (int i = 0; i < colorBands; ++i) {
-            a[i] = c * f;
+            a[i] = c * f * gain[i];
             b[i] = pivot;
         }
         VipsImage *lin = nullptr;
