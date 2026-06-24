@@ -45,10 +45,16 @@ ExportDialog::ExportDialog(QWidget *parent)
     qualityRow->addWidget(m_quality, 1);
     qualityRow->addWidget(m_qualityValue);
 
+    m_bits = new QComboBox(this);
+    m_bits->addItem(QStringLiteral("8-bit"), 8);
+    m_bits->addItem(QStringLiteral("16-bit"), 16);
+
     auto *form = new QFormLayout;
     form->addRow(QStringLiteral("Format"), m_format);
     m_qualityName = new QLabel(QStringLiteral("Quality"), this);
     form->addRow(m_qualityName, qualityRow);
+    m_bitsName = new QLabel(QStringLiteral("Depth"), this);
+    form->addRow(m_bitsName, m_bits);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
                                          this);
@@ -60,20 +66,23 @@ ExportDialog::ExportDialog(QWidget *parent)
     layout->addLayout(form);
     layout->addWidget(buttons);
 
-    connect(m_format, &QComboBox::currentIndexChanged, this, &ExportDialog::syncQualityRow);
+    connect(m_format, &QComboBox::currentIndexChanged, this, &ExportDialog::syncRows);
     connect(m_quality, &QSlider::valueChanged, this, [this](int v) {
         m_qualityValue->setText(QString::number(v));
     });
     m_qualityValue->setText(QString::number(m_quality->value()));
-    syncQualityRow();
+    syncRows();
 }
 
-void ExportDialog::syncQualityRow()
+void ExportDialog::syncRows()
 {
+    // Quality applies to lossy formats; 16-bit depth only to lossless (PNG/TIFF).
     const bool lossy = kFormats[m_format->currentIndex()].lossy;
     m_qualityName->setEnabled(lossy);
     m_quality->setEnabled(lossy);
     m_qualityValue->setEnabled(lossy);
+    m_bitsName->setEnabled(!lossy);
+    m_bits->setEnabled(!lossy);
 }
 
 void ExportDialog::setSelection(const QString &extension, int quality)
@@ -87,7 +96,7 @@ void ExportDialog::setSelection(const QString &extension, int quality)
     }
     if (quality >= 1 && quality <= 100)
         m_quality->setValue(quality);
-    syncQualityRow();
+    syncRows();
 }
 
 QString ExportDialog::extension() const
@@ -98,4 +107,10 @@ QString ExportDialog::extension() const
 int ExportDialog::quality() const
 {
     return kFormats[m_format->currentIndex()].lossy ? m_quality->value() : -1;
+}
+
+int ExportDialog::bits() const
+{
+    // 16-bit only meaningful for the lossless formats; lossy stay 8-bit.
+    return kFormats[m_format->currentIndex()].lossy ? 8 : m_bits->currentData().toInt();
 }

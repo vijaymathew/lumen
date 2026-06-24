@@ -124,11 +124,15 @@ plain Qt widgets.
 
 | Item | Status | Notes |
 |---|---|---|
-| RAW decode (8-bit) | ✅ | `core/RawLoader` decodes camera RAW via **LibRaw** (unpack → `dcraw_process` → 8-bit sRGB, camera WB) → `Image` (RGBA), dropping into the same pipeline as a JPEG. Routed by extension in `openPath` + the open dialog (filter includes UPPERCASE globs, shared list with `isRawPath`); `.lumen` re-decodes the embedded RAW bytes on load (`decodeBytes`). `raw_test` covers extension classification + graceful failure. **Verified on a real 25 MB Canon `.CR2`**: decodes + renders correctly, and a RAW→edit→save `.lumen`→reopen round-trip restores the layered edit (the CR2 is embedded verbatim). 16-bit-linear precision is a separate future effort |
+| RAW decode | ✅ | `core/RawLoader` decodes camera RAW via **LibRaw** (unpack → `dcraw_process` → **16-bit** sRGB, camera WB) → float `Image`, dropping into the same pipeline as a JPEG. Routed by extension in `openPath` + the open dialog (filter includes UPPERCASE globs, shared list with `isRawPath`); `.lumen` re-decodes the embedded RAW bytes on load. `raw_test` covers classification + graceful failure. **Verified on a real 25 MB Canon `.CR2`**: decodes + renders correctly, RAW→edit→`.lumen`→reopen round-trips |
+| High-precision pipeline (float) | 🟡 | **Stage 1–2 done:** the working `Image` is now **float** (sRGB-encoded, unclamped) end-to-end — `fromFile`/`fromBytes`/`fromInterleavedFloat`, and every node (Tune/Curves/Lut/Mono/Heal/composite) processes at float (no inter-node 8-bit banding); `CurvesNode` interpolates its 256-LUT to match the GPU. RAW decodes at **16-bit → float**. **16-bit PNG/TIFF export** (ExportDialog depth selector; `saveToFile(..., bits)`); verified genuine `ushort rgb16` on a full-res CR2. `preview == export` preserved (8-bit display). Verified: 16/16 tests, visual parity on the CR2. **Remaining (Stage 3+):** true scene-linear processing (exposure/WB/blend in linear; currently encoded-space with the `/2.2` exposure approximation), extended RAW **highlight-recovery headroom** (LibRaw still normalises highlights to white), and a **float GPU preview** so recovery is live on-canvas (today the preview source is 8-bit, display-accurate) |
+| Whitebalance module | ⬜ | A proper temperature/tint WB adjustment (most natural in the linear stage above) |
 | Lens correction (`LensCorrectionNode`) | ⬜ | LibRaw + Lensfun. DESIGN §8. Best after RAW is verified |
 | Built-in presets (film looks) | ⬜ | Decided approach: **parametric recipes applied as a layer** (Tune/Curves/Mono node bundles; B&W films → Mono mixer). Velvia, Kodachrome 64, HP5, Delta 400, FP4. No new deps |
 | Perspective / advanced crop-rotate | |
 | Built-in presets -- Kodachrome 64, Fuji Velvia, Ilford HP5 Plus (ISO 400), Ilford Delta 400 (ISO 400) and Ilford FP4 Plus (ISO 125) (maybe reuse existing LUTs?)
+| A proper whitebalance adjustment module -- if not already implemented
+
 
 ---
 

@@ -71,6 +71,19 @@ int main(int /*argc*/, char **argv)
         QFile::remove(p);
     }
 
+    // 16-bit export (lossless formats) writes a valid file that reloads.
+    for (const char *ext : {"png", "tiff"}) {
+        const QString p = QDir::temp().filePath(
+            QStringLiteral("lumen_export16.%1").arg(ext));
+        QFile::remove(p);
+        CHECK(result.saveToFile(p, /*quality=*/-1, /*bits=*/16, &error));
+        CHECK(QFile::exists(p));
+        const Image rr = Image::fromFile(p, &error);
+        CHECK(!rr.isNull());
+        CHECK(rr.width() == 16 && rr.height() == 12);
+        QFile::remove(p);
+    }
+
     ImageBuffer::shutdownLibrary();
     std::puts("export_test: OK");
     return 0;

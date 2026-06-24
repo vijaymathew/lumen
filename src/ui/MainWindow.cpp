@@ -21,6 +21,8 @@
 #include <memory>
 #include <utility>
 
+#include <cstdio>
+
 #include <QBuffer>
 #include <QColor>
 #include <QDir>
@@ -668,6 +670,7 @@ void MainWindow::exportImage()
         return;
     m_exportExt = dlg.extension();
     const int quality = dlg.quality();
+    const int bits = dlg.bits();
     if (quality >= 0)
         m_exportQuality = quality;
 
@@ -687,7 +690,7 @@ void MainWindow::exportImage()
     // 3. Walk the graph at full resolution, then write via libvips.
     const Image result = m_graph.result();
     QString error;
-    if (!result.saveToFile(path, quality, &error)) {
+    if (!result.saveToFile(path, quality, bits, &error)) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Export failed: %1").arg(error));
         return;

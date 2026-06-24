@@ -11,9 +11,11 @@
 
 namespace {
 
-// Returns a new sRGB / 8-bit / 4-band (RGBA) image that the caller owns, or
-// nullptr on error. Does not consume `in`.
-VipsImage *toDisplayRGBA(VipsImage *in)
+// Returns a new sRGB, `fmt`-format, 4-band (RGBA) image the caller owns, or
+// nullptr on error. Does not consume `in`. `fmt` is UCHAR for display/export or
+// FLOAT for the working pipeline (sRGB-encoded float, 0..255, unclamped so
+// highlights >255 survive — the headroom that makes RAW useful).
+VipsImage *toRGBA(VipsImage *in, VipsBandFormat fmt)
 {
     VipsImage *cur = in;
     g_object_ref(cur); // own a ref to whatever cur points at
@@ -29,9 +31,9 @@ VipsImage *toDisplayRGBA(VipsImage *in)
     }
     replace(t);
 
-    if (cur->BandFmt != VIPS_FORMAT_UCHAR) {
+    if (cur->BandFmt != fmt) {
         t = nullptr;
-        if (vips_cast(cur, &t, VIPS_FORMAT_UCHAR, nullptr)) {
+        if (vips_cast(cur, &t, fmt, nullptr)) {
             g_object_unref(cur);
             return nullptr;
         }
@@ -49,6 +51,11 @@ VipsImage *toDisplayRGBA(VipsImage *in)
 
     return cur; // caller owns
 }
+
+// Display/export form: 8-bit sRGB RGBA.
+VipsImage *toDisplayRGBA(VipsImage *in) { return toRGBA(in, VIPS_FORMAT_UCHAR); }
+// Working form: float sRGB RGBA (the edit pipeline's currency).
+VipsImage *toWorkingRGBA(VipsImage *in) { return toRGBA(in, VIPS_FORMAT_FLOAT); }
 
 } // namespace
 
@@ -146,6 +153,35 @@ Image Image::fromInterleaved(const void *data, int width, int height, int bands)
         return Image();
     }
     g_object_unref(raw);
+
+    // Promote to the float working format so 8-bit-buffer producers (heal, etc.)
+    // stay in the high-precision pipeline.
+    VipsImage *f = nullptr;
+    if (vips_cast(tagged, &f, VIPS_FORMAT_FLOAT, nullptr)) {
+        g_object_unref(tagged);
+        return Image();
+    }
+    g_object_unref(tagged);
+    return Image::adopt(f);
+}
+
+Image Image::fromInterleavedFloat(const float *data, int width, int height, int bands)
+{
+    if (!data || width <= 0 || height <= 0 || bands < 1)
+        return Image();
+
+    VipsImage *raw = vips_image_new_from_memory_copy(
+        data, static_cast<size_t>(width) * height * bands * sizeof(float), width,
+        height, bands, VIPS_FORMAT_FLOAT);
+    if (!raw)
+        return Image();
+
+    VipsImage *tagged = nullptr; // tag sRGB (see fromInterleaved)
+    if (vips_copy(raw, &tagged, "interpretation", VIPS_INTERPRETATION_sRGB, nullptr)) {
+        g_object_unref(raw);
+        return Image();
+    }
+    g_object_unref(raw);
     return Image::adopt(tagged);
 }
 
@@ -161,7 +197,7 @@ Image Image::fromFile(const QString &path, QString *error)
         return Image();
     }
 
-    VipsImage *norm = toDisplayRGBA(img);
+    VipsImage *norm = toWorkingRGBA(img);
     g_object_unref(img);
     if (!norm) {
         if (error)
@@ -189,7 +225,7 @@ Image Image::fromBytes(const void *data, qsizetype size, QString *error)
         vips_error_clear();
         return Image();
     }
-    VipsImage *norm = toDisplayRGBA(img);
+    VipsImage *norm = toWorkingRGBA(img); // float sRGB RGBA
     g_object_unref(img);
     if (!norm) {
         if (error)
@@ -210,7 +246,7 @@ Image Image::fromBytes(const void *data, qsizetype size, QString *error)
             *error = QStringLiteral("Could not materialise image");
         return Image();
     }
-    Image result = Image::fromInterleaved(buf, w, h, bands);
+    Image result = Image::fromInterleavedFloat(static_cast<float *>(buf), w, h, bands);
     g_free(buf);
     return result;
 }
@@ -242,7 +278,7 @@ QImage Image::toQImage() const
                   [](void *p) { g_free(p); }, buf);
 }
 
-bool Image::saveToFile(const QString &path, int quality, QString *error) const
+bool Image::saveToFile(const QString &path, int quality, int bits, QString *error) const
 {
     if (!m_image) {
         if (error)
@@ -252,34 +288,57 @@ bool Image::saveToFile(const QString &path, int quality, QString *error) const
 
     // libvips chooses the saver from the extension and parses per-format options
     // appended as filename[opt=val]. Apply quality to the lossy savers only.
+    const QString suffix = QFileInfo(path).suffix().toLower();
     QString target = path;
-    if (quality >= 0) {
-        const QString suffix = QFileInfo(path).suffix().toLower();
-        if (suffix == QLatin1String("jpg") || suffix == QLatin1String("jpeg")
-            || suffix == QLatin1String("webp"))
-            target = QStringLiteral("%1[Q=%2]").arg(path).arg(std::clamp(quality, 0, 100));
-    }
+    if (quality >= 0
+        && (suffix == QLatin1String("jpg") || suffix == QLatin1String("jpeg")
+            || suffix == QLatin1String("webp")))
+        target = QStringLiteral("%1[Q=%2]").arg(path).arg(std::clamp(quality, 0, 100));
+    else if (bits == 16 && suffix == QLatin1String("png"))
+        // Force a 16-bit PNG; pngsave otherwise reduces low-information images.
+        target = QStringLiteral("%1[bitdepth=16]").arg(path);
     const QByteArray utf8 = target.toUtf8();
 
+    VipsImage *cur = m_image; // float sRGB working image (0..255)
+    g_object_ref(cur);
+    auto replace = [&cur](VipsImage *next) {
+        g_object_unref(cur);
+        cur = next;
+    };
+    const auto fail = [&](const QString &msg) {
+        if (error)
+            *error = msg.isEmpty() ? QString::fromUtf8(vips_error_buffer()) : msg;
+        vips_error_clear();
+        g_object_unref(cur);
+        return false;
+    };
+
+    // Quantise the float working image to the requested output depth. 16-bit
+    // scales 0..255 → 0..65535 (×257) before the USHORT cast.
+    VipsImage *q = nullptr;
+    if (bits == 16) {
+        VipsImage *scaled = nullptr;
+        if (vips_linear1(cur, &scaled, 257.0, 0.0, nullptr))
+            return fail({});
+        replace(scaled);
+        if (vips_cast(cur, &q, VIPS_FORMAT_USHORT, nullptr))
+            return fail({});
+    } else if (vips_cast(cur, &q, VIPS_FORMAT_UCHAR, nullptr)) {
+        return fail({});
+    }
+    replace(q);
+
     // Drop a trailing alpha band so formats without alpha (e.g. JPEG) succeed.
-    VipsImage *out = m_image;
-    bool owned = false;
-    if (vips_image_hasalpha(m_image)) {
+    if (vips_image_hasalpha(cur)) {
         VipsImage *rgb = nullptr;
-        const int n = vips_image_get_bands(m_image) - 1;
-        if (vips_extract_band(m_image, &rgb, 0, "n", n, nullptr)) {
-            if (error)
-                *error = QString::fromUtf8(vips_error_buffer());
-            vips_error_clear();
-            return false;
-        }
-        out = rgb;
-        owned = true;
+        const int n = vips_image_get_bands(cur) - 1;
+        if (vips_extract_band(cur, &rgb, 0, "n", n, nullptr))
+            return fail({});
+        replace(rgb);
     }
 
-    const int rc = vips_image_write_to_file(out, utf8.constData(), nullptr);
-    if (owned)
-        g_object_unref(out);
+    const int rc = vips_image_write_to_file(cur, utf8.constData(), nullptr);
+    g_object_unref(cur);
     if (rc) {
         if (error)
             *error = QString::fromUtf8(vips_error_buffer());

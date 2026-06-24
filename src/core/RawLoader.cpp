@@ -13,7 +13,7 @@ namespace {
 // demosaic and hand back an Image. Assumes the file/buffer is already opened.
 Image processToImage(LibRaw &raw, QString *error)
 {
-    raw.imgdata.params.output_bps = 8;     // 8-bit per channel
+    raw.imgdata.params.output_bps = 16;    // 16-bit per channel → float pipeline
     raw.imgdata.params.output_color = 1;   // sRGB
     raw.imgdata.params.use_camera_wb = 1;  // as-shot white balance
 
@@ -38,25 +38,26 @@ Image processToImage(LibRaw &raw, QString *error)
                          .arg(QString::fromUtf8(LibRaw::strerror(e)));
         return Image();
     }
-    if (img->type != LIBRAW_IMAGE_BITMAP || img->bits != 8 || img->colors != 3) {
+    if (img->type != LIBRAW_IMAGE_BITMAP || img->bits != 16 || img->colors != 3) {
         LibRaw::dcraw_clear_mem(img);
         if (error)
             *error = QStringLiteral("Unexpected RAW output format");
         return Image();
     }
 
-    // Expand RGB → RGBA (opaque) so RAW images match the rest of the pipeline.
+    // 16-bit sRGB (0..65535) → float RGBA in the working scale (0..255 sRGB; ÷257
+    // maps 65535→255), preserving the full RAW precision. Alpha opaque.
     const int w = img->width, h = img->height;
-    std::vector<uint8_t> rgba(static_cast<size_t>(w) * h * 4);
-    const uint8_t *src = img->data;
+    std::vector<float> rgba(static_cast<size_t>(w) * h * 4);
+    const auto *src = reinterpret_cast<const uint16_t *>(img->data);
     for (size_t i = 0, n = static_cast<size_t>(w) * h; i < n; ++i) {
-        rgba[i * 4 + 0] = src[i * 3 + 0];
-        rgba[i * 4 + 1] = src[i * 3 + 1];
-        rgba[i * 4 + 2] = src[i * 3 + 2];
-        rgba[i * 4 + 3] = 255;
+        rgba[i * 4 + 0] = src[i * 3 + 0] / 257.0f;
+        rgba[i * 4 + 1] = src[i * 3 + 1] / 257.0f;
+        rgba[i * 4 + 2] = src[i * 3 + 2] / 257.0f;
+        rgba[i * 4 + 3] = 255.0f;
     }
     LibRaw::dcraw_clear_mem(img);
-    return Image::fromInterleaved(rgba.data(), w, h, 4);
+    return Image::fromInterleavedFloat(rgba.data(), w, h, 4);
 }
 
 } // namespace

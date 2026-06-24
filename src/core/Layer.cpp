@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <vector>
 
 Layer::Layer(QString name) : m_name(std::move(name)) {}
 Layer::~Layer() = default;
@@ -134,41 +136,52 @@ Image Layer::composite(Image base)
     if (m_opacity <= 0.001f)
         return base; // layer contributes nothing
 
-    // Blend base and adjusted per pixel by coverage × opacity, on raw buffers
-    // (matches the node-level convention; alpha is taken from the base).
-    VipsImage *bu = nullptr, *au = nullptr;
-    if (vips_cast(base.handle(), &bu, VIPS_FORMAT_UCHAR, nullptr))
+    // Blend base and adjusted per pixel by coverage × opacity, at float precision
+    // (alpha is taken from the base).
+    VipsImage *bf = nullptr, *af = nullptr;
+    if (vips_cast(base.handle(), &bf, VIPS_FORMAT_FLOAT, nullptr))
         return adjusted;
-    if (vips_cast(adjusted.handle(), &au, VIPS_FORMAT_UCHAR, nullptr)) {
-        g_object_unref(bu);
+    if (vips_cast(adjusted.handle(), &af, VIPS_FORMAT_FLOAT, nullptr)) {
+        g_object_unref(bf);
         return adjusted;
     }
-    void *bbuf = vips_image_write_to_memory(bu, nullptr);
-    void *abuf = vips_image_write_to_memory(au, nullptr);
-    const int w = bu->Xsize, h = bu->Ysize, bands = bu->Bands;
-    g_object_unref(bu);
-    g_object_unref(au);
-    if (!bbuf || !abuf || au->Xsize != w || au->Ysize != h) {
+    void *bbuf = vips_image_write_to_memory(bf, nullptr);
+    void *abuf = vips_image_write_to_memory(af, nullptr);
+    const int w = bf->Xsize, h = bf->Ysize, bands = bf->Bands;
+    const bool sizeOk = af->Xsize == w && af->Ysize == h;
+    g_object_unref(bf);
+    g_object_unref(af);
+    if (!bbuf || !abuf || !sizeOk) {
         if (bbuf) g_free(bbuf);
         if (abuf) g_free(abuf);
         return adjusted;
     }
 
-    auto *bp = static_cast<uint8_t *>(bbuf);
-    const auto *ap = static_cast<const uint8_t *>(abuf);
-    const MaskBuffer cov = evaluateMask(m_mask, w, h, bp, bands);
+    auto *bp = static_cast<float *>(bbuf);
+    const auto *ap = static_cast<const float *>(abuf);
+
+    // Luminosity/Colour masks read the base pixels; evaluateMask wants 8-bit, so
+    // give it an 8-bit copy of the base (geometric masks ignore it).
+    std::vector<uint8_t> base8;
+    if (m_mask.type == MaskSpec::Luminosity || m_mask.type == MaskSpec::Colour) {
+        base8.resize(static_cast<size_t>(w) * h * bands);
+        for (size_t i = 0; i < base8.size(); ++i)
+            base8[i] = static_cast<uint8_t>(std::clamp(std::lround(bp[i]), 0L, 255L));
+    }
+    const MaskBuffer cov =
+        evaluateMask(m_mask, w, h, base8.empty() ? nullptr : base8.data(), bands);
 
     const long long n = static_cast<long long>(w) * h;
     for (long long i = 0; i < n; ++i) {
         const float c = (cov.data.empty() ? 0.0f : cov.data[i]) * m_opacity;
-        uint8_t *b = bp + i * bands;
-        const uint8_t *a = ap + i * bands;
+        float *b = bp + i * bands;
+        const float *a = ap + i * bands;
         for (int ch = 0; ch < 3; ++ch)
-            b[ch] = static_cast<uint8_t>(std::lround(b[ch] * (1.0f - c) + a[ch] * c));
+            b[ch] = b[ch] * (1.0f - c) + a[ch] * c;
         // alpha (band 3+) left as the base's
     }
 
-    Image out = Image::fromInterleaved(bbuf, w, h, bands);
+    Image out = Image::fromInterleavedFloat(bp, w, h, bands);
     g_free(bbuf);
     g_free(abuf);
     return out.isNull() ? adjusted : out;

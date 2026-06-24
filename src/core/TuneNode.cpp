@@ -144,12 +144,7 @@ Image TuneNode::apply(const Image &input) const
         replace(recombined);
     }
 
-    // Cast back to 8-bit (saturating).
-    VipsImage *casted = nullptr;
-    if (vips_cast(cur, &casted, VIPS_FORMAT_UCHAR, nullptr)) {
-        g_object_unref(cur);
-        return input;
-    }
-    replace(casted);
+    // Keep the result in the float working format (vips_linear/recomb already
+    // promoted to float); the pipeline quantises only at display/export.
     return Image::adopt(cur);
 }
