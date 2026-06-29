@@ -106,20 +106,23 @@ float monoHue(vec3 c)
     return h;
 }
 
-// Tent-interpolated per-color mix weight at `hue` over the 8 bands (centres at
-// k·45°, circular) — matches MonoNode::bandShift.
+// Per-color mix weight at `hue`: linear interpolation between the two adjacent
+// colour anchors at their true hue angles (last segment wraps 330°→360°) —
+// matches MonoNode::bandShift.
 float monoBandShift(float hue)
 {
     float b[8] = float[8](ubuf.monoBand0, ubuf.monoBand1, ubuf.monoBand2, ubuf.monoBand3,
                           ubuf.monoBand4, ubuf.monoBand5, ubuf.monoBand6, ubuf.monoBand7);
-    float w = 0.0;
-    for (int k = 0; k < 8; ++k) {
-        float dist = abs(hue - float(k) * 45.0);
-        if (dist > 180.0)
-            dist = 360.0 - dist;
-        w += b[k] * max(0.0, 1.0 - dist / 45.0);
+    float c[8] = float[8](0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 330.0);
+    for (int i = 0; i < 8; ++i) {
+        float lo = c[i];
+        float hi = (i < 7) ? c[i + 1] : 360.0;
+        if (hue >= lo && hue < hi) {
+            float t = (hue - lo) / (hi - lo);
+            return b[i] * (1.0 - t) + b[(i + 1) & 7] * t;
+        }
     }
-    return w;
+    return b[0];
 }
 
 void main()
@@ -160,7 +163,8 @@ void main()
         float g = clamp(dot(col, vec3(ubuf.monoR, ubuf.monoG, ubuf.monoB)), 0.0, 1.0);
         // Per-color mix: brighten/darken by hue, scaled by chroma (neutrals stay).
         float chroma = max(col.r, max(col.g, col.b)) - min(col.r, min(col.g, col.b));
-        g = clamp(g * (1.0 + monoBandShift(monoHue(col)) * chroma), 0.0, 1.0);
+        // 3.0 = MonoNode::kBandGain (keep in sync).
+        g = clamp(g * (1.0 + monoBandShift(monoHue(col)) * chroma * 3.0), 0.0, 1.0);
         vec3 toned = g * vec3(ubuf.monoToneR, ubuf.monoToneG, ubuf.monoToneB);
         col = mix(vec3(g), toned, ubuf.monoToneStrength);
     }

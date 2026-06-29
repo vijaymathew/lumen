@@ -28,6 +28,9 @@ struct MonoValues {
 class MonoNode : public EditNode {
 public:
     static constexpr float kToneSaturation = 0.5f; // fixed tint saturation
+    // Strength multiplier for the per-color mix shift. Kept in sync with the
+    // literal in texture.frag step 3.5 (preview==export).
+    static constexpr float kBandGain = 3.0f;
 
     MonoNode();
 

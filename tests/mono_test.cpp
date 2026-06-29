@@ -115,6 +115,17 @@ int main(int /*argc*/, char **argv)
 
         const int g0 = m.apply(grey).toQImage().pixelColor(0, 0).red();
         CHECK(near8(g0, 128)); // neutral grey untouched by the band
+
+        // Green band (index 3, hue 120°) owns greens: a saturated green darkens
+        // strongly when pulled down — locking the true-hue-centre fix.
+        Image green = solid(0, 180, 0);
+        m.setValues(base); // neutral bands
+        const int neutralGreen = m.apply(green).toQImage().pixelColor(0, 0).red();
+        MonoValues gn = base;
+        gn.band[3] = -1.0f; // Green down
+        m.setValues(gn);
+        const int darkGreen = m.apply(green).toQImage().pixelColor(0, 0).red();
+        CHECK(darkGreen < neutralGreen - 20); // clearly darker than the plain grey
     }
 
     // The 8 bands round-trip through save/restore.

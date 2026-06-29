@@ -89,17 +89,19 @@ float MonoNode::hue6(float r, float g, float b)
 
 float MonoNode::bandShift(const float band[8], float hueDeg)
 {
-    // Tent basis at 45° spacing: each band contributes max(0, 1 - circDist/45),
-    // which sums to a linear interpolation around the hue circle (315°↔0° wraps).
-    float w = 0.0f;
-    for (int k = 0; k < 8; ++k) {
-        float dist = std::fabs(hueDeg - k * 45.0f);
-        if (dist > 180.0f)
-            dist = 360.0f - dist; // circular distance
-        const float t = std::max(0.0f, 1.0f - dist / 45.0f);
-        w += band[k] * t;
+    // The 8 colours at their true hue angles (unevenly spaced). Linear-interpolate
+    // between the two adjacent anchors containing `hueDeg` (the last segment wraps
+    // 330°→360°≡0°). Identical to texture.frag's monoBandShift.
+    static const float c[8] = {0, 30, 60, 120, 180, 240, 270, 330};
+    for (int i = 0; i < 8; ++i) {
+        const float lo = c[i];
+        const float hi = (i < 7) ? c[i + 1] : 360.0f;
+        if (hueDeg >= lo && hueDeg < hi) {
+            const float t = (hueDeg - lo) / (hi - lo);
+            return band[i] * (1.0f - t) + band[(i + 1) & 7] * t;
+        }
     }
-    return w;
+    return band[0]; // unreachable (every hue in [0,360) lands in a segment)
 }
 
 void MonoNode::contributeToPreview(PreviewState &state) const
@@ -158,7 +160,7 @@ Image MonoNode::apply(const Image &input) const
         float grey = wr * nr + wg * ng + wb * nb;            // base mix
         const float chroma = std::max({nr, ng, nb}) - std::min({nr, ng, nb});
         const float wHue = bandShift(m_values.band, hue6(nr, ng, nb));
-        grey = std::clamp(grey * (1.0f + wHue * chroma), 0.0f, 1.0f);
+        grey = std::clamp(grey * (1.0f + wHue * chroma * kBandGain), 0.0f, 1.0f);
         p[0] = grey * k[0] * 255.0f;                          // gray + toning
         p[1] = grey * k[1] * 255.0f;
         p[2] = grey * k[2] * 255.0f;
