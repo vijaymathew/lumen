@@ -85,6 +85,8 @@ add_library(lumen_core STATIC
     src/core/MonoNode.cpp
     src/core/GrainNode.h
     src/core/GrainNode.cpp
+    src/core/CropState.h
+    src/core/CropState.cpp
     src/core/NodeFactory.h
     src/core/NodeFactory.cpp
     src/core/Project.h
@@ -145,6 +147,10 @@ qt_add_executable(lumen
     src/ui/MonoPanel.cpp
     src/ui/GrainPanel.h
     src/ui/GrainPanel.cpp
+    src/ui/CropPanel.h
+    src/ui/CropPanel.cpp
+    src/ui/CropGizmo.h
+    src/ui/CropGizmo.cpp
     src/ui/LensPanel.h
     src/ui/LensPanel.cpp
     src/ui/SharpenPanel.h

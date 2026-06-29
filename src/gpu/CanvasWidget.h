@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/CropState.h"
 #include "core/LayerPreview.h"
 #include "core/Lut.h"
 #include "core/Lut3D.h"
@@ -58,6 +59,16 @@ public:
 
     // Resets zoom/pan so the image is fit-to-window and centred.
     void resetView();
+
+    // Crop/orientation view. Mode: None = full source (identity); Applied =
+    // oriented + cropped (browse); Editing = oriented full frame (crop tool open,
+    // with the crop gizmo on top). The transform is applied in the present pass;
+    // the offscreen always renders the full composite.
+    enum CropViewMode { CropNone, CropApplied, CropEditing };
+    void setCropState(const CropState &crop, CropViewMode mode);
+    // Effective displayed image size (device-independent units relative to the
+    // source texture), accounting for orientation + crop in the current mode.
+    QSizeF effectiveImageSize() const;
 
     // image-normalised [0,1] → widget-logical position (inverse of the pick
     // mapping). For on-canvas gizmos. Returns the displayed scale in
@@ -127,6 +138,9 @@ private:
     QPointF imageNormalizedAt(const QPointF &widgetPos);
     QMatrix4x4 computeMvp(const QSize &targetPixels);
     QMatrix4x4 fillMvp(const QSize &targetPixels); // maps the quad to fill target
+    // Present-pass texcoord transform: output unit-quad → source [0,1], encoding
+    // the current crop/orientation. Identity in CropNone.
+    QMatrix4x4 cropTexXform() const;
     // Multiplies zoom by `factor`, keeping the image point under the cursor fixed.
     void zoomAt(float factor, const QPointF &cursorDevicePx);
 
@@ -166,6 +180,10 @@ private:
     QImage m_pendingImage;
     bool m_textureDirty = false;
     QSize m_textureSize;
+
+    // Crop/orientation view state (applied in the present pass).
+    CropState m_crop;
+    CropViewMode m_cropView = CropNone;
 
     // View state, in device pixels.
     float m_zoom = 1.0f;

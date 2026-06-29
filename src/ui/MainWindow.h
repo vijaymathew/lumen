@@ -39,6 +39,8 @@ class ColorGradePanel;
 class LensPanel;
 class MaskGizmo;
 class ZoneGizmo;
+class CropGizmo;
+class CropPanel;
 class LooksPanel;
 class MonoPanel;
 class GrainPanel;
@@ -126,6 +128,12 @@ private:
     void closeDenoiseTool();
     void openGrainTool();    // toggles the Film Grain panel
     void closeGrainTool();
+    void openCropTool();     // toggles the Crop & Rotate panel
+    void closeCropTool();
+    // Pushes the graph's crop to the canvas with the right view mode for the
+    // current context (Editing while the crop tool is open; full frame while a
+    // gizmo/pick tool needs it; else the cropped browse view).
+    void updateCropView();
     void toggleHistogram();  // show/hide the histogram overlay
     void updateHistogram();  // recompute from the current result (when visible)
     // Recomputes the cached lens-corrected working source (and its display
