@@ -26,10 +26,10 @@ layout(std140, binding = 0) uniform buf {
     float monoR;
     float monoG;
     float monoB;
-    float monoToneStrength;
-    float monoToneR;
-    float monoToneG;
-    float monoToneB;
+    float monoBalance;
+    float monoHighR;
+    float monoHighG;
+    float monoHighB;
     float wb00;
     float wb01;
     float wb02;
@@ -59,6 +59,9 @@ layout(std140, binding = 0) uniform buf {
     float monoBand5;
     float monoBand6;
     float monoBand7;
+    float monoShadowR; // split-tone shadow tint
+    float monoShadowG;
+    float monoShadowB;
 } ubuf;
 
 void main()

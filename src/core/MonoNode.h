@@ -2,10 +2,10 @@
 
 #include "core/EditNode.h"
 
-// Monochrome conversion: a weighted B&W mix (per-channel weights) plus optional
-// toning (a hue-tinted blend). It is pointwise, so the GPU preview shader and
-// the libvips apply() run identical math (see texture.frag, step 3.5). When
-// `enabled` is false the node is a passthrough.
+// Monochrome conversion: a weighted B&W mix (per-channel + per-color) plus
+// optional split toning (separate shadow/highlight tints). It is pointwise, so
+// the GPU preview shader and the libvips apply() run identical math (see
+// texture.frag, step 3.5). When `enabled` is false the node is a passthrough.
 struct MonoValues {
     bool enabled = false; // convert to B&W (off = passthrough)
     // B&W mix weights — relative; the node normalises them to sum 1. Default is
@@ -18,17 +18,20 @@ struct MonoValues {
     // colour in the grey conversion. Each in [-1,1]; 0 = no shift. The shift is
     // scaled by pixel chroma, so neutral greys are unaffected.
     float band[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-    // Toning: blend the grey toward a hue-tinted version.
-    float toneStrength = 0.0f;  // [0,1]
-    float toneHue = 32.0f;      // degrees [0,360); default warm/sepia
-    float toneSaturation = 0.5f; // [0,1] richness of the tint (was fixed)
+    // Split toning: separate shadow + highlight tints, blended across the tonal
+    // range by `balance`. hue in [0,360); sat in [0,1] (sat 0 = no tint, so it
+    // doubles as the per-region amount). Defaults = no toning (sats 0).
+    float shadowHue = 0.0f;
+    float shadowSat = 0.0f;
+    float highHue = 0.0f;
+    float highSat = 0.0f;
+    float balance = 0.0f; // [-1,1]; shifts the shadow→highlight crossover
 
     friend bool operator==(const MonoValues &, const MonoValues &) = default;
 };
 
 class MonoNode : public EditNode {
 public:
-    static constexpr float kToneSaturation = 0.5f; // fixed tint saturation
     // Strength multiplier for the per-color mix shift. Kept in sync with the
     // literal in texture.frag step 3.5 (preview==export).
     static constexpr float kBandGain = 3.0f;

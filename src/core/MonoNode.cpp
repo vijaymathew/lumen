@@ -27,9 +27,12 @@ void MonoNode::setValues(const MonoValues &values)
     v.mixR = std::clamp(v.mixR, -2.0f, 2.0f);
     v.mixG = std::clamp(v.mixG, -2.0f, 2.0f);
     v.mixB = std::clamp(v.mixB, -2.0f, 2.0f);
-    v.toneStrength = std::clamp(v.toneStrength, 0.0f, 1.0f);
-    v.toneSaturation = std::clamp(v.toneSaturation, 0.0f, 1.0f);
-    v.toneHue = std::fmod(std::fmod(v.toneHue, 360.0f) + 360.0f, 360.0f);
+    const auto wrapHue = [](float h) { return std::fmod(std::fmod(h, 360.0f) + 360.0f, 360.0f); };
+    v.shadowHue = wrapHue(v.shadowHue);
+    v.highHue = wrapHue(v.highHue);
+    v.shadowSat = std::clamp(v.shadowSat, 0.0f, 1.0f);
+    v.highSat = std::clamp(v.highSat, 0.0f, 1.0f);
+    v.balance = std::clamp(v.balance, -1.0f, 1.0f);
     for (float &bandValue : v.band)
         bandValue = std::clamp(bandValue, -1.0f, 1.0f);
     if (v != m_values) {
@@ -111,9 +114,11 @@ void MonoNode::contributeToPreview(PreviewState &state) const
         return; // passthrough → leave monoEnabled at its 0 default
     state.monoEnabled = 1.0f;
     normalizedWeights(state.monoR, state.monoG, state.monoB);
-    state.monoToneStrength = m_values.toneStrength;
-    tintFromHue(m_values.toneHue, m_values.toneSaturation, state.monoToneR, state.monoToneG,
-                state.monoToneB);
+    state.monoBalance = m_values.balance;
+    tintFromHue(m_values.shadowHue, m_values.shadowSat, state.monoShadowR, state.monoShadowG,
+                state.monoShadowB);
+    tintFromHue(m_values.highHue, m_values.highSat, state.monoHighR, state.monoHighG,
+                state.monoHighB);
     state.monoBand0 = m_values.band[0];
     state.monoBand1 = m_values.band[1];
     state.monoBand2 = m_values.band[2];
@@ -134,13 +139,12 @@ Image MonoNode::apply(const Image &input) const
 
     float wr, wg, wb;
     normalizedWeights(wr, wg, wb);
-    float tr, tg, tb;
-    tintFromHue(m_values.toneHue, m_values.toneSaturation, tr, tg, tb);
-    const float s = m_values.toneStrength;
-    // Per-channel toning factor: out_i = grey * mix(1, tint_i, strength), which
-    // reproduces mix(vec3(grey), grey*tint, strength) exactly (as in the shader).
-    const float k[3] = {1.0f + s * (tr - 1.0f), 1.0f + s * (tg - 1.0f),
-                        1.0f + s * (tb - 1.0f)};
+    // Split-tone tints (luma-1 normalised; sat 0 → (1,1,1) = no tint), computed
+    // once. Per pixel the grey blends between them by luminance (see the loop).
+    float sh[3], hi[3];
+    tintFromHue(m_values.shadowHue, m_values.shadowSat, sh[0], sh[1], sh[2]);
+    tintFromHue(m_values.highHue, m_values.highSat, hi[0], hi[1], hi[2]);
+    const float bal = m_values.balance;
 
     // The per-color mix is non-linear (depends on each pixel's hue), so this is a
     // single per-pixel pass — byte-identical math to texture.frag step 3.5.
@@ -163,9 +167,12 @@ Image MonoNode::apply(const Image &input) const
         const float chroma = std::max({nr, ng, nb}) - std::min({nr, ng, nb});
         const float wHue = bandShift(m_values.band, hue6(nr, ng, nb));
         grey = std::clamp(grey * (1.0f + wHue * chroma * kBandGain), 0.0f, 1.0f);
-        p[0] = grey * k[0] * 255.0f;                          // gray + toning
-        p[1] = grey * k[1] * 255.0f;
-        p[2] = grey * k[2] * 255.0f;
+        // Split toning: blend shadow→highlight tint by luminance (balance shifts
+        // the crossover); tints are luma-1 so this preserves brightness.
+        const float hw = std::clamp(grey + 0.5f * bal, 0.0f, 1.0f);
+        p[0] = grey * (sh[0] + (hi[0] - sh[0]) * hw) * 255.0f;
+        p[1] = grey * (sh[1] + (hi[1] - sh[1]) * hw) * 255.0f;
+        p[2] = grey * (sh[2] + (hi[2] - sh[2]) * hw) * 255.0f;
         // alpha / extra bands untouched
     }
 
@@ -181,9 +188,11 @@ QJsonObject MonoNode::saveState() const
     state[QStringLiteral("mixR")] = m_values.mixR;
     state[QStringLiteral("mixG")] = m_values.mixG;
     state[QStringLiteral("mixB")] = m_values.mixB;
-    state[QStringLiteral("toneStrength")] = m_values.toneStrength;
-    state[QStringLiteral("toneHue")] = m_values.toneHue;
-    state[QStringLiteral("toneSaturation")] = m_values.toneSaturation;
+    state[QStringLiteral("shadowHue")] = m_values.shadowHue;
+    state[QStringLiteral("shadowSat")] = m_values.shadowSat;
+    state[QStringLiteral("highHue")] = m_values.highHue;
+    state[QStringLiteral("highSat")] = m_values.highSat;
+    state[QStringLiteral("balance")] = m_values.balance;
     for (int i = 0; i < 8; ++i)
         state[QStringLiteral("band%1").arg(i)] = m_values.band[i];
     return state;
@@ -197,11 +206,25 @@ void MonoNode::restoreState(const QJsonObject &state)
     v.mixR = static_cast<float>(state.value(QStringLiteral("mixR")).toDouble(0.2126));
     v.mixG = static_cast<float>(state.value(QStringLiteral("mixG")).toDouble(0.7152));
     v.mixB = static_cast<float>(state.value(QStringLiteral("mixB")).toDouble(0.0722));
-    v.toneStrength =
-        static_cast<float>(state.value(QStringLiteral("toneStrength")).toDouble(0.0));
-    v.toneHue = static_cast<float>(state.value(QStringLiteral("toneHue")).toDouble(32.0));
-    v.toneSaturation =
-        static_cast<float>(state.value(QStringLiteral("toneSaturation")).toDouble(0.5));
+    if (state.contains(QStringLiteral("shadowHue"))
+        || state.contains(QStringLiteral("highHue"))) {
+        v.shadowHue = static_cast<float>(state.value(QStringLiteral("shadowHue")).toDouble(0.0));
+        v.shadowSat = static_cast<float>(state.value(QStringLiteral("shadowSat")).toDouble(0.0));
+        v.highHue = static_cast<float>(state.value(QStringLiteral("highHue")).toDouble(0.0));
+        v.highSat = static_cast<float>(state.value(QStringLiteral("highSat")).toDouble(0.0));
+        v.balance = static_cast<float>(state.value(QStringLiteral("balance")).toDouble(0.0));
+    } else if (state.contains(QStringLiteral("toneHue"))) {
+        // Migrate the pre-split single tint: uniform tint = equal shadow/highlight,
+        // amount = strength × saturation.
+        const float hue = static_cast<float>(state.value(QStringLiteral("toneHue")).toDouble(32.0));
+        const float strength =
+            static_cast<float>(state.value(QStringLiteral("toneStrength")).toDouble(0.0));
+        const float sat =
+            static_cast<float>(state.value(QStringLiteral("toneSaturation")).toDouble(0.5));
+        v.shadowHue = v.highHue = hue;
+        v.shadowSat = v.highSat = std::clamp(strength * sat, 0.0f, 1.0f);
+        v.balance = 0.0f;
+    }
     for (int i = 0; i < 8; ++i)
         v.band[i] = static_cast<float>(
             state.value(QStringLiteral("band%1").arg(i)).toDouble(0.0));

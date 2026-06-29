@@ -39,16 +39,20 @@ private:
     QPushButton *m_enable = nullptr;
     QSlider *m_band[8] = {};        // per-color B&W mix (Red…Magenta)
     QLabel *m_bandValue[8] = {};
-    QSlider *m_toneStrength = nullptr;
-    QSlider *m_toneHue = nullptr;
-    QSlider *m_toneSat = nullptr;
-    QLabel *m_toneStrengthValue = nullptr;
-    QLabel *m_toneHueValue = nullptr;
-    QLabel *m_toneSatValue = nullptr;
+    QSlider *m_shadowHue = nullptr;
+    QSlider *m_shadowSat = nullptr;
+    QSlider *m_highHue = nullptr;
+    QSlider *m_highSat = nullptr;
+    QSlider *m_balance = nullptr;
+    QLabel *m_shadowHueValue = nullptr;
+    QLabel *m_shadowSatValue = nullptr;
+    QLabel *m_highHueValue = nullptr;
+    QLabel *m_highSatValue = nullptr;
+    QLabel *m_balanceValue = nullptr;
     // Applies an 8-band colour preset to the sliders and pushes the change.
     void applyPreset(const float bands[8]);
-    // Applies a toning preset (hue°, strength, saturation) and pushes the change.
-    void applyTonePreset(float hueDeg, float strength, float saturation);
+    // Applies a split-tone preset (shadow hue/sat, highlight hue/sat, balance).
+    void applyTonePreset(float shHue, float shSat, float hiHue, float hiSat, float balance);
 
     bool m_dragging = false;
     QPoint m_dragOffset;

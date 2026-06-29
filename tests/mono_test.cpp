@@ -6,6 +6,7 @@
 #include "core/MonoNode.h"
 
 #include <QColor>
+#include <QJsonObject>
 
 #include <cstdint>
 #include <cstdio>
@@ -66,45 +67,52 @@ int main(int /*argc*/, char **argv)
     c = node.apply(red).toQImage().pixelColor(0, 0);
     CHECK(near8(c.red(), 255) && near8(c.green(), 255) && near8(c.blue(), 255));
 
-    // Toning with a warm hue tints the grey: red channel ends up warmer (higher)
-    // than the blue channel. Use a mid-grey input so there's headroom both ways.
+    // Split toning: cool/blue shadows + warm highlights. A dark patch picks up the
+    // shadow tint (blue), a bright patch the highlight tint (warm); luma preserved.
     Image grey = solid(128, 128, 128);
+    Image dark = solid(40, 40, 40);
+    Image bright = solid(210, 210, 210);
     MonoValues t;
-    t.enabled = true;            // default luma weights → grey 128
-    t.toneStrength = 1.0f;
-    t.toneHue = 32.0f;           // warm / sepia
+    t.enabled = true; // default luma weights; neutral patches → no band shift
+    t.shadowHue = 220.0f;
+    t.shadowSat = 0.8f; // cool shadows
+    t.highHue = 40.0f;
+    t.highSat = 0.8f;   // warm highlights
     node.setValues(t);
-    c = node.apply(grey).toQImage().pixelColor(0, 0);
-    CHECK(c.red() > c.blue());   // warm tint
-    CHECK(near8(static_cast<int>(0.2126 * c.red() + 0.7152 * c.green()
-                                 + 0.0722 * c.blue()), 128)); // luma preserved
+    const QColor cd = node.apply(dark).toQImage().pixelColor(0, 0);
+    const QColor cb = node.apply(bright).toQImage().pixelColor(0, 0);
+    CHECK(cd.blue() > cd.red()); // shadows read cool/blue
+    CHECK(cb.red() > cb.blue()); // highlights read warm
+    CHECK(near8(static_cast<int>(0.2126 * cd.red() + 0.7152 * cd.green()
+                                 + 0.0722 * cd.blue()), 40)); // luma preserved
+    CHECK(near8(static_cast<int>(0.2126 * cb.red() + 0.7152 * cb.green()
+                                 + 0.0722 * cb.blue()), 210));
 
-    // Tone saturation controls tint richness: at the same hue/strength, a higher
-    // saturation widens the red-blue spread; luma stays preserved either way.
-    {
-        MonoValues lo = t;
-        lo.toneSaturation = 0.2f;
-        node.setValues(lo);
-        const QColor cl = node.apply(grey).toQImage().pixelColor(0, 0);
-        MonoValues hi = t;
-        hi.toneSaturation = 0.9f;
-        node.setValues(hi);
-        const QColor ch = node.apply(grey).toQImage().pixelColor(0, 0);
-        CHECK((ch.red() - ch.blue()) > (cl.red() - cl.blue())); // richer tint
-        CHECK(near8(static_cast<int>(0.2126 * ch.red() + 0.7152 * ch.green()
-                                     + 0.0722 * ch.blue()), 128)); // luma preserved
-    }
-
-    // toneSaturation round-trips through save/restore.
+    // Split-tone fields round-trip through save/restore.
     {
         MonoNode a;
-        MonoValues sv;
-        sv.enabled = true;
-        sv.toneSaturation = 0.33f;
+        MonoValues sv = t;
+        sv.balance = 0.3f;
         a.setValues(sv);
         MonoNode b;
         b.restoreState(a.saveState());
         CHECK(b.values() == a.values());
+    }
+
+    // Legacy single-tint projects migrate into the split fields (uniform tint =
+    // equal shadow/highlight, amount = strength × saturation).
+    {
+        QJsonObject legacy;
+        legacy[QStringLiteral("monoEnabled")] = true;
+        legacy[QStringLiteral("toneHue")] = 32.0;
+        legacy[QStringLiteral("toneStrength")] = 1.0;
+        legacy[QStringLiteral("toneSaturation")] = 0.5;
+        MonoNode m2;
+        m2.restoreState(legacy);
+        const MonoValues mv = m2.values();
+        CHECK(near8(static_cast<int>(mv.shadowHue), 32));
+        CHECK(mv.shadowHue == mv.highHue && mv.shadowSat == mv.highSat);
+        CHECK(mv.shadowSat > 0.45f && mv.shadowSat < 0.55f); // 1.0 × 0.5
     }
 
     // Preview-state contribution: enabled sets monoEnabled + normalised weights.

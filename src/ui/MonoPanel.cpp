@@ -73,14 +73,14 @@ MonoPanel::MonoPanel(QWidget *parent)
     for (int i = 0; i < 8; ++i)
         m_band[i] = addRow(QString::fromLatin1(kBandNames[i]), -100, 100, &m_bandValue[i]);
 
-    // Toning presets: {hue°, strength, saturation}.
-    struct TonePreset { const char *label; float hue, strength, sat; };
+    // Split-toning presets: {shadowHue, shadowSat, highHue, highSat, balance}.
+    struct TonePreset { const char *label; float shHue, shSat, hiHue, hiSat, bal; };
     static const TonePreset kTonePresets[] = {
-        {"None", 32.0f, 0.0f, 0.0f},
-        {"Sepia", 32.0f, 0.60f, 0.50f},
-        {"Selenium", 280.0f, 0.50f, 0.20f},
-        {"Cyanotype", 210.0f, 0.85f, 0.70f},
-        {"Cool", 210.0f, 0.40f, 0.30f},
+        {"None", 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+        {"Sepia", 30.0f, 0.50f, 45.0f, 0.35f, 0.0f},
+        {"Selenium", 280.0f, 0.40f, 40.0f, 0.15f, 0.0f},
+        {"Cyanotype", 210.0f, 0.70f, 200.0f, 0.45f, -0.1f},
+        {"Split", 215.0f, 0.40f, 40.0f, 0.35f, 0.0f}, // cool shadows / warm highlights
     };
     auto *toningLabel = new QLabel(QStringLiteral("Toning"), this);
     toningLabel->setObjectName(QStringLiteral("rowName"));
@@ -96,17 +96,17 @@ MonoPanel::MonoPanel(QWidget *parent)
         auto *b = new QPushButton(QString::fromLatin1(p.label), this);
         b->setObjectName(QStringLiteral("presetButton"));
         connect(b, &QPushButton::clicked, this,
-                [this, hue = p.hue, st = p.strength, sat = p.sat] {
-                    applyTonePreset(hue, st, sat);
-                });
+                [this, p] { applyTonePreset(p.shHue, p.shSat, p.hiHue, p.hiSat, p.bal); });
         (ti++ < 3 ? toneRow1 : toneRow2)->addWidget(b);
     }
     layout->addLayout(toneRow1);
     layout->addLayout(toneRow2);
 
-    m_toneStrength = addRow(QStringLiteral("Tone"), 0, 100, &m_toneStrengthValue);
-    m_toneHue = addRow(QStringLiteral("Hue"), 0, 359, &m_toneHueValue);
-    m_toneSat = addRow(QStringLiteral("Tone sat"), 0, 100, &m_toneSatValue);
+    m_shadowHue = addRow(QStringLiteral("Shadow hue"), 0, 359, &m_shadowHueValue);
+    m_shadowSat = addRow(QStringLiteral("Shadow sat"), 0, 100, &m_shadowSatValue);
+    m_highHue = addRow(QStringLiteral("Highlight hue"), 0, 359, &m_highHueValue);
+    m_highSat = addRow(QStringLiteral("Highlight sat"), 0, 100, &m_highSatValue);
+    m_balance = addRow(QStringLiteral("Balance"), -100, 100, &m_balanceValue);
 
     setStyleSheet(QStringLiteral(R"(
         #monoPanel {
@@ -160,9 +160,11 @@ MonoValues MonoPanel::currentValues() const
     v.enabled = m_enable->isChecked();
     for (int i = 0; i < 8; ++i)
         v.band[i] = static_cast<float>(m_band[i]->value()) / 100.0f;
-    v.toneStrength = static_cast<float>(m_toneStrength->value()) / 100.0f;
-    v.toneHue = static_cast<float>(m_toneHue->value());
-    v.toneSaturation = static_cast<float>(m_toneSat->value()) / 100.0f;
+    v.shadowHue = static_cast<float>(m_shadowHue->value());
+    v.shadowSat = static_cast<float>(m_shadowSat->value()) / 100.0f;
+    v.highHue = static_cast<float>(m_highHue->value());
+    v.highSat = static_cast<float>(m_highSat->value()) / 100.0f;
+    v.balance = static_cast<float>(m_balance->value()) / 100.0f;
     return v;
 }
 
@@ -176,33 +178,43 @@ void MonoPanel::refreshLabels()
     };
     for (int i = 0; i < 8; ++i)
         m_bandValue[i]->setText(signedPct(v.band[i]));
-    m_toneStrengthValue->setText(pct(v.toneStrength));
-    m_toneHueValue->setText(QStringLiteral("%1°").arg(static_cast<int>(v.toneHue)));
-    m_toneSatValue->setText(pct(v.toneSaturation));
+    const auto deg = [](float a) { return QStringLiteral("%1°").arg(static_cast<int>(a)); };
+    const auto signedInt = [](float a) {
+        const int p = static_cast<int>(std::lround(a * 100));
+        return QStringLiteral("%1%2").arg(p > 0 ? QStringLiteral("+") : QString()).arg(p);
+    };
+    m_shadowHueValue->setText(deg(v.shadowHue));
+    m_shadowSatValue->setText(pct(v.shadowSat));
+    m_highHueValue->setText(deg(v.highHue));
+    m_highSatValue->setText(pct(v.highSat));
+    m_balanceValue->setText(signedInt(v.balance));
 
     // Mixer/toning rows are meaningful only when conversion is on.
     const bool on = v.enabled;
     for (QSlider *s : m_band)
         s->setEnabled(on);
-    m_toneStrength->setEnabled(on);
-    m_toneHue->setEnabled(on);
-    m_toneSat->setEnabled(on);
+    for (QSlider *s : {m_shadowHue, m_shadowSat, m_highHue, m_highSat, m_balance})
+        s->setEnabled(on);
 }
 
 void MonoPanel::reveal(const MonoValues &values)
 {
     const QSignalBlocker b0(m_enable);
-    const QSignalBlocker b4(m_toneStrength);
-    const QSignalBlocker b5(m_toneHue);
-    const QSignalBlocker b6(m_toneSat);
+    const QSignalBlocker b1(m_shadowHue);
+    const QSignalBlocker b2(m_shadowSat);
+    const QSignalBlocker b3(m_highHue);
+    const QSignalBlocker b4(m_highSat);
+    const QSignalBlocker b5(m_balance);
     m_enable->setChecked(values.enabled);
     for (int i = 0; i < 8; ++i) {
         const QSignalBlocker b(m_band[i]);
         m_band[i]->setValue(static_cast<int>(std::lround(values.band[i] * 100)));
     }
-    m_toneStrength->setValue(static_cast<int>(std::lround(values.toneStrength * 100)));
-    m_toneHue->setValue(static_cast<int>(std::lround(values.toneHue)));
-    m_toneSat->setValue(static_cast<int>(std::lround(values.toneSaturation * 100)));
+    m_shadowHue->setValue(static_cast<int>(std::lround(values.shadowHue)));
+    m_shadowSat->setValue(static_cast<int>(std::lround(values.shadowSat * 100)));
+    m_highHue->setValue(static_cast<int>(std::lround(values.highHue)));
+    m_highSat->setValue(static_cast<int>(std::lround(values.highSat * 100)));
+    m_balance->setValue(static_cast<int>(std::lround(values.balance * 100)));
     refreshLabels();
 
     adjustSize();
@@ -220,15 +232,19 @@ void MonoPanel::applyPreset(const float bands[8])
     onChanged(); // refresh labels + emit the new values
 }
 
-void MonoPanel::applyTonePreset(float hueDeg, float strength, float saturation)
+void MonoPanel::applyTonePreset(float shHue, float shSat, float hiHue, float hiSat, float balance)
 {
     {
-        const QSignalBlocker b1(m_toneStrength);
-        const QSignalBlocker b2(m_toneHue);
-        const QSignalBlocker b3(m_toneSat);
-        m_toneStrength->setValue(static_cast<int>(std::lround(strength * 100)));
-        m_toneHue->setValue(static_cast<int>(std::lround(hueDeg)));
-        m_toneSat->setValue(static_cast<int>(std::lround(saturation * 100)));
+        const QSignalBlocker b1(m_shadowHue);
+        const QSignalBlocker b2(m_shadowSat);
+        const QSignalBlocker b3(m_highHue);
+        const QSignalBlocker b4(m_highSat);
+        const QSignalBlocker b5(m_balance);
+        m_shadowHue->setValue(static_cast<int>(std::lround(shHue)));
+        m_shadowSat->setValue(static_cast<int>(std::lround(shSat * 100)));
+        m_highHue->setValue(static_cast<int>(std::lround(hiHue)));
+        m_highSat->setValue(static_cast<int>(std::lround(hiSat * 100)));
+        m_balance->setValue(static_cast<int>(std::lround(balance * 100)));
     }
     onChanged(); // refresh labels + emit the new values
 }

@@ -31,10 +31,10 @@ layout(std140, binding = 0) uniform buf {
     float monoR;        // B&W mix weights (pre-normalised to sum 1)
     float monoG;
     float monoB;
-    float monoToneStrength;
-    float monoToneR;    // tint colour (pre-normalised to luma 1)
-    float monoToneG;
-    float monoToneB;
+    float monoBalance;  // split-tone crossover shift [-1,1]
+    float monoHighR;    // highlight tint (pre-normalised to luma 1)
+    float monoHighG;
+    float monoHighB;
     float wb00;         // white-balance 3x3 (row-major, linear light, pre-exposure)
     float wb01;
     float wb02;
@@ -64,6 +64,9 @@ layout(std140, binding = 0) uniform buf {
     float monoBand5;
     float monoBand6;
     float monoBand7;
+    float monoShadowR;  // split-tone shadow tint (pre-normalised to luma 1)
+    float monoShadowG;
+    float monoShadowB;
 } ubuf;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -165,8 +168,12 @@ void main()
         float chroma = max(col.r, max(col.g, col.b)) - min(col.r, min(col.g, col.b));
         // 3.0 = MonoNode::kBandGain (keep in sync).
         g = clamp(g * (1.0 + monoBandShift(monoHue(col)) * chroma * 3.0), 0.0, 1.0);
-        vec3 toned = g * vec3(ubuf.monoToneR, ubuf.monoToneG, ubuf.monoToneB);
-        col = mix(vec3(g), toned, ubuf.monoToneStrength);
+        // Split toning: blend shadow→highlight tint by luminance (balance shifts
+        // the crossover); tints are luma-1 normalised so brightness is preserved.
+        vec3 sh = vec3(ubuf.monoShadowR, ubuf.monoShadowG, ubuf.monoShadowB);
+        vec3 hi = vec3(ubuf.monoHighR, ubuf.monoHighG, ubuf.monoHighB);
+        float hw = clamp(g + 0.5 * ubuf.monoBalance, 0.0, 1.0);
+        col = g * mix(sh, hi, hw);
     }
     // 4. Preview-only "show mask" overlay of the active layer's mask. (The old
     //    in-shader selective adjustment is vestigial — selEnabled stays 0 now
