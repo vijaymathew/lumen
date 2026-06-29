@@ -79,6 +79,34 @@ int main(int /*argc*/, char **argv)
     CHECK(near8(static_cast<int>(0.2126 * c.red() + 0.7152 * c.green()
                                  + 0.0722 * c.blue()), 128)); // luma preserved
 
+    // Tone saturation controls tint richness: at the same hue/strength, a higher
+    // saturation widens the red-blue spread; luma stays preserved either way.
+    {
+        MonoValues lo = t;
+        lo.toneSaturation = 0.2f;
+        node.setValues(lo);
+        const QColor cl = node.apply(grey).toQImage().pixelColor(0, 0);
+        MonoValues hi = t;
+        hi.toneSaturation = 0.9f;
+        node.setValues(hi);
+        const QColor ch = node.apply(grey).toQImage().pixelColor(0, 0);
+        CHECK((ch.red() - ch.blue()) > (cl.red() - cl.blue())); // richer tint
+        CHECK(near8(static_cast<int>(0.2126 * ch.red() + 0.7152 * ch.green()
+                                     + 0.0722 * ch.blue()), 128)); // luma preserved
+    }
+
+    // toneSaturation round-trips through save/restore.
+    {
+        MonoNode a;
+        MonoValues sv;
+        sv.enabled = true;
+        sv.toneSaturation = 0.33f;
+        a.setValues(sv);
+        MonoNode b;
+        b.restoreState(a.saveState());
+        CHECK(b.values() == a.values());
+    }
+
     // Preview-state contribution: enabled sets monoEnabled + normalised weights.
     {
         MonoNode pv;

@@ -41,10 +41,14 @@ private:
     QLabel *m_bandValue[8] = {};
     QSlider *m_toneStrength = nullptr;
     QSlider *m_toneHue = nullptr;
+    QSlider *m_toneSat = nullptr;
     QLabel *m_toneStrengthValue = nullptr;
     QLabel *m_toneHueValue = nullptr;
-    // Applies an 8-band preset to the sliders and pushes the change.
+    QLabel *m_toneSatValue = nullptr;
+    // Applies an 8-band colour preset to the sliders and pushes the change.
     void applyPreset(const float bands[8]);
+    // Applies a toning preset (hue°, strength, saturation) and pushes the change.
+    void applyTonePreset(float hueDeg, float strength, float saturation);
 
     bool m_dragging = false;
     QPoint m_dragOffset;

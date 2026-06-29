@@ -28,6 +28,7 @@ void MonoNode::setValues(const MonoValues &values)
     v.mixG = std::clamp(v.mixG, -2.0f, 2.0f);
     v.mixB = std::clamp(v.mixB, -2.0f, 2.0f);
     v.toneStrength = std::clamp(v.toneStrength, 0.0f, 1.0f);
+    v.toneSaturation = std::clamp(v.toneSaturation, 0.0f, 1.0f);
     v.toneHue = std::fmod(std::fmod(v.toneHue, 360.0f) + 360.0f, 360.0f);
     for (float &bandValue : v.band)
         bandValue = std::clamp(bandValue, -1.0f, 1.0f);
@@ -51,10 +52,10 @@ void MonoNode::normalizedWeights(float &r, float &g, float &b) const
     b = m_values.mixB / sum;
 }
 
-void MonoNode::tintFromHue(float hueDeg, float &r, float &g, float &b)
+void MonoNode::tintFromHue(float hueDeg, float satV, float &r, float &g, float &b)
 {
     const QColor c = QColor::fromHsvF(std::clamp(hueDeg / 360.0f, 0.0f, 0.999f),
-                                      kToneSaturation, 1.0f);
+                                      std::clamp(satV, 0.0f, 1.0f), 1.0f);
     double tr = c.redF(), tg = c.greenF(), tb = c.blueF();
     const double luma = kLumaR * tr + kLumaG * tg + kLumaB * tb;
     if (luma > 1e-4) {
@@ -111,7 +112,8 @@ void MonoNode::contributeToPreview(PreviewState &state) const
     state.monoEnabled = 1.0f;
     normalizedWeights(state.monoR, state.monoG, state.monoB);
     state.monoToneStrength = m_values.toneStrength;
-    tintFromHue(m_values.toneHue, state.monoToneR, state.monoToneG, state.monoToneB);
+    tintFromHue(m_values.toneHue, m_values.toneSaturation, state.monoToneR, state.monoToneG,
+                state.monoToneB);
     state.monoBand0 = m_values.band[0];
     state.monoBand1 = m_values.band[1];
     state.monoBand2 = m_values.band[2];
@@ -133,7 +135,7 @@ Image MonoNode::apply(const Image &input) const
     float wr, wg, wb;
     normalizedWeights(wr, wg, wb);
     float tr, tg, tb;
-    tintFromHue(m_values.toneHue, tr, tg, tb);
+    tintFromHue(m_values.toneHue, m_values.toneSaturation, tr, tg, tb);
     const float s = m_values.toneStrength;
     // Per-channel toning factor: out_i = grey * mix(1, tint_i, strength), which
     // reproduces mix(vec3(grey), grey*tint, strength) exactly (as in the shader).
@@ -181,6 +183,7 @@ QJsonObject MonoNode::saveState() const
     state[QStringLiteral("mixB")] = m_values.mixB;
     state[QStringLiteral("toneStrength")] = m_values.toneStrength;
     state[QStringLiteral("toneHue")] = m_values.toneHue;
+    state[QStringLiteral("toneSaturation")] = m_values.toneSaturation;
     for (int i = 0; i < 8; ++i)
         state[QStringLiteral("band%1").arg(i)] = m_values.band[i];
     return state;
@@ -197,6 +200,8 @@ void MonoNode::restoreState(const QJsonObject &state)
     v.toneStrength =
         static_cast<float>(state.value(QStringLiteral("toneStrength")).toDouble(0.0));
     v.toneHue = static_cast<float>(state.value(QStringLiteral("toneHue")).toDouble(32.0));
+    v.toneSaturation =
+        static_cast<float>(state.value(QStringLiteral("toneSaturation")).toDouble(0.5));
     for (int i = 0; i < 8; ++i)
         v.band[i] = static_cast<float>(
             state.value(QStringLiteral("band%1").arg(i)).toDouble(0.0));

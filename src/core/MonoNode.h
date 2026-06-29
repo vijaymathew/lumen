@@ -19,8 +19,9 @@ struct MonoValues {
     // scaled by pixel chroma, so neutral greys are unaffected.
     float band[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     // Toning: blend the grey toward a hue-tinted version.
-    float toneStrength = 0.0f; // [0,1]
-    float toneHue = 32.0f;     // degrees [0,360); default warm/sepia
+    float toneStrength = 0.0f;  // [0,1]
+    float toneHue = 32.0f;      // degrees [0,360); default warm/sepia
+    float toneSaturation = 0.5f; // [0,1] richness of the tint (was fixed)
 
     friend bool operator==(const MonoValues &, const MonoValues &) = default;
 };
@@ -45,9 +46,10 @@ public:
 
     // Normalised B&W weights (sum 1); falls back to luma if the mix is degenerate.
     void normalizedWeights(float &r, float &g, float &b) const;
-    // Tint colour for `hueDeg`, normalised so its luma is 1 (so toning preserves
-    // perceived brightness). Shared by apply() and contributeToPreview().
-    static void tintFromHue(float hueDeg, float &r, float &g, float &b);
+    // Tint colour for `hueDeg` at saturation `satV`, normalised so its luma is 1
+    // (so toning preserves perceived brightness). Shared by apply() and
+    // contributeToPreview().
+    static void tintFromHue(float hueDeg, float satV, float &r, float &g, float &b);
 
     // Hue of an RGB colour in degrees [0,360) (standard 6-segment formula).
     static float hue6(float r, float g, float b);
