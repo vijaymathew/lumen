@@ -509,6 +509,18 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_layersPanel, &LayersPanel::addRequested, this, &MainWindow::addAdjustmentLayer);
     connect(m_layersPanel, &LayersPanel::deleteRequested, this, &MainWindow::deleteActiveLayer);
     connect(m_layersPanel, &LayersPanel::layerSelected, this, &MainWindow::selectLayer);
+    connect(m_layersPanel, &LayersPanel::renameRequested, this, [this](int i, const QString &name) {
+        if (i <= 0 || i >= m_graph.layerCount())
+            return; // the Base layer (0) is not renamable
+        const QString t = name.trimmed();
+        if (t.isEmpty() || t == m_graph.layer(i).name()) {
+            refreshLayersPanel(); // restore the row (rejects empty/unchanged)
+            return;
+        }
+        m_graph.layer(i).setName(t);
+        refreshLayersPanel();
+        m_graph.commit();
+    });
     connect(m_layersPanel, &LayersPanel::visibilityToggled, this, [this](int i, bool on) {
         if (i >= 0 && i < m_graph.layerCount()) {
             m_graph.layer(i).setEnabled(on);

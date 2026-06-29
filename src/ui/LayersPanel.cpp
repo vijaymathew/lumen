@@ -1,7 +1,10 @@
 #include "ui/LayersPanel.h"
 
+#include <QBoxLayout>
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QSlider>
@@ -368,6 +371,13 @@ void LayersPanel::setLayers(const QVector<Row> &rows, int active, int activeOpac
         auto *name = new QPushButton(row.name);
         name->setProperty("active", i == active);
         connect(name, &QPushButton::clicked, this, [this, i] { emit layerSelected(i); });
+        // Non-Base layers can be renamed by double-clicking the name (handled in
+        // eventFilter, which reads the stashed index).
+        if (i > 0) {
+            name->setProperty("layerIndex", i);
+            name->setToolTip(QStringLiteral("Double-click to rename"));
+            name->installEventFilter(this);
+        }
 
         h->addWidget(vis);
         h->addWidget(name, 1);
@@ -513,4 +523,44 @@ void LayersPanel::mouseReleaseEvent(QMouseEvent *event)
         m_dragging = false;
         unsetCursor();
     }
+}
+
+bool LayersPanel::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::MouseButtonDblClick) {
+        if (auto *btn = qobject_cast<QPushButton *>(watched)) {
+            const QVariant idx = btn->property("layerIndex");
+            if (idx.isValid()) {
+                beginRename(btn, idx.toInt());
+                return true; // consume; don't also treat as a click
+            }
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void LayersPanel::beginRename(QPushButton *nameButton, int index)
+{
+    auto *row = nameButton->parentWidget();
+    auto *lay = row ? qobject_cast<QBoxLayout *>(row->layout()) : nullptr;
+    if (!lay)
+        return;
+
+    auto *edit = new QLineEdit(nameButton->text(), row);
+    edit->setObjectName(QStringLiteral("layerNameEdit"));
+    lay->replaceWidget(nameButton, edit);
+    lay->setStretchFactor(edit, 1);
+    nameButton->hide();
+    edit->selectAll();
+    edit->setFocus(Qt::MouseFocusReason);
+
+    // editingFinished fires on Enter and on focus-out; guard the double-fire.
+    connect(edit, &QLineEdit::editingFinished, this, [this, edit, index] {
+        if (edit->property("done").toBool())
+            return;
+        edit->setProperty("done", true);
+        emit renameRequested(index, edit->text().trimmed());
+        // MainWindow responds with refreshLayersPanel(), which rebuilds the rows
+        // and disposes of this temporary editor.
+    });
 }

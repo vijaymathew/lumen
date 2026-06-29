@@ -45,6 +45,7 @@ signals:
     void addRequested();
     void deleteRequested();
     void layerSelected(int index);
+    void renameRequested(int index, const QString &name);
     void visibilityToggled(int index, bool enabled);
     void opacityChanged(int percent); // active layer
     // Mask editing (all for the active layer).
@@ -68,11 +69,15 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    // Catches a double-click on a layer-name button to start inline renaming.
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     QSlider *addSlider(QVBoxLayout *layout, const QString &name, int min, int max,
                        QLabel **valueOut);
     void emitBrush();
+    // Swaps a layer-name button for an inline QLineEdit; commits via renameRequested.
+    void beginRename(QPushButton *nameButton, int index);
 
     QVBoxLayout *m_rowsLayout = nullptr;
     QSlider *m_opacity = nullptr;
