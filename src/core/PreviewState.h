@@ -45,11 +45,14 @@ struct PreviewState {
     float monoToneR = 1.0f;         // tint colour, normalised to luma 1
     float monoToneG = 1.0f;
     float monoToneB = 1.0f;
-    // TuneNode — basic white balance, pre-multiplied per-channel gains (applied
-    // before exposure; 1 = neutral). Matches TuneNode::wbGains / apply().
-    float wbR = 1.0f;
-    float wbG = 1.0f;
-    float wbB = 1.0f;
+    // TuneNode — white balance as a linear-light 3x3 matrix (row-major), applied
+    // before exposure (encoded → ^2.2 → W·rgb → ^(1/2.2)); identity = neutral.
+    // Accumulated across nodes by matrix multiply. The nine scalars pack tightly
+    // in std140 (matching the flat-float convention); the shader reassembles a
+    // mat3. Matches TuneNode::whiteBalanceMatrix / apply().
+    float wb00 = 1.0f, wb01 = 0.0f, wb02 = 0.0f;
+    float wb10 = 0.0f, wb11 = 1.0f, wb12 = 0.0f;
+    float wb20 = 0.0f, wb21 = 0.0f, wb22 = 1.0f;
     // Strength of the preview-only "show mask" overlay [0,1]. Set to the active
     // selective layer's opacity so the highlight visibly fades as opacity drops;
     // 1 while painting so strokes stay fully visible. Doesn't affect the export.

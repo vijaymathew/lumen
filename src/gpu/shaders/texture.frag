@@ -35,9 +35,15 @@ layout(std140, binding = 0) uniform buf {
     float monoToneR;    // tint colour (pre-normalised to luma 1)
     float monoToneG;
     float monoToneB;
-    float wbR;          // white-balance gains (applied before exposure)
-    float wbG;
-    float wbB;
+    float wb00;         // white-balance 3x3 (row-major, linear light, pre-exposure)
+    float wb01;
+    float wb02;
+    float wb10;
+    float wb11;
+    float wb12;
+    float wb20;
+    float wb21;
+    float wb22;
     float selMaskOpacity; // "show mask" overlay strength [0,1] (= layer opacity)
 } ubuf;
 
@@ -58,7 +64,14 @@ void main()
 
     // Same order and math as the node apply() methods so preview predicts
     // export. 1. Global tone (TuneNode): white balance, then exposure/contrast/sat.
-    col *= vec3(ubuf.wbR, ubuf.wbG, ubuf.wbB);
+    // WB is a 3x3 applied in linear light (row-major in the UBO; mat3() takes
+    // columns) — matches TuneNode::applyWhiteBalance.
+    mat3 wbM = mat3(ubuf.wb00, ubuf.wb10, ubuf.wb20,
+                    ubuf.wb01, ubuf.wb11, ubuf.wb21,
+                    ubuf.wb02, ubuf.wb12, ubuf.wb22);
+    vec3 wbLin = pow(max(col, 0.0), vec3(2.2));
+    wbLin = wbM * wbLin;
+    col = pow(max(wbLin, 0.0), vec3(1.0 / 2.2));
     col = applyTone(col, ubuf.exposure, ubuf.contrast, ubuf.saturation);
     // 2. Tone curves: each channel maps through its own LUT column (R->.r,
     //    G->.g, B->.b). Identity when no curve.

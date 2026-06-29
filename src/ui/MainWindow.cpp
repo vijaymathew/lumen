@@ -277,7 +277,7 @@ MainWindow::MainWindow(QWidget *parent)
             t->setExposure(v.exposure);
             t->setContrast(v.contrast);
             t->setSaturation(v.saturation);
-            t->setTemperature(v.temperature);
+            t->setKelvin(v.kelvin);
             t->setTint(v.tint);
         }
         updatePreview(); // preview is driven by walking the graph
@@ -645,6 +645,10 @@ bool MainWindow::openPath(const QString &path)
         lp.focusDistance = meta.focusDistance;
     }
     m_lens->setParams(lp);
+    // Camera-accurate white balance: install the colour profile and seed the
+    // slider at the as-shot temperature (non-RAW keeps the sRGB defaults).
+    if (isRaw)
+        applyCameraProfile(meta.color, /*seedKelvin=*/true);
     refreshWorkingSource();  // build the corrected source + display QImage
     refreshBaseImage(false); // new image → fit the view
     recomputeSelectiveMask();
@@ -723,10 +727,12 @@ bool MainWindow::loadProjectFile(const QString &path)
         QMessageBox::warning(this, QStringLiteral("Lumen"), error);
         return false;
     }
+    const bool isRaw = raw::isRawPath(proj.sourceName);
+    raw::LensMetadata meta;
     Image source =
-        raw::isRawPath(proj.sourceName)
-            ? raw::decodeBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error)
-            : Image::fromBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error);
+        isRaw ? raw::decodeBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(),
+                                 &error, &meta)
+              : Image::fromBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error);
     if (source.isNull()) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Could not decode the embedded image: %1").arg(error));
@@ -741,6 +747,10 @@ bool MainWindow::loadProjectFile(const QString &path)
     m_sourceName = proj.sourceName;
     m_graph.setSource(source);
     m_graph.loadProjectState(proj.graph); // restores the lens node's params too
+    // Refresh the camera profile from the actual decode, keeping the restored
+    // WB temperature (don't reseed to as-shot).
+    if (isRaw)
+        applyCameraProfile(meta.color, /*seedKelvin=*/false);
 
     refreshWorkingSource();  // rebuild the corrected source from the restored lens
     refreshBaseImage(false); // re-applies the heal mask, fits the view
@@ -906,6 +916,18 @@ void MainWindow::updatePreview()
         m_histTimer->start();
 }
 
+void MainWindow::applyCameraProfile(const raw::ColorProfile &profile, bool seedKelvin)
+{
+    if (!profile.valid)
+        return;
+    for (int i = 0; i < m_graph.layerCount(); ++i) {
+        if (auto *t = static_cast<TuneNode *>(
+                m_graph.layer(i).nodeOfType(QStringLiteral("tune"))))
+            t->setCameraProfile(profile.camToRgb, profile.xyzToCam, profile.asShotMul,
+                                seedKelvin);
+    }
+}
+
 TuneNode *MainWindow::activeTune() const
 {
     return static_cast<TuneNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("tune")));
@@ -981,7 +1003,7 @@ void MainWindow::reseedOpenPanels()
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
             m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
-                                 t->temperature(), t->tint()});
+                                 t->kelvin(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
         if (auto *c = activeCurves())
@@ -1032,7 +1054,7 @@ void MainWindow::selectLayer(int index)
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
             m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
-                                 t->temperature(), t->tint()});
+                                 t->kelvin(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
         if (auto *c = activeCurves())
@@ -1115,7 +1137,7 @@ void MainWindow::openToneTool()
     const int margin = 18;
     m_tonePanel->move(width() - m_tonePanel->width() - margin, margin);
     m_tonePanel->reveal({activeTune()->exposure(), activeTune()->contrast(),
-                         activeTune()->saturation(), activeTune()->temperature(),
+                         activeTune()->saturation(), activeTune()->kelvin(),
                          activeTune()->tint()});
 }
 
@@ -1736,7 +1758,7 @@ void MainWindow::afterHistoryChange()
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
             m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
-                                 t->temperature(), t->tint()});
+                                 t->kelvin(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
         if (auto *c = activeCurves())

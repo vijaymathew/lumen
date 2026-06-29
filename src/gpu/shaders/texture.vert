@@ -30,9 +30,15 @@ layout(std140, binding = 0) uniform buf {
     float monoToneR;
     float monoToneG;
     float monoToneB;
-    float wbR;
-    float wbG;
-    float wbB;
+    float wb00;
+    float wb01;
+    float wb02;
+    float wb10;
+    float wb11;
+    float wb12;
+    float wb20;
+    float wb21;
+    float wb22;
     float selMaskOpacity;
 } ubuf;
 

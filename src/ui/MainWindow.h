@@ -90,6 +90,11 @@ private:
     void syncMaskGizmo();      // reflect the active layer's mask into the gizmo
     void updateMaskEditing();  // enable/disable the canvas brush for a Brush mask
     void endMaskBrushSession(); // commit in-progress mask-brush strokes
+    // Installs the RAW camera colour profile on every layer's TuneNode so white
+    // balance is camera-accurate. `seedKelvin` moves the slider to the as-shot
+    // temperature (opening a fresh RAW) vs keeping the restored value (projects).
+    void applyCameraProfile(const raw::ColorProfile &profile, bool seedKelvin);
+
     // The active layer's tone/curves/look/mono nodes (tools edit the active layer).
     TuneNode *activeTune() const;
     CurvesNode *activeCurves() const;

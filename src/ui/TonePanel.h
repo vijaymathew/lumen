@@ -7,11 +7,11 @@ class QSlider;
 
 // Tone adjustment values, in the units the sliders use.
 struct ToneValues {
-    float exposure = 0.0f;    // EV stops
-    float contrast = 0.0f;    // -100..100
-    float saturation = 0.0f;  // -100..100
-    float temperature = 0.0f; // -100..100 (warm + / cool -)
-    float tint = 0.0f;        // -100..100 (magenta + / green -)
+    float exposure = 0.0f;   // EV stops
+    float contrast = 0.0f;   // -100..100
+    float saturation = 0.0f; // -100..100
+    float kelvin = 6500.0f;  // white-balance colour temperature, Kelvin
+    float tint = 0.0f;       // -100..100 (magenta + / green -)
 };
 
 // TonePanel is the floating, draggable right-side tool card for tonal
@@ -46,12 +46,12 @@ private:
     QSlider *m_exposure = nullptr;
     QSlider *m_contrast = nullptr;
     QSlider *m_saturation = nullptr;
-    QSlider *m_temperature = nullptr;
+    QSlider *m_kelvin = nullptr;
     QSlider *m_tint = nullptr;
     QLabel *m_exposureValue = nullptr;
     QLabel *m_contrastValue = nullptr;
     QLabel *m_saturationValue = nullptr;
-    QLabel *m_temperatureValue = nullptr;
+    QLabel *m_kelvinValue = nullptr;
     QLabel *m_tintValue = nullptr;
 
     bool m_dragging = false;
