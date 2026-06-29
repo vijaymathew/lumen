@@ -50,6 +50,7 @@ layout(std140, binding = 0) uniform buf {
     float gradePower1;
     float gradePower2;
     float selMaskOpacity;
+    float vibrance; // consumed in the fragment stage
 } ubuf;
 
 void main()

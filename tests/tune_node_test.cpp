@@ -8,7 +8,9 @@
 #include "core/TuneNode.h"
 
 #include <QColor>
+#include <QImage>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -89,6 +91,44 @@ int main(int /*argc*/, char **argv)
     Image toned = t->apply(src);
     CHECK(!toned.isNull());
     CHECK(toned.width() == 4 && toned.height() == 4);
+
+    // Vibrance clamps and dirties like the other amounts.
+    node.clearDirty();
+    node.setVibrance(60.0f);
+    CHECK(node.vibrance() == 60.0f);
+    CHECK(node.isDirty());
+    node.setVibrance(999.0f);
+    CHECK(node.vibrance() == TuneNode::kMaxAmount);
+
+    // Vibrance enters preview state as an additive amount (vibrance/100).
+    {
+        EditGraph g2;
+        auto *tv = static_cast<TuneNode *>(g2.addNode(std::make_unique<TuneNode>()));
+        tv->setVibrance(50.0f);
+        CHECK(std::abs(g2.previewState().vibrance - 0.5f) < 1e-6f);
+    }
+
+    // Vibrance boosts a low-saturation pixel more (relatively) than an already-
+    // saturated one: muted red grows proportionally more than vivid red.
+    {
+        const uint8_t px[8] = {140, 120, 120, 255,  // low saturation
+                               220, 40, 40, 255};   // high saturation
+        Image two = Image::fromInterleaved(px, 2, 1, 4);
+        CHECK(!two.isNull());
+        TuneNode vib;
+        vib.setVibrance(100.0f);
+        QImage q = vib.apply(two).toQImage();
+        const auto satOf = [](const QColor &c) {
+            return std::max({c.red(), c.green(), c.blue()})
+                 - std::min({c.red(), c.green(), c.blue()});
+        };
+        const QColor inLow(140, 120, 120), inHigh(220, 40, 40);
+        const QColor outLow = q.pixelColor(0, 0), outHigh = q.pixelColor(1, 0);
+        CHECK(satOf(outLow) > satOf(inLow)); // muted pixel gained saturation
+        const double rLow = double(satOf(outLow)) / satOf(inLow);
+        const double rHigh = double(satOf(outHigh)) / satOf(inHigh);
+        CHECK(rLow > rHigh); // muted colour pushed harder than the vivid one
+    }
 
     // A second enabled tune node sums (EV stops add).
     auto *t2 = static_cast<TuneNode *>(graph.addNode(std::make_unique<TuneNode>()));

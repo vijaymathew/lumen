@@ -39,6 +39,11 @@ public:
     float saturation() const { return m_saturation; } // -100..100
     void setSaturation(float amount);
 
+    // Vibrance: a saturation-aware boost — lifts low-saturation colours more and
+    // eases off already-saturated ones. Slider units in [-100, 100], 0 = neutral.
+    float vibrance() const { return m_vibrance; }
+    void setVibrance(float amount);
+
     // White balance: absolute colour temperature in Kelvin + green(−)/magenta(+)
     // tint. The neutral point is the as-shot temperature (asShotKelvin), at which
     // the WB matrix is the identity (image unchanged).
@@ -73,10 +78,12 @@ private:
     bool isNeutral() const;
     bool wbIsIdentity() const;
     Image applyWhiteBalance(const Image &input, const double W[9]) const;
+    Image applyVibrance(const Image &input, double vib) const;
 
     float m_exposure = 0.0f;
     float m_contrast = 0.0f;
     float m_saturation = 0.0f;
+    float m_vibrance = 0.0f;
 
     // White balance.
     float m_kelvin = kDefaultKelvin;

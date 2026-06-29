@@ -55,16 +55,26 @@ layout(std140, binding = 0) uniform buf {
     float gradePower1;
     float gradePower2;
     float selMaskOpacity; // "show mask" overlay strength [0,1] (= layer opacity)
+    float vibrance;       // saturation-aware boost amount (vibrance/100), 0 = neutral
 } ubuf;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
 
-vec3 applyTone(vec3 c, float exposure, float contrast, float saturation)
+vec3 applyTone(vec3 c, float exposure, float contrast, float saturation, float vibrance)
 {
     c *= exp2(exposure / 2.2);
     c = (c - 0.5) * contrast + 0.5;
     float l = dot(c, kLuma);
-    return mix(vec3(l), c, saturation);
+    c = mix(vec3(l), c, saturation);
+    // Vibrance: push low-saturation pixels more, ease off already-saturated ones.
+    // Matches TuneNode::applyVibrance.
+    if (vibrance != 0.0) {
+        float sat = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+        float f = max(0.0, 1.0 + vibrance * (1.0 - sat));
+        float l2 = dot(c, kLuma);
+        c = mix(vec3(l2), c, f);
+    }
+    return c;
 }
 
 void main()
@@ -82,7 +92,7 @@ void main()
     vec3 wbLin = pow(max(col, 0.0), vec3(2.2));
     wbLin = wbM * wbLin;
     col = pow(max(wbLin, 0.0), vec3(1.0 / 2.2));
-    col = applyTone(col, ubuf.exposure, ubuf.contrast, ubuf.saturation);
+    col = applyTone(col, ubuf.exposure, ubuf.contrast, ubuf.saturation, ubuf.vibrance);
     // 2. Tone curves: each channel maps through its own LUT column (R->.r,
     //    G->.g, B->.b). Identity when no curve.
     col = vec3(texture(lut, vec2(col.r, 0.5)).r,
@@ -121,7 +131,7 @@ void main()
         if (ubuf.selInvert > 0.5)
             mask = 1.0 - mask;
         if (ubuf.selEnabled > 0.5) {
-            vec3 adj = applyTone(col, ubuf.selExposure, ubuf.selContrast, ubuf.selSaturation);
+            vec3 adj = applyTone(col, ubuf.selExposure, ubuf.selContrast, ubuf.selSaturation, 0.0);
             col = mix(col, adj, mask);
         }
         if (ubuf.selMaskView > 0.5) {

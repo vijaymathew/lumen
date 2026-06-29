@@ -69,6 +69,15 @@ void TuneNode::setSaturation(float amount)
     }
 }
 
+void TuneNode::setVibrance(float amount)
+{
+    amount = std::clamp(amount, kMinAmount, kMaxAmount);
+    if (amount != m_vibrance) {
+        m_vibrance = amount;
+        invalidate();
+    }
+}
+
 void TuneNode::setKelvin(float kelvin)
 {
     kelvin = std::clamp(kelvin, kMinKelvin, kMaxKelvin);
@@ -128,7 +137,7 @@ bool TuneNode::wbIsIdentity() const
 bool TuneNode::isNeutral() const
 {
     return m_exposure == 0.0f && m_contrast == 0.0f && m_saturation == 0.0f
-        && wbIsIdentity();
+        && m_vibrance == 0.0f && wbIsIdentity();
 }
 
 void TuneNode::contributeToPreview(PreviewState &state) const
@@ -137,6 +146,7 @@ void TuneNode::contributeToPreview(PreviewState &state) const
     state.exposure += m_exposure;
     state.contrast *= 1.0f + m_contrast / 100.0f;
     state.saturation *= 1.0f + m_saturation / 100.0f;
+    state.vibrance += m_vibrance / 100.0f; // additive amount; shader applies the curve
 
     // Accumulate the WB matrix: new = W_node · running (graph order, left-multiply).
     if (!wbIsIdentity()) {
@@ -196,12 +206,54 @@ Image TuneNode::applyWhiteBalance(const Image &input, const double W[9]) const
     return result.isNull() ? input : result;
 }
 
+// Saturation-aware vibrance, per pixel, in encoded value space — identical math
+// to texture.frag's applyTone vibrance block. `vib` is the slider/100 in [-1,1].
+// Low-saturation pixels get the strongest push; already-saturated ones barely
+// change. No clamp (matches the saturation step); export quantises at the end.
+Image TuneNode::applyVibrance(const Image &input, double vib) const
+{
+    VipsImage *f = nullptr;
+    if (vips_cast(input.handle(), &f, VIPS_FORMAT_FLOAT, nullptr))
+        return input;
+    void *buf = vips_image_write_to_memory(f, nullptr);
+    const int w = f->Xsize;
+    const int h = f->Ysize;
+    const int bands = f->Bands;
+    g_object_unref(f);
+    if (!buf)
+        return input;
+    if (bands < 3) { // grayscale: nothing to do
+        g_free(buf);
+        return input;
+    }
+
+    auto *px = static_cast<float *>(buf);
+    const long long n = static_cast<long long>(w) * h;
+    for (long long i = 0; i < n; ++i) {
+        float *p = px + i * bands;
+        const double r = p[0] / 255.0, g = p[1] / 255.0, b = p[2] / 255.0;
+        const double mx = std::max(r, std::max(g, b));
+        const double mn = std::min(r, std::min(g, b));
+        const double sat = mx - mn;                          // [0,1]
+        const double fac = std::max(0.0, 1.0 + vib * (1.0 - sat));
+        const double l = kLumaR * r + kLumaG * g + kLumaB * b;
+        p[0] = static_cast<float>((l + (r - l) * fac) * 255.0);
+        p[1] = static_cast<float>((l + (g - l) * fac) * 255.0);
+        p[2] = static_cast<float>((l + (b - l) * fac) * 255.0);
+    }
+
+    Image result = Image::fromInterleavedFloat(px, w, h, bands);
+    g_free(buf);
+    return result.isNull() ? input : result;
+}
+
 QJsonObject TuneNode::saveState() const
 {
     QJsonObject state = EditNode::saveState();
     state[QStringLiteral("exposure")] = m_exposure;
     state[QStringLiteral("contrast")] = m_contrast;
     state[QStringLiteral("saturation")] = m_saturation;
+    state[QStringLiteral("vibrance")] = m_vibrance;
     state[QStringLiteral("kelvin")] = m_kelvin;
     state[QStringLiteral("tint")] = m_tint;
     state[QStringLiteral("asShotKelvin")] = m_asShotKelvin;
@@ -218,6 +270,7 @@ void TuneNode::restoreState(const QJsonObject &state)
     setExposure(static_cast<float>(state.value(QStringLiteral("exposure")).toDouble()));
     setContrast(static_cast<float>(state.value(QStringLiteral("contrast")).toDouble()));
     setSaturation(static_cast<float>(state.value(QStringLiteral("saturation")).toDouble()));
+    setVibrance(static_cast<float>(state.value(QStringLiteral("vibrance")).toDouble()));
 
     // Camera profile (RAW projects); leave the sRGB defaults otherwise.
     if (state.contains(QStringLiteral("camToRgb"))) {
@@ -313,5 +366,11 @@ Image TuneNode::apply(const Image &input) const
 
     // Keep the result in the float working format (vips_linear/recomb already
     // promoted to float); the pipeline quantises only at display/export.
-    return Image::adopt(cur);
+    Image toned = Image::adopt(cur);
+
+    // 3. Vibrance: saturation-aware, per pixel, after saturation (matches the
+    //    shader order). Done last among the pointwise tone ops.
+    if (m_vibrance != 0.0f)
+        return applyVibrance(toned, static_cast<double>(m_vibrance) / 100.0);
+    return toned;
 }

@@ -1,7 +1,10 @@
 #include "ui/LayersPanel.h"
 
+#include <QBoxLayout>
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QSlider>
@@ -198,6 +201,86 @@ LayersPanel::LayersPanel(QWidget *parent)
     connect(m_invertButton, &QPushButton::toggled, this,
             [this](bool on) { emit maskInvertChanged(on); });
 
+    // ---- Exclusive-zone sub-section --------------------------------------
+    // Shapes that gate where the mask may act (outside = excluded). Always
+    // available for a non-Base layer, independent of the mask type.
+    m_zoneSection = new QWidget(m_maskSection);
+    auto *zoneLayout = new QVBoxLayout(m_zoneSection);
+    zoneLayout->setContentsMargins(0, 0, 0, 0);
+    zoneLayout->setSpacing(6);
+
+    auto *zoneTitleRow = new QHBoxLayout;
+    zoneTitleRow->setContentsMargins(0, 0, 0, 0);
+    auto *zoneTitle = new QLabel(QStringLiteral("Zone"), m_zoneSection);
+    zoneTitle->setObjectName(QStringLiteral("rowName"));
+    m_zoneCount = new QLabel(QString(), m_zoneSection);
+    m_zoneCount->setObjectName(QStringLiteral("rowValue"));
+    zoneTitleRow->addWidget(zoneTitle);
+    zoneTitleRow->addStretch(1);
+    zoneTitleRow->addWidget(m_zoneCount);
+    zoneLayout->addLayout(zoneTitleRow);
+
+    // Tool buttons (mutually exclusive). Index doubles as the tool id.
+    const struct { const char *label; } kTools[] = {
+        {"Select"}, {"Rect"}, {"Oval"}, {"Circle"}, {"Free"}};
+    auto *zoneToolRow1 = new QHBoxLayout;
+    auto *zoneToolRow2 = new QHBoxLayout;
+    zoneToolRow1->setContentsMargins(0, 0, 0, 0);
+    zoneToolRow2->setContentsMargins(0, 0, 0, 0);
+    zoneToolRow1->setSpacing(4);
+    zoneToolRow2->setSpacing(4);
+    int zt = 0;
+    for (const auto &t : kTools) {
+        auto *b = new QPushButton(QString::fromLatin1(t.label), m_zoneSection);
+        b->setCheckable(true);
+        connect(b, &QPushButton::clicked, this, [this, tool = zt] {
+            for (int i = 0; i < m_zoneToolButtons.size(); ++i)
+                m_zoneToolButtons[i]->setChecked(i == tool);
+            emit zoneToolChanged(tool);
+        });
+        (zt < 3 ? zoneToolRow1 : zoneToolRow2)->addWidget(b);
+        m_zoneToolButtons.push_back(b);
+        ++zt;
+    }
+    m_zoneToolButtons[0]->setChecked(true); // Select by default
+    zoneLayout->addLayout(zoneToolRow1);
+    zoneLayout->addLayout(zoneToolRow2);
+
+    // Add / Subtract mode for newly drawn shapes + Clear.
+    m_zoneAddButton = new QPushButton(QStringLiteral("Add"), m_zoneSection);
+    m_zoneSubButton = new QPushButton(QStringLiteral("Subtract"), m_zoneSection);
+    m_zoneAddButton->setCheckable(true);
+    m_zoneSubButton->setCheckable(true);
+    m_zoneAddButton->setChecked(true);
+    auto *zoneClear = new QPushButton(QStringLiteral("Clear"), m_zoneSection);
+    connect(m_zoneAddButton, &QPushButton::clicked, this, [this] {
+        m_zoneSubtract = false;
+        m_zoneAddButton->setChecked(true);
+        m_zoneSubButton->setChecked(false);
+        emit zoneModeChanged(false);
+    });
+    connect(m_zoneSubButton, &QPushButton::clicked, this, [this] {
+        m_zoneSubtract = true;
+        m_zoneAddButton->setChecked(false);
+        m_zoneSubButton->setChecked(true);
+        emit zoneModeChanged(true);
+    });
+    connect(zoneClear, &QPushButton::clicked, this, &LayersPanel::zoneClearRequested);
+    auto *zoneModeRow = new QHBoxLayout;
+    zoneModeRow->setContentsMargins(0, 0, 0, 0);
+    zoneModeRow->addWidget(m_zoneAddButton);
+    zoneModeRow->addWidget(m_zoneSubButton);
+    zoneModeRow->addStretch(1);
+    zoneModeRow->addWidget(zoneClear);
+    zoneLayout->addLayout(zoneModeRow);
+
+    m_zoneFeather = addSlider(zoneLayout, QStringLiteral("Zone feather"), 0, 100,
+                              &m_zoneFeatherValue);
+    connect(m_zoneFeather, &QSlider::valueChanged, this, [this](int v) {
+        m_zoneFeatherValue->setText(QStringLiteral("%1%").arg(v));
+        emit zoneFeatherChanged(v);
+    });
+
     maskLayout->addLayout(maskTitleRow);
     maskLayout->addLayout(typeRow1);
     maskLayout->addLayout(typeRow2);
@@ -206,6 +289,7 @@ LayersPanel::LayersPanel(QWidget *parent)
     maskLayout->addWidget(m_brushSection);
     maskLayout->addWidget(m_featherRow);
     maskLayout->addWidget(m_invertButton);
+    maskLayout->addWidget(m_zoneSection);
 
     auto *layout = new QVBoxLayout(this);
     // Keep the panel sized to its content so sub-sections shown/hidden with the
@@ -287,6 +371,13 @@ void LayersPanel::setLayers(const QVector<Row> &rows, int active, int activeOpac
         auto *name = new QPushButton(row.name);
         name->setProperty("active", i == active);
         connect(name, &QPushButton::clicked, this, [this, i] { emit layerSelected(i); });
+        // Non-Base layers can be renamed by double-clicking the name (handled in
+        // eventFilter, which reads the stashed index).
+        if (i > 0) {
+            name->setProperty("layerIndex", i);
+            name->setToolTip(QStringLiteral("Double-click to rename"));
+            name->installEventFilter(this);
+        }
 
         h->addWidget(vis);
         h->addWidget(name, 1);
@@ -355,9 +446,36 @@ void LayersPanel::setMaskState(const MaskSpec &mask, bool isBaseActive, int brus
     m_addButton->setChecked(brushAdd);
     m_subButton->setChecked(!brushAdd);
 
+    // Zone sub-section: shape count + feather; reset the tool to Select so a
+    // draw tool never stays armed across a layer/mask switch.
+    {
+        const int n = static_cast<int>(mask.zones.size());
+        m_zoneCount->setText(n == 0 ? QStringLiteral("none")
+                                    : QStringLiteral("%1 shape%2").arg(n).arg(n == 1 ? "" : "s"));
+        const QSignalBlocker b(m_zoneFeather);
+        m_zoneFeather->setValue(static_cast<int>(std::lround(mask.zoneFeather * 100)));
+        m_zoneFeatherValue->setText(QStringLiteral("%1%").arg(m_zoneFeather->value()));
+        for (int i = 0; i < m_zoneToolButtons.size(); ++i)
+            m_zoneToolButtons[i]->setChecked(i == 0);
+    }
+
     m_showMode = showMode;
     static const char *labels[] = {"Show: Off", "Show: Red", "Show: Gray"};
     m_showButton->setText(QString::fromLatin1(labels[std::clamp(showMode, 0, 2)]));
+}
+
+void LayersPanel::setZoneCount(int n)
+{
+    if (!m_zoneCount)
+        return;
+    m_zoneCount->setText(n == 0 ? QStringLiteral("none")
+                                : QStringLiteral("%1 shape%2").arg(n).arg(n == 1 ? "" : "s"));
+}
+
+void LayersPanel::resetZoneTool()
+{
+    for (int i = 0; i < m_zoneToolButtons.size(); ++i)
+        m_zoneToolButtons[i]->setChecked(i == 0);
 }
 
 void LayersPanel::setTargetColor(const QColor &color)
@@ -405,4 +523,44 @@ void LayersPanel::mouseReleaseEvent(QMouseEvent *event)
         m_dragging = false;
         unsetCursor();
     }
+}
+
+bool LayersPanel::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::MouseButtonDblClick) {
+        if (auto *btn = qobject_cast<QPushButton *>(watched)) {
+            const QVariant idx = btn->property("layerIndex");
+            if (idx.isValid()) {
+                beginRename(btn, idx.toInt());
+                return true; // consume; don't also treat as a click
+            }
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void LayersPanel::beginRename(QPushButton *nameButton, int index)
+{
+    auto *row = nameButton->parentWidget();
+    auto *lay = row ? qobject_cast<QBoxLayout *>(row->layout()) : nullptr;
+    if (!lay)
+        return;
+
+    auto *edit = new QLineEdit(nameButton->text(), row);
+    edit->setObjectName(QStringLiteral("layerNameEdit"));
+    lay->replaceWidget(nameButton, edit);
+    lay->setStretchFactor(edit, 1);
+    nameButton->hide();
+    edit->selectAll();
+    edit->setFocus(Qt::MouseFocusReason);
+
+    // editingFinished fires on Enter and on focus-out; guard the double-fire.
+    connect(edit, &QLineEdit::editingFinished, this, [this, edit, index] {
+        if (edit->property("done").toBool())
+            return;
+        edit->setProperty("done", true);
+        emit renameRequested(index, edit->text().trimmed());
+        // MainWindow responds with refreshLayersPanel(), which rebuilds the rows
+        // and disposes of this temporary editor.
+    });
 }

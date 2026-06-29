@@ -130,8 +130,9 @@ Image Layer::composite(Image base)
         return base;
 
     Image adjusted = applyAdjustments(base);
-    // Base-layer fast path: a None mask at full opacity is just the adjustment.
-    if (m_mask.type == MaskSpec::None && m_opacity >= 0.999f)
+    // Base-layer fast path: a None mask (with no exclusive zone) at full opacity
+    // is just the adjustment.
+    if (m_mask.type == MaskSpec::None && m_mask.zones.empty() && m_opacity >= 0.999f)
         return adjusted;
     if (m_opacity <= 0.001f)
         return base; // layer contributes nothing

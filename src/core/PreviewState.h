@@ -64,6 +64,10 @@ struct PreviewState {
     // selective layer's opacity so the highlight visibly fades as opacity drops;
     // 1 while painting so strokes stay fully visible. Doesn't affect the export.
     float selMaskOpacity = 1.0f;
+    // TuneNode — vibrance: saturation-aware boost amount (vibrance/100, additive
+    // across nodes), 0 = neutral. Appended last so existing field offsets (and the
+    // std140 uniform layout) are undisturbed. Matches texture.frag's applyTone.
+    float vibrance = 0.0f;
 
     friend bool operator==(const PreviewState &, const PreviewState &) = default;
 };

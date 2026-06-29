@@ -46,6 +46,9 @@ TonePanel::TonePanel(QWidget *parent)
     m_saturation = addRow(QStringLiteral("Saturation"),
                           static_cast<int>(TuneNode::kMinAmount),
                           static_cast<int>(TuneNode::kMaxAmount), &m_saturationValue);
+    m_vibrance = addRow(QStringLiteral("Vibrance"),
+                        static_cast<int>(TuneNode::kMinAmount),
+                        static_cast<int>(TuneNode::kMaxAmount), &m_vibranceValue);
     m_kelvin = addRow(QStringLiteral("Temperature"),
                       static_cast<int>(TuneNode::kMinKelvin),
                       static_cast<int>(TuneNode::kMaxKelvin), &m_kelvinValue);
@@ -124,6 +127,7 @@ ToneValues TonePanel::currentValues() const
     v.exposure = static_cast<float>(m_exposure->value()) / kExposureScale;
     v.contrast = static_cast<float>(m_contrast->value());
     v.saturation = static_cast<float>(m_saturation->value());
+    v.vibrance = static_cast<float>(m_vibrance->value());
     v.kelvin = static_cast<float>(m_kelvin->value());
     v.tint = static_cast<float>(m_tint->value());
     return v;
@@ -141,6 +145,7 @@ void TonePanel::refreshLabels()
     };
     m_contrastValue->setText(signedInt(v.contrast));
     m_saturationValue->setText(signedInt(v.saturation));
+    m_vibranceValue->setText(signedInt(v.vibrance));
     m_kelvinValue->setText(QStringLiteral("%1 K").arg(static_cast<int>(v.kelvin)));
     m_tintValue->setText(signedInt(v.tint));
 }
@@ -152,9 +157,11 @@ void TonePanel::reveal(const ToneValues &values)
     const QSignalBlocker b3(m_saturation);
     const QSignalBlocker b4(m_kelvin);
     const QSignalBlocker b5(m_tint);
+    const QSignalBlocker b6(m_vibrance);
     m_exposure->setValue(static_cast<int>(std::lround(values.exposure * kExposureScale)));
     m_contrast->setValue(static_cast<int>(std::lround(values.contrast)));
     m_saturation->setValue(static_cast<int>(std::lround(values.saturation)));
+    m_vibrance->setValue(static_cast<int>(std::lround(values.vibrance)));
     m_kelvin->setValue(static_cast<int>(std::lround(values.kelvin)));
     m_tint->setValue(static_cast<int>(std::lround(values.tint)));
     refreshLabels();
@@ -207,7 +214,7 @@ bool TonePanel::eventFilter(QObject *watched, QEvent *event)
 {
     if (event->type() == QEvent::KeyPress
         && (watched == m_exposure || watched == m_contrast || watched == m_saturation
-            || watched == m_kelvin || watched == m_tint)) {
+            || watched == m_vibrance || watched == m_kelvin || watched == m_tint)) {
         auto *ke = static_cast<QKeyEvent *>(event);
         switch (ke->key()) {
         case Qt::Key_Escape:

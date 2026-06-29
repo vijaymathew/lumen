@@ -38,11 +38,14 @@ public:
                       int brushHardness, bool brushAdd, int showMode);
     void setTargetColor(const QColor &color);     // after a canvas colour pick
     void setBrushParams(int size, int hardness);  // reflect s/h + wheel changes
+    void setZoneCount(int n); // update only the zone shape-count label
+    void resetZoneTool();     // check the Select tool button (no signal emitted)
 
 signals:
     void addRequested();
     void deleteRequested();
     void layerSelected(int index);
+    void renameRequested(int index, const QString &name);
     void visibilityToggled(int index, bool enabled);
     void opacityChanged(int percent); // active layer
     // Mask editing (all for the active layer).
@@ -55,16 +58,26 @@ signals:
     void maskShowChanged(int mode); // overlay: 0 off, 1 red, 2 gray
     void brushSettingsChanged(int size, int hardness, bool add);
     void brushClearRequested();
+    // Exclusive-zone editing (active layer). Tool: 0 select, 1 rect, 2 oval,
+    // 3 circle, 4 freehand.
+    void zoneToolChanged(int tool);
+    void zoneModeChanged(bool subtract);
+    void zoneFeatherChanged(int percent);
+    void zoneClearRequested();
 
 protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    // Catches a double-click on a layer-name button to start inline renaming.
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     QSlider *addSlider(QVBoxLayout *layout, const QString &name, int min, int max,
                        QLabel **valueOut);
     void emitBrush();
+    // Swaps a layer-name button for an inline QLineEdit; commits via renameRequested.
+    void beginRename(QPushButton *nameButton, int index);
 
     QVBoxLayout *m_rowsLayout = nullptr;
     QSlider *m_opacity = nullptr;
@@ -102,6 +115,16 @@ private:
     QSlider *m_feather = nullptr;
     QLabel *m_featherValue = nullptr;
     QPushButton *m_invertButton = nullptr;
+
+    // Exclusive-zone sub-section.
+    QWidget *m_zoneSection = nullptr;
+    QVector<QPushButton *> m_zoneToolButtons; // Select/Rect/Oval/Circle/Freehand
+    QPushButton *m_zoneAddButton = nullptr;
+    QPushButton *m_zoneSubButton = nullptr;
+    QSlider *m_zoneFeather = nullptr;
+    QLabel *m_zoneFeatherValue = nullptr;
+    QLabel *m_zoneCount = nullptr;
+    bool m_zoneSubtract = false;
 
     bool m_dragging = false;
     QPoint m_dragOffset;

@@ -11,6 +11,7 @@ struct ToneValues {
     float exposure = 0.0f;   // EV stops
     float contrast = 0.0f;   // -100..100
     float saturation = 0.0f; // -100..100
+    float vibrance = 0.0f;   // -100..100 (saturation-aware)
     float kelvin = 6500.0f;  // white-balance colour temperature, Kelvin
     float tint = 0.0f;       // -100..100 (magenta + / green -)
 };
@@ -51,6 +52,7 @@ private:
     QSlider *m_exposure = nullptr;
     QSlider *m_contrast = nullptr;
     QSlider *m_saturation = nullptr;
+    QSlider *m_vibrance = nullptr;
     QSlider *m_kelvin = nullptr;
     QSlider *m_tint = nullptr;
     QPushButton *m_wbAsShot = nullptr;
@@ -58,6 +60,7 @@ private:
     QLabel *m_exposureValue = nullptr;
     QLabel *m_contrastValue = nullptr;
     QLabel *m_saturationValue = nullptr;
+    QLabel *m_vibranceValue = nullptr;
     QLabel *m_kelvinValue = nullptr;
     QLabel *m_tintValue = nullptr;
 

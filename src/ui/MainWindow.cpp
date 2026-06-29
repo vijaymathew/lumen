@@ -18,6 +18,7 @@
 #include "ui/LayersPanel.h"
 #include "ui/LensPanel.h"
 #include "ui/MaskGizmo.h"
+#include "ui/ZoneGizmo.h"
 #include "ui/LooksPanel.h"
 #include "ui/ColorGradePanel.h"
 #include "ui/MonoPanel.h"
@@ -77,43 +78,79 @@ constexpr int kScrimAlpha = 140; // ~0.55
 
 // A translucent layer that dims whatever is behind it. It paints a
 // semi-transparent fill without clearing to an opaque background first, so the
-// (RHI-composited) canvas shows through, dimmed.
+// (RHI-composited) canvas shows through, dimmed. The alpha is configurable so
+// the same widget serves the heavy palette dim and a lighter "busy" dim (which
+// must keep enough of the image visible to judge the effect being applied).
 class Scrim : public QWidget {
 public:
-    using QWidget::QWidget;
+    explicit Scrim(QWidget *parent, int alpha = kScrimAlpha)
+        : QWidget(parent), m_alpha(alpha)
+    {
+    }
 
 protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
-        p.fillRect(rect(), QColor(10, 10, 11, kScrimAlpha));
+        p.fillRect(rect(), QColor(10, 10, 11, m_alpha));
     }
+
+private:
+    int m_alpha;
 };
 
-// A small "Healing…" badge with an animated spinner, shown while a background
-// inpaint is running. Mouse-transparent.
+// Lighter dim shown while a slow effect is being applied: enough to signal
+// "busy" without hiding the image the user is judging.
+constexpr int kBusyScrimAlpha = 70;
+
+// How long after the last slider tick we wait before kicking the expensive
+// sharpen/denoise base re-bake — long enough to read as "stopped sliding".
+constexpr int kHeavyBakeSettleMs = 800;
+
+// A small badge with an animated spinner, shown while a background base re-bake
+// (heal / denoise / sharpen) is running. The label names the running op. An
+// optional companion dim widget is shown/hidden in lockstep so the image dims
+// only while a slow pass is actually applying. Mouse-transparent.
 class BusyBadge : public QWidget {
 public:
     explicit BusyBadge(QWidget *parent) : QWidget(parent)
     {
         setAttribute(Qt::WA_TransparentForMouseEvents);
         setAttribute(Qt::WA_NoSystemBackground);
-        setFixedSize(132, 32);
+        setFixedSize(148, 32);
         m_spin.setInterval(70);
         connect(&m_spin, &QTimer::timeout, this, [this] {
             m_angle = (m_angle + 30) % 360;
+            m_sweep = (m_sweep + 4) % 100; // indeterminate progress strip
             update();
         });
-        // Only show once the heal has run longer than this, so quick heals
-        // (small blemishes) don't flash the badge.
+        // Only show once the op has run longer than this, so quick passes
+        // don't flash the badge.
         m_delay.setSingleShot(true);
         m_delay.setInterval(150);
         connect(&m_delay, &QTimer::timeout, this, [this] {
+            if (m_dim) {
+                m_dim->show();
+                m_dim->raise();
+            }
             show();
             raise();
             m_spin.start();
         });
         hide();
+    }
+
+    // The dim is dimmed in lockstep with the badge (shown after the same delay,
+    // hidden on stop()).
+    void setDim(QWidget *dim) { m_dim = dim; }
+
+    void setLabel(const QString &label)
+    {
+        if (m_label == label)
+            return;
+        m_label = label;
+        if (isVisible())
+            update();
     }
 
     void start()
@@ -124,9 +161,11 @@ public:
     }
     void stop()
     {
-        m_delay.stop(); // cancel a pending show if the heal finished in time
+        m_delay.stop(); // cancel a pending show if the op finished in time
         m_spin.stop();
         hide();
+        if (m_dim)
+            m_dim->hide();
     }
 
 protected:
@@ -151,14 +190,28 @@ protected:
         p.resetTransform();
 
         p.setPen(QColor(0xe8, 0xe8, 0xea));
-        p.drawText(QRect(34, 0, width() - 40, height()),
-                   Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("Healing…"));
+        p.drawText(QRect(34, 0, width() - 40, height() - 3),
+                   Qt::AlignLeft | Qt::AlignVCenter, m_label);
+
+        // Indeterminate progress strip along the bottom: a short segment that
+        // sweeps left-to-right, reinforcing "working" alongside the spinner.
+        const qreal trackX = 8.0, trackW = width() - 16.0, trackY = height() - 3.0;
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(255, 255, 255, 30));
+        p.drawRoundedRect(QRectF(trackX, trackY, trackW, 2.0), 1.0, 1.0);
+        const qreal segW = trackW * 0.3;
+        const qreal segX = trackX + (trackW - segW) * (m_sweep / 100.0);
+        p.setBrush(QColor(0x7F, 0x77, 0xDD, 220));
+        p.drawRoundedRect(QRectF(segX, trackY, segW, 2.0), 1.0, 1.0);
     }
 
 private:
     QTimer m_spin;  // animation
     QTimer m_delay; // show-after delay
     int m_angle = 0;
+    int m_sweep = 0; // 0..99 progress-strip position
+    QString m_label = QStringLiteral("Healing…");
+    QWidget *m_dim = nullptr; // companion dim, shown/hidden with the badge
 };
 
 // A transparent overlay that draws the brush cursor: an outer ring (size) and a
@@ -259,7 +312,15 @@ MainWindow::MainWindow(QWidget *parent)
                 brushRing->setRing(inWindow, outer, inner, visible);
             });
 
-    m_healBusy = new BusyBadge(this);
+    // Lighter dim shown while a slow effect applies; behind the badge, above
+    // the canvas. Created before the badge so the badge stacks above it.
+    m_busyDim = new Scrim(this, kBusyScrimAlpha);
+    m_busyDim->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_busyDim->hide();
+
+    auto *busyBadge = new BusyBadge(this);
+    busyBadge->setDim(m_busyDim);
+    m_healBusy = busyBadge;
 
     // Created before the palette so the palette stacks above it.
     m_scrim = new Scrim(this);
@@ -280,6 +341,7 @@ MainWindow::MainWindow(QWidget *parent)
             t->setExposure(v.exposure);
             t->setContrast(v.contrast);
             t->setSaturation(v.saturation);
+            t->setVibrance(v.vibrance);
             t->setKelvin(v.kelvin);
             t->setTint(v.tint);
         }
@@ -291,7 +353,7 @@ MainWindow::MainWindow(QWidget *parent)
             t->setKelvin(t->asShotKelvin());
             t->setTint(0.0f);
             updatePreview();
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(), t->vibrance(),
                                  t->kelvin(), t->tint()});
         }
     });
@@ -380,7 +442,9 @@ MainWindow::MainWindow(QWidget *parent)
     // settle shortly after the user stops dragging.
     m_bakeTimer = new QTimer(this);
     m_bakeTimer->setSingleShot(true);
-    m_bakeTimer->setInterval(140);
+    // Settle delay: the sharpen/denoise base re-bake is a full-res pass, so we
+    // only kick it once the user has clearly stopped sliding (not per tick).
+    m_bakeTimer->setInterval(kHeavyBakeSettleMs);
     connect(m_bakeTimer, &QTimer::timeout, this, [this] {
         refreshBaseImage();
         updatePreview();
@@ -445,6 +509,18 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_layersPanel, &LayersPanel::addRequested, this, &MainWindow::addAdjustmentLayer);
     connect(m_layersPanel, &LayersPanel::deleteRequested, this, &MainWindow::deleteActiveLayer);
     connect(m_layersPanel, &LayersPanel::layerSelected, this, &MainWindow::selectLayer);
+    connect(m_layersPanel, &LayersPanel::renameRequested, this, [this](int i, const QString &name) {
+        if (i <= 0 || i >= m_graph.layerCount())
+            return; // the Base layer (0) is not renamable
+        const QString t = name.trimmed();
+        if (t.isEmpty() || t == m_graph.layer(i).name()) {
+            refreshLayersPanel(); // restore the row (rejects empty/unchanged)
+            return;
+        }
+        m_graph.layer(i).setName(t);
+        refreshLayersPanel();
+        m_graph.commit();
+    });
     connect(m_layersPanel, &LayersPanel::visibilityToggled, this, [this](int i, bool on) {
         if (i >= 0 && i < m_graph.layerCount()) {
             m_graph.layer(i).setEnabled(on);
@@ -525,6 +601,60 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_maskGizmo, &MaskGizmo::editFinished, this,
             [this](const MaskSpec &s) { onLayerMaskEdited(s, /*commit=*/true); });
     connect(m_canvas, &CanvasWidget::viewChanged, m_maskGizmo, &MaskGizmo::refresh);
+
+    // On-canvas editor for the active layer's exclusive-zone shapes. It overlays
+    // the mask gizmo and forwards unconsumed clicks down to it (so a gradient/
+    // radial mask stays editable beneath the zone shapes).
+    m_zoneGizmo = new ZoneGizmo(m_canvas, this);
+    m_zoneGizmo->setFallthrough(m_maskGizmo);
+    const auto applyZones = [this](const std::vector<MaskZoneShape> &shapes, bool commit) {
+        if (m_graph.activeLayerIndex() == 0)
+            return;
+        MaskSpec spec = m_graph.activeLayer().mask();
+        spec.zones = shapes;
+        m_graph.activeLayer().setMask(spec);
+        m_layersPanel->setZoneCount(static_cast<int>(shapes.size()));
+        recomputeSelectiveMask();
+        updatePreview();
+        if (commit)
+            m_graph.commit();
+    };
+    connect(m_zoneGizmo, &ZoneGizmo::changed, this,
+            [applyZones](const std::vector<MaskZoneShape> &s) { applyZones(s, false); });
+    connect(m_zoneGizmo, &ZoneGizmo::editFinished, this,
+            [applyZones](const std::vector<MaskZoneShape> &s) { applyZones(s, true); });
+    connect(m_canvas, &CanvasWidget::viewChanged, m_zoneGizmo, &ZoneGizmo::refresh);
+
+    connect(m_layersPanel, &LayersPanel::zoneToolChanged, this, [this](int tool) {
+        m_zoneGizmo->setTool(static_cast<ZoneGizmo::Tool>(tool));
+        syncZoneGizmo(); // ensure it is shown while a tool is engaged
+    });
+    connect(m_layersPanel, &LayersPanel::zoneModeChanged, this,
+            [this](bool subtract) { m_zoneGizmo->setSubtract(subtract); });
+    connect(m_layersPanel, &LayersPanel::zoneFeatherChanged, this, [this](int percent) {
+        if (m_graph.activeLayerIndex() == 0)
+            return;
+        MaskSpec spec = m_graph.activeLayer().mask();
+        spec.zoneFeather = percent / 100.0f;
+        m_graph.activeLayer().setMask(spec);
+        recomputeSelectiveMask();
+        updatePreview();
+        m_graph.commit();
+    });
+    connect(m_layersPanel, &LayersPanel::zoneClearRequested, this, [this] {
+        if (m_graph.activeLayerIndex() == 0)
+            return;
+        MaskSpec spec = m_graph.activeLayer().mask();
+        if (spec.zones.empty())
+            return;
+        spec.zones.clear();
+        m_graph.activeLayer().setMask(spec);
+        m_layersPanel->setZoneCount(0);
+        syncZoneGizmo();
+        recomputeSelectiveMask();
+        updatePreview();
+        m_graph.commit();
+    });
 
     // Dismissible hint bar, bottom-centre over the canvas.
     m_hint = new QLabel(this);
@@ -909,10 +1039,26 @@ void MainWindow::updatePreview()
     m_canvas->setLut3D(m_graph.previewLook());
 
     // A capped-resolution sRGB copy of the source, for evaluating data-driven
-    // (luminosity/colour) layer masks; geometric masks ignore it.
+    // (luminosity/colour) layer masks; geometric masks ignore it. Building it
+    // means a smooth-scale + format convert of the full source, so we only do it
+    // when some layer actually carries a mask. Skipping it keeps the live GPU
+    // sliders (tone/curves/mono on the Base) instant — they hit updatePreview()
+    // every tick and would otherwise stall on this per-tick copy.
+    // A layer needs mask evaluation if it has a mask type or an exclusive zone
+    // (a zone gates coverage even on a None/geometric mask).
+    const auto hasMask = [](const MaskSpec &m) {
+        return m.type != MaskSpec::None || !m.zones.empty();
+    };
+    bool needsMaskSrc = false;
+    for (int i = 1; i < m_graph.layerCount(); ++i) {
+        if (hasMask(m_graph.layer(i).mask())) {
+            needsMaskSrc = true;
+            break;
+        }
+    }
     constexpr int cap = 1280;
     QImage maskSrc;
-    if (!m_sourceQImage.isNull()) {
+    if (needsMaskSrc && !m_sourceQImage.isNull()) {
         maskSrc = m_sourceQImage;
         if (std::max(maskSrc.width(), maskSrc.height()) > cap)
             maskSrc = maskSrc.scaled(cap, cap, Qt::KeepAspectRatio,
@@ -936,7 +1082,7 @@ void MainWindow::updatePreview()
         // composite so the overlay reads cleanly.
         if (overlayView != 0 && i == activeIdx)
             lp.opacity = 0.0f;
-        if (layer.mask().type != MaskSpec::None && mw > 0)
+        if (hasMask(layer.mask()) && mw > 0)
             lp.layerMask = evaluateMask(layer.mask(), mw, mh, maskRgba, 4);
         extras.push_back(std::move(lp));
     }
@@ -1018,6 +1164,7 @@ void MainWindow::hideLayersPanel()
         updatePreview();
     }
     syncMaskGizmo();                 // hide the gizmo
+    syncZoneGizmo();                 // hide the zone editor too
 }
 
 void MainWindow::refreshLayersPanel()
@@ -1031,6 +1178,7 @@ void MainWindow::refreshLayersPanel()
     m_layersPanel->setMaskState(m_graph.activeLayer().mask(), active == 0, m_brushSize,
                                 m_brushHardness, m_brushAdd, m_maskView);
     syncMaskGizmo();
+    syncZoneGizmo();
     updateMaskEditing();
     recomputeSelectiveMask(); // keep the overlay in sync with the active layer
 }
@@ -1040,7 +1188,7 @@ void MainWindow::reseedOpenPanels()
     // Guarded: a layer may not carry every node type (e.g. a selective layer).
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(), t->vibrance(),
                                  t->kelvin(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
@@ -1096,7 +1244,7 @@ void MainWindow::selectLayer(int index)
     // (guarded — a layer may not carry every node type, e.g. a selective layer).
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(), t->vibrance(),
                                  t->kelvin(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
@@ -1152,6 +1300,7 @@ void MainWindow::setActiveLayerMaskType(int maskType)
     m_layersPanel->setMaskState(spec, /*isBaseActive=*/false, m_brushSize, m_brushHardness,
                                 m_brushAdd, m_maskView);
     syncMaskGizmo();
+    syncZoneGizmo();
     updateMaskEditing(); // turn the canvas brush on/off for a Brush mask
     recomputeSelectiveMask();
     updatePreview();
@@ -1179,6 +1328,21 @@ void MainWindow::syncMaskGizmo()
     layoutOverlays(); // re-apply gizmo geometry + z-order
 }
 
+void MainWindow::syncZoneGizmo()
+{
+    // Zones are edited only on a non-Base layer while the Layers panel (which
+    // hosts the zone controls) is open. Otherwise the editor stays hidden.
+    const bool active = m_graph.activeLayerIndex() != 0 && m_layersPanel->isVisible();
+    if (!active) {
+        m_zoneGizmo->setVisible(false);
+        layoutOverlays();
+        return;
+    }
+    m_zoneGizmo->setShapes(m_graph.activeLayer().mask().zones);
+    m_zoneGizmo->setVisible(true);
+    layoutOverlays();
+}
+
 void MainWindow::openToneTool()
 {
     m_input.setMode(InputController::Mode::ToolActive);
@@ -1187,8 +1351,8 @@ void MainWindow::openToneTool()
     const int margin = 18;
     m_tonePanel->move(width() - m_tonePanel->width() - margin, margin);
     m_tonePanel->reveal({activeTune()->exposure(), activeTune()->contrast(),
-                         activeTune()->saturation(), activeTune()->kelvin(),
-                         activeTune()->tint()});
+                         activeTune()->saturation(), activeTune()->vibrance(),
+                         activeTune()->kelvin(), activeTune()->tint()});
 }
 
 void MainWindow::closeToneTool()
@@ -1511,9 +1675,15 @@ void MainWindow::refreshBaseImage(bool keepView)
     const Image src = m_workingSource.isNull() ? m_graph.source() : m_workingSource;
     const MaskBuffer mask = healActive ? m_heal->healMask() : MaskBuffer();
     const bool hq = m_heal && m_heal->highQuality();
-    if (healActive) {
-        static_cast<BusyBadge *>(m_healBusy)->start();
-        layoutOverlays(); // position the badge
+    if (healActive || denoiseActive || sharpenActive) {
+        // Label by op; heal takes precedence when several are combined.
+        const QString label = healActive ? QStringLiteral("Healing…")
+                            : denoiseActive ? QStringLiteral("Denoising…")
+                                            : QStringLiteral("Sharpening…");
+        auto *badge = static_cast<BusyBadge *>(m_healBusy);
+        badge->setLabel(label);
+        badge->start();
+        layoutOverlays(); // position the badge + dim
     }
 
     m_healWatcher.setFuture(
@@ -1603,7 +1773,7 @@ void MainWindow::recomputeSelectiveMask()
         m_canvas->setSelectiveMask(m_brushMask);
         return;
     }
-    if (m.type == MaskSpec::None || m_sourceQImage.isNull()) {
+    if ((m.type == MaskSpec::None && m.zones.empty()) || m_sourceQImage.isNull()) {
         m_canvas->setSelectiveMask({});
         return;
     }
@@ -1767,7 +1937,7 @@ void MainWindow::onColorPicked(const QPointF &norm)
                            static_cast<float>(c.blueF()));
             updatePreview();
             if (m_tonePanel->isVisible())
-                m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+                m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(), t->vibrance(),
                                      t->kelvin(), t->tint()});
             m_graph.commit();
         }
@@ -1847,7 +2017,7 @@ void MainWindow::afterHistoryChange()
     // a layer may not carry every node type, e.g. a selective layer has tune only).
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(), t->vibrance(),
                                  t->kelvin(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
@@ -1895,10 +2065,15 @@ void MainWindow::layoutOverlays()
 {
     // Scrim covers the whole window, behind the palette.
     m_scrim->setGeometry(rect());
+    m_busyDim->setGeometry(rect());
     m_brushRing->setGeometry(rect());
 
-    // Busy badge: top-centre of the canvas.
+    // Busy badge: top-centre of the canvas (above its dim).
+    if (m_busyDim->isVisible())
+        m_busyDim->raise();
     m_healBusy->move((width() - m_healBusy->width()) / 2, 16);
+    if (m_healBusy->isVisible())
+        m_healBusy->raise();
 
     // Palette: fixed width, near the top-centre.
     const int pw = 360;
@@ -1939,6 +2114,13 @@ void MainWindow::layoutOverlays()
     if (m_maskGizmo) {
         m_maskGizmo->setGeometry(m_canvas->geometry());
         m_maskGizmo->raise();
+        // Zone editor overlays (and sits above) the mask gizmo; it forwards
+        // unconsumed clicks down to it so a gradient/radial mask stays editable.
+        if (m_zoneGizmo) {
+            m_zoneGizmo->setGeometry(m_canvas->geometry());
+            if (m_zoneGizmo->isVisible())
+                m_zoneGizmo->raise();
+        }
         for (QWidget *panel : {static_cast<QWidget *>(m_tonePanel),
                                static_cast<QWidget *>(m_curvesPanel),
                                static_cast<QWidget *>(m_looksPanel),
@@ -1953,6 +2135,8 @@ void MainWindow::layoutOverlays()
                 panel->raise();
         }
         m_brushRing->raise(); // brush cursor stays on top of the gizmo
+        if (m_busyDim->isVisible())
+            m_busyDim->raise();
         m_healBusy->raise();
     }
 
@@ -1985,6 +2169,21 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         m_adjustHardness = (e->key() == Qt::Key_H);
         m_canvas->setBrushAdjusting(true);
         return;
+    }
+
+    // Zone editing: Delete removes the selected shape; Esc disarms a draw tool
+    // before falling through to the panel-dismiss behaviour below.
+    if (m_zoneGizmo && m_zoneGizmo->isVisible()) {
+        if ((e->key() == Qt::Key_Delete || e->key() == Qt::Key_Backspace)
+            && m_zoneGizmo->hasSelection()) {
+            m_zoneGizmo->deleteSelected();
+            return;
+        }
+        if (e->key() == Qt::Key_Escape && m_zoneGizmo->tool() != ZoneGizmo::Select) {
+            m_zoneGizmo->setTool(ZoneGizmo::Select);
+            m_layersPanel->resetZoneTool();
+            return;
+        }
     }
 
     switch (m_input.mode()) {

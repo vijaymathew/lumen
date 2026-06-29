@@ -96,7 +96,59 @@ int main()
         CHECK(at(m2, w / 2, h / 2) < 0.1f);
     }
 
-    // JSON round-trip.
+    // Exclusive zone: a rectangle restricts a full (None) mask to its interior.
+    {
+        MaskSpec s;
+        s.type = MaskSpec::None; // full coverage, gated only by the zone
+        s.zoneFeather = 0.0f;
+        MaskZoneShape rect;
+        rect.kind = MaskZoneShape::Rect;
+        rect.center = {0.5, 0.5};
+        rect.half = {0.25, 0.25}; // central quarter
+        s.zones.push_back(rect);
+        MaskBuffer m = evaluateMask(s, w, h);
+        CHECK(at(m, w / 2, h / 2) > 0.9f); // inside the rect
+        CHECK(at(m, 2, 2) < 0.1f);         // outside → excluded
+    }
+
+    // Zone is the union of additive shapes minus subtractive ones.
+    {
+        MaskSpec s;
+        s.type = MaskSpec::None;
+        s.zoneFeather = 0.0f;
+        MaskZoneShape add; // big ellipse covering most of the frame
+        add.kind = MaskZoneShape::Ellipse;
+        add.center = {0.5, 0.5};
+        add.half = {0.45, 0.45};
+        MaskZoneShape hole; // small subtractive ellipse at the centre
+        hole.kind = MaskZoneShape::Ellipse;
+        hole.subtract = true;
+        hole.center = {0.5, 0.5};
+        hole.half = {0.12, 0.12};
+        s.zones.push_back(add);
+        s.zones.push_back(hole);
+        MaskBuffer m = evaluateMask(s, w, h);
+        CHECK(at(m, w / 2, h / 2) < 0.1f);             // centre cut out
+        CHECK(at(m, w / 2, h / 2 + h / 4) > 0.9f);     // included ring still selected
+    }
+
+    // A zone gates a non-trivial mask too: a gradient stays excluded outside.
+    {
+        MaskSpec s;
+        s.type = MaskSpec::LinearGradient;
+        s.gradFrom = {0.0, 0.5};
+        s.gradTo = {1.0, 0.5};
+        s.zoneFeather = 0.0f;
+        MaskZoneShape rect;
+        rect.center = {0.5, 0.5};
+        rect.half = {0.2, 0.2};
+        s.zones.push_back(rect);
+        MaskBuffer m = evaluateMask(s, w, h);
+        CHECK(at(m, w - 2, h / 2) < 0.1f); // gradient ~1 here, but outside the zone
+        CHECK(at(m, w / 2, h / 2) > 0.4f); // inside the zone the gradient shows (~0.5)
+    }
+
+    // JSON round-trip (now including zones).
     {
         MaskSpec s;
         s.type = MaskSpec::Radial;
@@ -105,6 +157,18 @@ int main()
         s.radiusY = 0.35f;
         s.angle = 0.5f;
         s.invert = true;
+        s.zoneFeather = 0.08f;
+        MaskZoneShape rect;
+        rect.kind = MaskZoneShape::Rect;
+        rect.center = {0.3, 0.7};
+        rect.half = {0.15, 0.2};
+        rect.angle = 0.2f;
+        MaskZoneShape poly;
+        poly.kind = MaskZoneShape::Polygon;
+        poly.subtract = true;
+        poly.points = {{0.1, 0.1}, {0.4, 0.1}, {0.25, 0.4}};
+        s.zones.push_back(rect);
+        s.zones.push_back(poly);
         MaskSpec r = MaskSpec::fromJson(s.toJson());
         CHECK(r == s);
     }
