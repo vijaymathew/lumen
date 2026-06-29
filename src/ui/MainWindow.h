@@ -9,6 +9,7 @@
 
 #include <atomic>
 
+#include "core/ColorGradeNode.h"
 #include "core/CurvesNode.h"
 #include "core/EditGraph.h"
 #include "core/HealNode.h"
@@ -33,6 +34,7 @@ class DenoisePanel;
 class HealPanel;
 class HistogramWidget;
 class LayersPanel;
+class ColorGradePanel;
 class LensPanel;
 class MaskGizmo;
 class LooksPanel;
@@ -100,6 +102,7 @@ private:
     CurvesNode *activeCurves() const;
     LutNode *activeLut() const;
     MonoNode *activeMono() const;
+    ColorGradeNode *activeColorGrade() const;
     void openToneTool();
     void closeToneTool();
     void openCurvesTool();
@@ -109,6 +112,8 @@ private:
     void loadLookFile();
     void openMonoTool();
     void closeMonoTool();
+    void openColorGradeTool();
+    void closeColorGradeTool();
     void openLensTool();  // toggles the Lens & Perspective panel
     void closeLensTool();
     void openSharpenTool();  // toggles the Sharpen panel
@@ -162,6 +167,7 @@ private:
     CurvesPanel *m_curvesPanel = nullptr;
     LooksPanel *m_looksPanel = nullptr;
     MonoPanel *m_monoPanel = nullptr;
+    ColorGradePanel *m_colorGradePanel = nullptr;
     LensPanel *m_lensPanel = nullptr;
     SharpenPanel *m_sharpenPanel = nullptr;
     DenoisePanel *m_denoisePanel = nullptr;
@@ -184,6 +190,7 @@ private:
     CurvesNode *m_curves = nullptr;      // owned by m_graph
     LutNode *m_lutNode = nullptr;        // owned by m_graph
     MonoNode *m_mono = nullptr;          // owned by m_graph
+    ColorGradeNode *m_colorGrade = nullptr; // owned by m_graph
     HealNode *m_heal = nullptr;          // owned by m_graph (second in the chain)
     LensCorrectionNode *m_lens = nullptr; // owned by m_graph (first in the chain)
     DenoiseNode *m_denoise = nullptr;     // owned by m_graph (after heal, before sharpen)

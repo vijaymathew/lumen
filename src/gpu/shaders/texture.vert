@@ -39,6 +39,16 @@ layout(std140, binding = 0) uniform buf {
     float wb20;
     float wb21;
     float wb22;
+    float gradeEnabled;
+    float gradeSlope0;
+    float gradeSlope1;
+    float gradeSlope2;
+    float gradeOffset0;
+    float gradeOffset1;
+    float gradeOffset2;
+    float gradePower0;
+    float gradePower1;
+    float gradePower2;
     float selMaskOpacity;
 } ubuf;
 

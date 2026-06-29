@@ -53,6 +53,13 @@ struct PreviewState {
     float wb00 = 1.0f, wb01 = 0.0f, wb02 = 0.0f;
     float wb10 = 0.0f, wb11 = 1.0f, wb12 = 0.0f;
     float wb20 = 0.0f, wb21 = 0.0f, wb22 = 1.0f;
+    // ColorGradeNode — Lift/Gamma/Gain as per-channel Slope/Offset/Power, applied
+    // in encoded space after the tone curves (`v·slope+offset)^power`). Identity =
+    // slope 1, offset 0, power 1. Matches ColorGradeNode::resolveSOP / apply().
+    float gradeEnabled = 0.0f;
+    float gradeSlope0 = 1.0f, gradeSlope1 = 1.0f, gradeSlope2 = 1.0f;
+    float gradeOffset0 = 0.0f, gradeOffset1 = 0.0f, gradeOffset2 = 0.0f;
+    float gradePower0 = 1.0f, gradePower1 = 1.0f, gradePower2 = 1.0f;
     // Strength of the preview-only "show mask" overlay [0,1]. Set to the active
     // selective layer's opacity so the highlight visibly fades as opacity drops;
     // 1 while painting so strokes stay fully visible. Doesn't affect the export.

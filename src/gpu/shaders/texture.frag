@@ -44,6 +44,16 @@ layout(std140, binding = 0) uniform buf {
     float wb20;
     float wb21;
     float wb22;
+    float gradeEnabled;   // colour grade (Lift/Gamma/Gain = Slope/Offset/Power)
+    float gradeSlope0;
+    float gradeSlope1;
+    float gradeSlope2;
+    float gradeOffset0;
+    float gradeOffset1;
+    float gradeOffset2;
+    float gradePower0;
+    float gradePower1;
+    float gradePower2;
     float selMaskOpacity; // "show mask" overlay strength [0,1] (= layer opacity)
 } ubuf;
 
@@ -78,6 +88,14 @@ void main()
     col = vec3(texture(lut, vec2(col.r, 0.5)).r,
                texture(lut, vec2(col.g, 0.5)).g,
                texture(lut, vec2(col.b, 0.5)).b);
+    // 2.5 Colour grade (Lift/Gamma/Gain = Slope/Offset/Power), encoded space —
+    //     matches ColorGradeNode::apply().
+    if (ubuf.gradeEnabled > 0.5) {
+        vec3 slope = vec3(ubuf.gradeSlope0, ubuf.gradeSlope1, ubuf.gradeSlope2);
+        vec3 offset = vec3(ubuf.gradeOffset0, ubuf.gradeOffset1, ubuf.gradeOffset2);
+        vec3 power = vec3(ubuf.gradePower0, ubuf.gradePower1, ubuf.gradePower2);
+        col = pow(max(col * slope + offset, vec3(0.0)), power);
+    }
     // 3. Look: trilinear 3D LUT, blended with the pre-look colour by intensity.
     vec3 lutCol = texture(lut3d, clamp(col, 0.0, 1.0)).rgb;
     col = mix(col, lutCol, ubuf.lutIntensity);
