@@ -144,6 +144,49 @@ double estimateKelvin(const double xyzToCam[9], const double asShotMul[3])
     return best;
 }
 
+void solveNeutral(const double camToRgb[9], const double xyzToCam[9], double kAsShot,
+                  const double pLinear[3], double kMin, double kMax,
+                  double &outKelvin, double &outTint)
+{
+    // How non-grey is the white-balanced pixel: green-relative R/B deviation.
+    auto cost = [&](double K, double t) {
+        double W[9], q[3];
+        wbMatrix(camToRgb, xyzToCam, kAsShot, K, t, W);
+        mat3MulVec(W, pLinear, q);
+        const double g = std::abs(q[1]) < 1e-9 ? 1e-9 : q[1];
+        const double dr = q[0] / g - 1.0;
+        const double db = q[2] / g - 1.0;
+        return dr * dr + db * db;
+    };
+
+    double bestK = std::clamp(kAsShot, kMin, kMax);
+    double bestT = 0.0;
+    double bestC = cost(bestK, bestT);
+
+    // Coarse grid, then shrink the search window around the best point.
+    double kLo = kMin, kHi = kMax, tLo = -100.0, tHi = 100.0;
+    for (int pass = 0; pass < 5; ++pass) {
+        const double kStep = (kHi - kLo) / 16.0;
+        const double tStep = (tHi - tLo) / 16.0;
+        for (double K = kLo; K <= kHi + 1e-6; K += kStep) {
+            for (double t = tLo; t <= tHi + 1e-6; t += tStep) {
+                const double c = cost(K, t);
+                if (c < bestC) {
+                    bestC = c;
+                    bestK = K;
+                    bestT = t;
+                }
+            }
+        }
+        kLo = std::max(kMin, bestK - kStep);
+        kHi = std::min(kMax, bestK + kStep);
+        tLo = std::max(-100.0, bestT - tStep);
+        tHi = std::min(100.0, bestT + tStep);
+    }
+    outKelvin = bestK;
+    outTint = bestT;
+}
+
 void wbMatrix(const double camToRgb[9], const double xyzToCam[9], double kAsShot,
               double kelvin, double tint, double outW[9])
 {

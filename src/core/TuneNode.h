@@ -59,6 +59,10 @@ public:
     // Computes the linear-light WB matrix (row-major 3x3) for the current state.
     void whiteBalanceMatrix(double outW[9]) const;
 
+    // WB eyedropper: sets kelvin/tint so the given pixel (encoded sRGB in [0,1],
+    // sampled from the WB baseline) becomes neutral, using the current profile.
+    void pickNeutral(float r, float g, float b);
+
     Image apply(const Image &input) const override;
     void contributeToPreview(PreviewState &state) const override;
 

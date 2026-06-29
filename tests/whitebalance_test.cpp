@@ -100,6 +100,22 @@ int main()
         CHECK(nearly(K, 5000.0, 60.0));
     }
 
+    // --- solveNeutral (WB eyedropper) -------------------------------------
+    {
+        double K = 0, t = 0;
+        const double neutral[3] = {1.0, 1.0, 1.0};
+        solveNeutral(kIdentity3, kSrgbXyzToRgb, 6500.0, neutral, 2000.0, 12000.0, K, t);
+        CHECK(nearly(K, 6500.0, 250.0) && nearly(t, 0.0, 12.0));
+        // An over-red pixel must be cooled (lower K) to read neutral.
+        const double reddish[3] = {1.4, 1.0, 0.7};
+        solveNeutral(kIdentity3, kSrgbXyzToRgb, 6500.0, reddish, 2000.0, 12000.0, K, t);
+        CHECK(K < 6500.0);
+        // ...and a bluish pixel warmed (higher K).
+        const double bluish[3] = {0.7, 1.0, 1.4};
+        solveNeutral(kIdentity3, kSrgbXyzToRgb, 6500.0, bluish, 2000.0, 12000.0, K, t);
+        CHECK(K > 6500.0);
+    }
+
     std::puts("whitebalance_test: OK");
     return 0;
 }

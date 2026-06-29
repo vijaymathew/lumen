@@ -106,6 +106,20 @@ void TuneNode::whiteBalanceMatrix(double outW[9]) const
     wb::wbMatrix(m_camToRgb, m_xyzToCam, m_asShotKelvin, m_kelvin, m_tint, outW);
 }
 
+void TuneNode::pickNeutral(float r, float g, float b)
+{
+    // Linearise the sampled encoded pixel to match the WB transfer (^2.2).
+    const double pl[3] = {
+        std::pow(std::max(0.0, static_cast<double>(r)), 2.2),
+        std::pow(std::max(0.0, static_cast<double>(g)), 2.2),
+        std::pow(std::max(0.0, static_cast<double>(b)), 2.2),
+    };
+    double K = m_kelvin, t = m_tint;
+    wb::solveNeutral(m_camToRgb, m_xyzToCam, m_asShotKelvin, pl, kMinKelvin, kMaxKelvin, K, t);
+    setKelvin(static_cast<float>(K));
+    setTint(static_cast<float>(t));
+}
+
 bool TuneNode::wbIsIdentity() const
 {
     return m_kelvin == m_asShotKelvin && m_tint == 0.0f;

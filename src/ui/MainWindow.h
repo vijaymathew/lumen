@@ -122,6 +122,10 @@ private:
     // when the lens parameters or the source image change — NOT per heal dab.
     void refreshWorkingSource();
     void recomputeSelectiveMask(); // uploads the active layer's mask as the overlay
+    // Canvas colour-pick has two purposes: choosing a colour-mask target, or the
+    // white-balance eyedropper. `m_pickPurpose` routes the picked point.
+    enum class PickPurpose { MaskColour, WhiteBalance };
+    PickPurpose m_pickPurpose = PickPurpose::MaskColour;
     void onColorPicked(const QPointF &imageNormalized);
     // A selective adjustment is a masked layer (mask = Luminosity/Colour/Brush +
     // the layer's TuneNode), edited via the Layers panel. ensureSelectiveLayer

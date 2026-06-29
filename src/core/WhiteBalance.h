@@ -46,6 +46,15 @@ double estimateKelvin(const double xyzToCam[9], const double asShotMul[3]);
 void wbMatrix(const double camToRgb[9], const double xyzToCam[9], double kAsShot,
               double kelvin, double tint, double outW[9]);
 
+// Solves for the (kelvin, tint) that best neutralises the linear-light pixel
+// `pLinear` — i.e. makes wbMatrix(...)·pLinear achromatic — by a coarse-to-fine
+// 2D search over kelvin in [kMin,kMax] and tint in [-100,100]. Used by the WB
+// eyedropper: pick a pixel that should be grey and the slider follows. The pixel
+// is taken from the as-shot baseline, so the result is an absolute WB.
+void solveNeutral(const double camToRgb[9], const double xyzToCam[9], double kAsShot,
+                  const double pLinear[3], double kMin, double kMax,
+                  double &outKelvin, double &outTint);
+
 // Row-major 3x3 helpers.
 void mat3Mul(const double a[9], const double b[9], double out[9]);
 void mat3MulVec(const double m[9], const double v[3], double out[3]);

@@ -6,6 +6,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QPushButton>
 #include <QSlider>
 #include <QVBoxLayout>
 
@@ -51,6 +52,25 @@ TonePanel::TonePanel(QWidget *parent)
     m_tint = addRow(QStringLiteral("Tint"), static_cast<int>(TuneNode::kMinAmount),
                     static_cast<int>(TuneNode::kMaxAmount), &m_tintValue);
 
+    // White-balance helpers: "As shot" resets temperature/tint to the camera's
+    // as-shot point; the picker arms the canvas eyedropper for a neutral patch.
+    auto *wbButtons = new QHBoxLayout;
+    wbButtons->setContentsMargins(0, 0, 0, 0);
+    wbButtons->setSpacing(8);
+    m_wbAsShot = new QPushButton(QStringLiteral("As shot"), this);
+    m_wbPicker = new QPushButton(QStringLiteral("Pick neutral"), this);
+    m_wbAsShot->setObjectName(QStringLiteral("wbButton"));
+    m_wbPicker->setObjectName(QStringLiteral("wbButton"));
+    m_wbAsShot->setCursor(Qt::PointingHandCursor);
+    m_wbPicker->setCursor(Qt::PointingHandCursor);
+    wbButtons->addWidget(m_wbAsShot);
+    wbButtons->addWidget(m_wbPicker);
+    static_cast<QVBoxLayout *>(this->layout())->addLayout(wbButtons);
+    connect(m_wbAsShot, &QPushButton::clicked, this,
+            &TonePanel::whiteBalanceResetRequested);
+    connect(m_wbPicker, &QPushButton::clicked, this,
+            &TonePanel::whiteBalancePickRequested);
+
     setStyleSheet(QStringLiteral(R"(
         #tonePanel {
             background: #1c1c1f;
@@ -60,6 +80,13 @@ TonePanel::TonePanel(QWidget *parent)
         #toolTitle { color: #e8e8ea; font-size: 13px; }
         #rowName { color: #b4b4b8; font-size: 12px; }
         #rowValue { color: #d6d6d9; font-size: 12px; }
+        #wbButton {
+            color: #d6d6d9; font-size: 12px;
+            background: #2a2a2e; border: 1px solid #3c3c42;
+            border-radius: 6px; padding: 5px 8px;
+        }
+        #wbButton:hover { background: #34343a; }
+        #wbButton:pressed { background: #3c3c44; }
     )"));
 
     hide();

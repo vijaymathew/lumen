@@ -3,6 +3,7 @@
 #include <QWidget>
 
 class QLabel;
+class QPushButton;
 class QSlider;
 
 // Tone adjustment values, in the units the sliders use.
@@ -29,6 +30,10 @@ public:
 
 signals:
     void valuesChanged(const ToneValues &values);
+    // White-balance helpers: reset to the as-shot temperature, or arm the canvas
+    // eyedropper to pick a neutral patch.
+    void whiteBalanceResetRequested();
+    void whiteBalancePickRequested();
     void closed();
 
 protected:
@@ -48,6 +53,8 @@ private:
     QSlider *m_saturation = nullptr;
     QSlider *m_kelvin = nullptr;
     QSlider *m_tint = nullptr;
+    QPushButton *m_wbAsShot = nullptr;
+    QPushButton *m_wbPicker = nullptr;
     QLabel *m_exposureValue = nullptr;
     QLabel *m_contrastValue = nullptr;
     QLabel *m_saturationValue = nullptr;

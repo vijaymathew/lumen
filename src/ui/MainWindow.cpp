@@ -283,6 +283,20 @@ MainWindow::MainWindow(QWidget *parent)
         updatePreview(); // preview is driven by walking the graph
     });
     connect(m_tonePanel, &TonePanel::closed, this, &MainWindow::closeToneTool);
+    connect(m_tonePanel, &TonePanel::whiteBalanceResetRequested, this, [this] {
+        if (auto *t = activeTune()) {
+            t->setKelvin(t->asShotKelvin());
+            t->setTint(0.0f);
+            updatePreview();
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+                                 t->kelvin(), t->tint()});
+        }
+    });
+    connect(m_tonePanel, &TonePanel::whiteBalancePickRequested, this, [this] {
+        m_pickPurpose = PickPurpose::WhiteBalance;
+        m_canvas->setColorPickMode(true);
+        showHint(QStringLiteral("Click a neutral grey to set white balance"));
+    });
 
     m_curvesPanel = new CurvesPanel(this);
     connect(m_curvesPanel, &CurvesPanel::curveChanged, this, [this](const ChannelCurves &c) {
@@ -465,8 +479,10 @@ MainWindow::MainWindow(QWidget *parent)
         updatePreview();
         m_graph.commit();
     });
-    connect(m_layersPanel, &LayersPanel::maskPickColorRequested, this,
-            [this] { m_canvas->setColorPickMode(true); });
+    connect(m_layersPanel, &LayersPanel::maskPickColorRequested, this, [this] {
+        m_pickPurpose = PickPurpose::MaskColour;
+        m_canvas->setColorPickMode(true);
+    });
     connect(m_layersPanel, &LayersPanel::maskShowChanged, this, [this](int mode) {
         m_maskView = mode;
         recomputeSelectiveMask();
@@ -1685,6 +1701,21 @@ void MainWindow::onColorPicked(const QPointF &norm)
     const int y = std::clamp(static_cast<int>(std::lround(norm.y() * (m_sourceQImage.height() - 1))),
                              0, m_sourceQImage.height() - 1);
     const QColor c = m_sourceQImage.pixelColor(x, y);
+
+    // White-balance eyedropper: make the sampled (as-shot baseline) pixel neutral.
+    if (m_pickPurpose == PickPurpose::WhiteBalance) {
+        m_pickPurpose = PickPurpose::MaskColour; // reset to the default purpose
+        if (auto *t = activeTune()) {
+            t->pickNeutral(static_cast<float>(c.redF()), static_cast<float>(c.greenF()),
+                           static_cast<float>(c.blueF()));
+            updatePreview();
+            if (m_tonePanel->isVisible())
+                m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+                                     t->kelvin(), t->tint()});
+            m_graph.commit();
+        }
+        return;
+    }
 
     if (m_graph.activeLayerIndex() == 0)
         return;
