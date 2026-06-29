@@ -36,9 +36,43 @@ MonoPanel::MonoPanel(QWidget *parent)
     connect(m_enable, &QPushButton::toggled, this, &MonoPanel::onChanged);
     layout->addWidget(m_enable);
 
-    m_mixR = addRow(QStringLiteral("Red"), -50, 200, &m_mixRValue);
-    m_mixG = addRow(QStringLiteral("Green"), -50, 200, &m_mixGValue);
-    m_mixB = addRow(QStringLiteral("Blue"), -50, 200, &m_mixBValue);
+    // Filter presets: classic B&W "colour filter" looks, expressed as 8-band
+    // color-mix sets (Red/Orange/Yellow/Green/Blue darken complementary colours).
+    // {R, O, Y, G, Aqua, Blue, Purple, Magenta} in [-1,1].
+    struct Preset { const char *label; float bands[8]; };
+    static const Preset kPresets[] = {
+        {"Neutral", {0, 0, 0, 0, 0, 0, 0, 0}},
+        {"Red", {0.6f, 0.4f, 0.2f, -0.3f, -0.5f, -0.6f, -0.2f, 0.3f}},
+        {"Orange", {0.4f, 0.6f, 0.4f, -0.2f, -0.4f, -0.5f, -0.3f, 0.1f}},
+        {"Yellow", {0.2f, 0.4f, 0.6f, 0.2f, -0.3f, -0.5f, -0.4f, -0.2f}},
+        {"Green", {-0.4f, -0.1f, 0.3f, 0.6f, 0.3f, -0.2f, -0.4f, -0.4f}},
+        {"Blue", {-0.5f, -0.5f, -0.3f, -0.1f, 0.4f, 0.6f, 0.3f, -0.1f}},
+    };
+    auto *presetLabel = new QLabel(QStringLiteral("Presets"), this);
+    presetLabel->setObjectName(QStringLiteral("rowName"));
+    layout->addWidget(presetLabel);
+    auto *presetRow1 = new QHBoxLayout;
+    auto *presetRow2 = new QHBoxLayout;
+    presetRow1->setContentsMargins(0, 0, 0, 0);
+    presetRow2->setContentsMargins(0, 0, 0, 0);
+    presetRow1->setSpacing(4);
+    presetRow2->setSpacing(4);
+    int pi = 0;
+    for (const Preset &p : kPresets) {
+        auto *b = new QPushButton(QString::fromLatin1(p.label), this);
+        b->setObjectName(QStringLiteral("presetButton"));
+        connect(b, &QPushButton::clicked, this, [this, bands = p.bands] { applyPreset(bands); });
+        (pi++ < 3 ? presetRow1 : presetRow2)->addWidget(b);
+    }
+    layout->addLayout(presetRow1);
+    layout->addLayout(presetRow2);
+
+    // 8-color mixer: how each colour renders as a tone.
+    static const char *kBandNames[8] = {"Red",  "Orange", "Yellow", "Green",
+                                         "Aqua", "Blue",   "Purple", "Magenta"};
+    for (int i = 0; i < 8; ++i)
+        m_band[i] = addRow(QString::fromLatin1(kBandNames[i]), -100, 100, &m_bandValue[i]);
+
     m_toneStrength = addRow(QStringLiteral("Tone"), 0, 100, &m_toneStrengthValue);
     m_toneHue = addRow(QStringLiteral("Hue"), 0, 359, &m_toneHueValue);
 
@@ -90,11 +124,10 @@ QSlider *MonoPanel::addRow(const QString &name, int min, int max, QLabel **value
 
 MonoValues MonoPanel::currentValues() const
 {
-    MonoValues v;
+    MonoValues v; // mixR/G/B left at the luma defaults (base grey)
     v.enabled = m_enable->isChecked();
-    v.mixR = static_cast<float>(m_mixR->value()) / 100.0f;
-    v.mixG = static_cast<float>(m_mixG->value()) / 100.0f;
-    v.mixB = static_cast<float>(m_mixB->value()) / 100.0f;
+    for (int i = 0; i < 8; ++i)
+        v.band[i] = static_cast<float>(m_band[i]->value()) / 100.0f;
     v.toneStrength = static_cast<float>(m_toneStrength->value()) / 100.0f;
     v.toneHue = static_cast<float>(m_toneHue->value());
     return v;
@@ -104,30 +137,33 @@ void MonoPanel::refreshLabels()
 {
     const MonoValues v = currentValues();
     const auto pct = [](float a) { return QStringLiteral("%1%").arg(std::lround(a * 100)); };
-    m_mixRValue->setText(pct(v.mixR));
-    m_mixGValue->setText(pct(v.mixG));
-    m_mixBValue->setText(pct(v.mixB));
+    const auto signedPct = [](float a) {
+        const int p = static_cast<int>(std::lround(a * 100));
+        return QStringLiteral("%1%2%").arg(p > 0 ? QStringLiteral("+") : QString()).arg(p);
+    };
+    for (int i = 0; i < 8; ++i)
+        m_bandValue[i]->setText(signedPct(v.band[i]));
     m_toneStrengthValue->setText(pct(v.toneStrength));
     m_toneHueValue->setText(QStringLiteral("%1°").arg(static_cast<int>(v.toneHue)));
 
     // Mixer/toning rows are meaningful only when conversion is on.
     const bool on = v.enabled;
-    for (QSlider *s : {m_mixR, m_mixG, m_mixB, m_toneStrength, m_toneHue})
+    for (QSlider *s : m_band)
         s->setEnabled(on);
+    m_toneStrength->setEnabled(on);
+    m_toneHue->setEnabled(on);
 }
 
 void MonoPanel::reveal(const MonoValues &values)
 {
     const QSignalBlocker b0(m_enable);
-    const QSignalBlocker b1(m_mixR);
-    const QSignalBlocker b2(m_mixG);
-    const QSignalBlocker b3(m_mixB);
     const QSignalBlocker b4(m_toneStrength);
     const QSignalBlocker b5(m_toneHue);
     m_enable->setChecked(values.enabled);
-    m_mixR->setValue(static_cast<int>(std::lround(values.mixR * 100)));
-    m_mixG->setValue(static_cast<int>(std::lround(values.mixG * 100)));
-    m_mixB->setValue(static_cast<int>(std::lround(values.mixB * 100)));
+    for (int i = 0; i < 8; ++i) {
+        const QSignalBlocker b(m_band[i]);
+        m_band[i]->setValue(static_cast<int>(std::lround(values.band[i] * 100)));
+    }
     m_toneStrength->setValue(static_cast<int>(std::lround(values.toneStrength * 100)));
     m_toneHue->setValue(static_cast<int>(std::lround(values.toneHue)));
     refreshLabels();
@@ -136,6 +172,15 @@ void MonoPanel::reveal(const MonoValues &values)
     show();
     raise();
     m_enable->setFocus(Qt::ShortcutFocusReason);
+}
+
+void MonoPanel::applyPreset(const float bands[8])
+{
+    for (int i = 0; i < 8; ++i) {
+        const QSignalBlocker b(m_band[i]);
+        m_band[i]->setValue(static_cast<int>(std::lround(bands[i] * 100)));
+    }
+    onChanged(); // refresh labels + emit the new values
 }
 
 void MonoPanel::onChanged()

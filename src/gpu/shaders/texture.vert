@@ -51,6 +51,14 @@ layout(std140, binding = 0) uniform buf {
     float gradePower2;
     float selMaskOpacity;
     float vibrance; // consumed in the fragment stage
+    float monoBand0; // per-color B&W mix bands (consumed in the fragment stage)
+    float monoBand1;
+    float monoBand2;
+    float monoBand3;
+    float monoBand4;
+    float monoBand5;
+    float monoBand6;
+    float monoBand7;
 } ubuf;
 
 void main()

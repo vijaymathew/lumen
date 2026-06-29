@@ -56,6 +56,14 @@ layout(std140, binding = 0) uniform buf {
     float gradePower2;
     float selMaskOpacity; // "show mask" overlay strength [0,1] (= layer opacity)
     float vibrance;       // saturation-aware boost amount (vibrance/100), 0 = neutral
+    float monoBand0;      // per-color B&W mix: 8 hue bands at 0/45/.../315°, [-1,1]
+    float monoBand1;
+    float monoBand2;
+    float monoBand3;
+    float monoBand4;
+    float monoBand5;
+    float monoBand6;
+    float monoBand7;
 } ubuf;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -75,6 +83,43 @@ vec3 applyTone(vec3 c, float exposure, float contrast, float saturation, float v
         c = mix(vec3(l2), c, f);
     }
     return c;
+}
+
+// Hue of a colour in degrees [0,360) — matches MonoNode::hue6.
+float monoHue(vec3 c)
+{
+    float mx = max(c.r, max(c.g, c.b));
+    float mn = min(c.r, min(c.g, c.b));
+    float d = mx - mn;
+    if (d < 1e-6)
+        return 0.0;
+    float h;
+    if (mx == c.r)
+        h = mod((c.g - c.b) / d, 6.0);
+    else if (mx == c.g)
+        h = (c.b - c.r) / d + 2.0;
+    else
+        h = (c.r - c.g) / d + 4.0;
+    h *= 60.0;
+    if (h < 0.0)
+        h += 360.0;
+    return h;
+}
+
+// Tent-interpolated per-color mix weight at `hue` over the 8 bands (centres at
+// k·45°, circular) — matches MonoNode::bandShift.
+float monoBandShift(float hue)
+{
+    float b[8] = float[8](ubuf.monoBand0, ubuf.monoBand1, ubuf.monoBand2, ubuf.monoBand3,
+                          ubuf.monoBand4, ubuf.monoBand5, ubuf.monoBand6, ubuf.monoBand7);
+    float w = 0.0;
+    for (int k = 0; k < 8; ++k) {
+        float dist = abs(hue - float(k) * 45.0);
+        if (dist > 180.0)
+            dist = 360.0 - dist;
+        w += b[k] * max(0.0, 1.0 - dist / 45.0);
+    }
+    return w;
 }
 
 void main()
@@ -113,6 +158,9 @@ void main()
     //     math as MonoNode::apply().
     if (ubuf.monoEnabled > 0.5) {
         float g = clamp(dot(col, vec3(ubuf.monoR, ubuf.monoG, ubuf.monoB)), 0.0, 1.0);
+        // Per-color mix: brighten/darken by hue, scaled by chroma (neutrals stay).
+        float chroma = max(col.r, max(col.g, col.b)) - min(col.r, min(col.g, col.b));
+        g = clamp(g * (1.0 + monoBandShift(monoHue(col)) * chroma), 0.0, 1.0);
         vec3 toned = g * vec3(ubuf.monoToneR, ubuf.monoToneG, ubuf.monoToneB);
         col = mix(vec3(g), toned, ubuf.monoToneStrength);
     }

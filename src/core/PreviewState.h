@@ -68,6 +68,12 @@ struct PreviewState {
     // across nodes), 0 = neutral. Appended last so existing field offsets (and the
     // std140 uniform layout) are undisturbed. Matches texture.frag's applyTone.
     float vibrance = 0.0f;
+    // MonoNode — per-color B&W mix: 8 hue bands at 0/45/.../315° (Red, Orange,
+    // Yellow, Green, Aqua, Blue, Purple, Magenta), each in [-1,1], 0 = neutral.
+    // Named scalars (not a GLSL array) so std140 packs them tightly, matching the
+    // contiguous-float upload. Matches texture.frag's mono band block.
+    float monoBand0 = 0.0f, monoBand1 = 0.0f, monoBand2 = 0.0f, monoBand3 = 0.0f;
+    float monoBand4 = 0.0f, monoBand5 = 0.0f, monoBand6 = 0.0f, monoBand7 = 0.0f;
 
     friend bool operator==(const PreviewState &, const PreviewState &) = default;
 };

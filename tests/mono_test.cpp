@@ -98,6 +98,38 @@ int main(int /*argc*/, char **argv)
         CHECK(near8(static_cast<int>(ps.monoB * 100), 50));
     }
 
+    // Per-color mixer: a +Red band brightens a saturated red patch's grey, while
+    // a neutral grey patch is unaffected (chroma = 0, so no band shifts it).
+    {
+        MonoNode m;
+        MonoValues base;
+        base.enabled = true; // neutral bands → plain luma grey
+        m.setValues(base);
+        const int neutralRed = m.apply(red).toQImage().pixelColor(0, 0).red();
+
+        MonoValues boosted = base;
+        boosted.band[0] = 1.0f; // Red band up
+        m.setValues(boosted);
+        const int boostedRed = m.apply(red).toQImage().pixelColor(0, 0).red();
+        CHECK(boostedRed > neutralRed + 10); // red renders much brighter
+
+        const int g0 = m.apply(grey).toQImage().pixelColor(0, 0).red();
+        CHECK(near8(g0, 128)); // neutral grey untouched by the band
+    }
+
+    // The 8 bands round-trip through save/restore.
+    {
+        MonoNode a;
+        MonoValues bv;
+        bv.enabled = true;
+        for (int i = 0; i < 8; ++i)
+            bv.band[i] = (i - 3) * 0.1f;
+        a.setValues(bv);
+        MonoNode b;
+        b.restoreState(a.saveState());
+        CHECK(b.values() == a.values());
+    }
+
     ImageBuffer::shutdownLibrary();
     std::puts("mono_test: OK");
     return 0;

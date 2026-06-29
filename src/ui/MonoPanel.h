@@ -9,9 +9,9 @@ class QPushButton;
 class QSlider;
 
 // MonoPanel is the floating, draggable tool card for monochrome conversion: an
-// enable toggle, a B&W channel mixer (R/G/B), and toning (strength + hue). It
-// mirrors TonePanel — drives the live preview via valuesChanged() and closes on
-// Esc/Enter.
+// enable toggle, filter presets, an 8-color B&W mixer (how each colour renders
+// as a tone), and toning (strength + hue). It mirrors TonePanel — drives the
+// live preview via valuesChanged() and closes on Esc/Enter.
 class MonoPanel : public QWidget {
     Q_OBJECT
 
@@ -37,16 +37,14 @@ private:
     MonoValues currentValues() const;
 
     QPushButton *m_enable = nullptr;
-    QSlider *m_mixR = nullptr;
-    QSlider *m_mixG = nullptr;
-    QSlider *m_mixB = nullptr;
+    QSlider *m_band[8] = {};        // per-color B&W mix (Red…Magenta)
+    QLabel *m_bandValue[8] = {};
     QSlider *m_toneStrength = nullptr;
     QSlider *m_toneHue = nullptr;
-    QLabel *m_mixRValue = nullptr;
-    QLabel *m_mixGValue = nullptr;
-    QLabel *m_mixBValue = nullptr;
     QLabel *m_toneStrengthValue = nullptr;
     QLabel *m_toneHueValue = nullptr;
+    // Applies an 8-band preset to the sliders and pushes the change.
+    void applyPreset(const float bands[8]);
 
     bool m_dragging = false;
     QPoint m_dragOffset;
