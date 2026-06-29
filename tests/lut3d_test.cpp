@@ -43,6 +43,13 @@ static bool nearly(double a, double b)
     return std::abs(a - b) < 0.01;
 }
 
+// Tighter than `nearly`: 8-bit quantisation error can reach ~1/510 (≈0.002), so
+// this tolerance distinguishes a float-precision cube from a quantised one.
+static bool precise(double a, double b)
+{
+    return std::abs(a - b) < 5e-4;
+}
+
 int main(int /*argc*/, char **argv)
 {
     if (!ImageBuffer::initLibrary(argv[0])) {
@@ -108,6 +115,76 @@ int main(int /*argc*/, char **argv)
         cube.sample(0.3, 0.6, 0.9, out); // identity → trilinear returns the input
         CHECK(nearly(out[0], 0.3) && nearly(out[1], 0.6) && nearly(out[2], 0.9));
         QFile::remove(cubePath);
+
+        // --- v2: float precision (no 8-bit quantisation) ----------------
+        // A 2^3 cube whose r=1,g=0,b=0 corner holds a value that 8-bit rounding
+        // would shift by ~0.0019; precise() (5e-4) only passes if stored float.
+        {
+            const QString p = QDir::temp().filePath(QStringLiteral("lumen_prec.cube"));
+            QFile::remove(p);
+            QFile f(p);
+            CHECK(f.open(QIODevice::WriteOnly | QIODevice::Text));
+            f.write("LUT_3D_SIZE 2\n");
+            for (int b = 0; b < 2; ++b)
+                for (int g = 0; g < 2; ++g)
+                    for (int r = 0; r < 2; ++r) {
+                        // identity, except the (1,0,0) corner's red is 0.123456.
+                        const double rv = (r == 1 && g == 0 && b == 0) ? 0.123456 : double(r);
+                        f.write(QStringLiteral("%1 %2 %3\n").arg(rv).arg(g).arg(b).toUtf8());
+                    }
+            f.close();
+            Lut3D c = Lut3D::fromCubeFile(p, &error);
+            CHECK(c.isValid());
+            c.sample(1.0, 0.0, 0.0, out); // lands exactly on the (1,0,0) node
+            CHECK(precise(out[0], 0.123456));
+            QFile::remove(p);
+        }
+
+        // --- v2: unclamped HDR output values ----------------------------
+        {
+            const QString p = QDir::temp().filePath(QStringLiteral("lumen_hdr.cube"));
+            QFile::remove(p);
+            QFile f(p);
+            CHECK(f.open(QIODevice::WriteOnly | QIODevice::Text));
+            f.write("LUT_3D_SIZE 2\n");
+            for (int b = 0; b < 2; ++b)
+                for (int g = 0; g < 2; ++g)
+                    for (int r = 0; r < 2; ++r) {
+                        // (1,1,1) corner maps to 2.0 (would clamp to 1.0 in 8-bit).
+                        const double s = (r && g && b) ? 2.0 : 0.0;
+                        f.write(QStringLiteral("%1 %2 %3\n").arg(s).arg(s).arg(s).toUtf8());
+                    }
+            f.close();
+            Lut3D c = Lut3D::fromCubeFile(p, &error);
+            CHECK(c.isValid());
+            c.sample(1.0, 1.0, 1.0, out);
+            CHECK(nearly(out[0], 2.0) && nearly(out[1], 2.0) && nearly(out[2], 2.0));
+            QFile::remove(p);
+        }
+
+        // --- v2: non-default DOMAIN is remapped -------------------------
+        // Identity cube over domain [0,2]: input 1.0 -> normalised 0.5 -> 0.5.
+        {
+            const QString p = QDir::temp().filePath(QStringLiteral("lumen_dom.cube"));
+            QFile::remove(p);
+            QFile f(p);
+            CHECK(f.open(QIODevice::WriteOnly | QIODevice::Text));
+            f.write("LUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 2 2 2\n");
+            for (int b = 0; b < 2; ++b)
+                for (int g = 0; g < 2; ++g)
+                    for (int r = 0; r < 2; ++r)
+                        f.write(QStringLiteral("%1 %2 %3\n").arg(r).arg(g).arg(b).toUtf8());
+            f.close();
+            Lut3D c = Lut3D::fromCubeFile(p, &error);
+            CHECK(c.isValid());
+            c.sample(1.0, 1.0, 1.0, out); // mid-domain
+            CHECK(nearly(out[0], 0.5) && nearly(out[1], 0.5) && nearly(out[2], 0.5));
+            c.sample(2.0, 2.0, 2.0, out); // domain max
+            CHECK(nearly(out[0], 1.0) && nearly(out[1], 1.0) && nearly(out[2], 1.0));
+            c.sample(0.0, 0.0, 0.0, out); // domain min
+            CHECK(nearly(out[0], 0.0) && nearly(out[1], 0.0) && nearly(out[2], 0.0));
+            QFile::remove(p);
+        }
 
         // Missing LUT_3D_SIZE → invalid.
         const QString badPath = QDir::temp().filePath(QStringLiteral("lumen_bad.cube"));

@@ -72,7 +72,7 @@ plain Qt widgets.
 
 | Item | Status | Notes |
 |---|---|---|
-| LUT loader (HALD + `.cube`) | ✅ | `Lut3D` parses a HALD CLUT (side n³ → cube edge n²) **and Adobe/Resolve `.cube` 3D LUTs** (`fromCubeFile`: `LUT_3D_SIZE` + n³ red-fastest triples → 8-bit cube; DOMAIN/TITLE tolerated); `LutNode::loadLut` dispatches by extension; trilinear `sample()`; identity round-trip + HALD/`.cube` file load + invalid-input unit-tested (`lut3d_test`) |
+| LUT loader (HALD + `.cube`) | ✅ | `Lut3D` parses a HALD CLUT (side n³ → cube edge n²) **and Adobe/Resolve `.cube` 3D LUTs** (`fromCubeFile`: `LUT_3D_SIZE` + n³ red-fastest triples; `LutNode::loadLut` dispatches by extension; trilinear `sample()`; identity round-trip + HALD/`.cube` file load + invalid-input unit-tested (`lut3d_test`). **v2: float cube** — the internal cube is now `float` (no 8-bit quantisation), output values are unclamped (HDR looks survive), and `DOMAIN_MIN/MAX` / `LUT_3D_INPUT_RANGE` are honoured (inputs remapped from the LUT domain to [0,1] at sample time). Precision + HDR + non-default-DOMAIN unit-tested. CPU export is full-float; the GPU preview still resamples into a 32³ RGBA8 `sampler3D` (display-accurate; a float GPU LUT texture stays with the scene-linear/float-preview stage) |
 | `LutNode` (trilinear apply) | ✅ | libvips export (per-pixel trilinear) + GPU preview via a 32³ `sampler3D` (hardware trilinear); wired into the graph after curves; preview==export verified on a real photo (inverting CLUT). Look persisted by CLUT path |
 | Look intensity slider | ✅ | `out = mix(input, lut(input), t)` in both export and shader (intensity rides in `PreviewState`); `LooksPanel` (Load…/Clear + intensity slider); blend unit-tested + preview==export verified |
 

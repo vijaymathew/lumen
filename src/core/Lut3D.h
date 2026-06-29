@@ -30,16 +30,23 @@ public:
     static Lut3D fromHaldImage(const QImage &image, QString *error = nullptr);
 
     // Loads an Adobe/Resolve ".cube" 3D LUT (text: LUT_3D_SIZE n, then n^3 RGB
-    // triples, red varying fastest). Float values are quantised to the 8-bit
-    // cube; a non-default DOMAIN is not remapped (standard 0..1 looks only).
+    // triples, red varying fastest). Values are stored at full float precision
+    // (no 8-bit quantisation), output values are not clamped (HDR looks survive),
+    // and a non-default DOMAIN_MIN/DOMAIN_MAX is honoured (inputs are remapped
+    // from the LUT's domain to [0,1] at sample time).
     // Returns an invalid Lut3D and sets *error on failure.
     static Lut3D fromCubeFile(const QString &path, QString *error = nullptr);
 
-    // Trilinearly samples the cube. Inputs/outputs are in [0,1]; an invalid LUT
+    // Trilinearly samples the cube. Inputs are mapped from the LUT domain
+    // (default [0,1]) onto the cube; outputs are unclamped. An invalid LUT
     // returns the input unchanged (identity).
     void sample(double r, double g, double b, double out[3]) const;
 
 private:
     int m_dim = 0;
-    std::vector<uint8_t> m_data; // dim^3 * 3, RGB, index ((b*dim+g)*dim+r)*3
+    std::vector<float> m_data; // dim^3 * 3, RGB, index ((b*dim+g)*dim+r)*3
+    // Input domain (one min/max per channel); inputs are remapped to [0,1]
+    // before indexing. Defaults to the standard 0..1 domain.
+    double m_domainMin[3] = {0.0, 0.0, 0.0};
+    double m_domainMax[3] = {1.0, 1.0, 1.0};
 };
