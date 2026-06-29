@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <vector>
 
+class QByteArray;
 class QImage;
 
 // Lut3D is a 3D colour lookup table (a cube of edge `dim` samples per channel),
@@ -29,6 +30,10 @@ public:
     // Builds from an already-decoded HALD CLUT image.
     static Lut3D fromHaldImage(const QImage &image, QString *error = nullptr);
 
+    // Builds a HALD CLUT from raw encoded-image bytes (PNG/JPEG/…). Lets a LUT be
+    // embedded in a project and rebuilt without the original file on disk.
+    static Lut3D fromHaldData(const QByteArray &bytes, QString *error = nullptr);
+
     // Loads an Adobe/Resolve ".cube" 3D LUT (text: LUT_3D_SIZE n, then n^3 RGB
     // triples, red varying fastest). Values are stored at full float precision
     // (no 8-bit quantisation), output values are not clamped (HDR looks survive),
@@ -36,6 +41,10 @@ public:
     // from the LUT's domain to [0,1] at sample time).
     // Returns an invalid Lut3D and sets *error on failure.
     static Lut3D fromCubeFile(const QString &path, QString *error = nullptr);
+
+    // As fromCubeFile, but parses ".cube" text already held in memory (used to
+    // rebuild a LUT embedded in a project).
+    static Lut3D fromCubeData(const QByteArray &bytes, QString *error = nullptr);
 
     // Trilinearly samples the cube. Inputs are mapped from the LUT domain
     // (default [0,1]) onto the cube; outputs are unclamped. An invalid LUT

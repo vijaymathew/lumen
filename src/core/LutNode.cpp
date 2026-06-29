@@ -3,6 +3,7 @@
 
 #include "core/LutNode.h"
 
+#include <QFile>
 #include <QFileInfo>
 
 #include <algorithm>
@@ -15,24 +16,41 @@ LutNode::LutNode()
 
 bool LutNode::loadLut(const QString &path, QString *error)
 {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = QStringLiteral("Could not open '%1'").arg(path);
+        return false;
+    }
+    const QByteArray bytes = file.readAll();
     const bool isCube =
         QFileInfo(path).suffix().compare(QLatin1String("cube"), Qt::CaseInsensitive) == 0;
-    Lut3D lut = isCube ? Lut3D::fromCubeFile(path, error) : Lut3D::fromHaldFile(path, error);
-    if (!lut.isValid())
-        return false;
-    m_lut = lut;
-    m_sourcePath = path;
-    invalidate();
-    return true;
+    return loadLutData(bytes, isCube ? QStringLiteral("cube") : QStringLiteral("hald"),
+                       path, error);
 }
 
 bool LutNode::loadHald(const QString &path, QString *error)
 {
-    Lut3D lut = Lut3D::fromHaldFile(path, error);
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = QStringLiteral("Could not open '%1'").arg(path);
+        return false;
+    }
+    return loadLutData(file.readAll(), QStringLiteral("hald"), path, error);
+}
+
+bool LutNode::loadLutData(const QByteArray &bytes, const QString &kind,
+                          const QString &displayPath, QString *error)
+{
+    Lut3D lut = kind == QLatin1String("cube") ? Lut3D::fromCubeData(bytes, error)
+                                              : Lut3D::fromHaldData(bytes, error);
     if (!lut.isValid())
         return false;
     m_lut = lut;
-    m_sourcePath = path;
+    m_sourcePath = displayPath;
+    m_sourceBytes = bytes;
+    m_kind = kind;
     invalidate();
     return true;
 }
@@ -41,6 +59,8 @@ void LutNode::setLut(const Lut3D &lut)
 {
     m_lut = lut;
     m_sourcePath.clear();
+    m_sourceBytes.clear();
+    m_kind.clear();
     invalidate();
 }
 
@@ -48,6 +68,8 @@ void LutNode::clear()
 {
     m_lut = Lut3D{};
     m_sourcePath.clear();
+    m_sourceBytes.clear();
+    m_kind.clear();
     invalidate();
 }
 
@@ -107,6 +129,13 @@ QJsonObject LutNode::saveState() const
     QJsonObject state = EditNode::saveState();
     if (!m_sourcePath.isEmpty())
         state[QStringLiteral("lut")] = m_sourcePath;
+    // Embed the LUT bytes so the project is self-contained (portable, and robust
+    // to the original file moving/being deleted).
+    if (!m_sourceBytes.isEmpty()) {
+        state[QStringLiteral("lutData")] =
+            QString::fromLatin1(m_sourceBytes.toBase64());
+        state[QStringLiteral("lutKind")] = m_kind;
+    }
     state[QStringLiteral("intensity")] = m_intensity;
     return state;
 }
@@ -119,10 +148,23 @@ void LutNode::restoreState(const QJsonObject &state)
     QString path = state.value(QStringLiteral("lut")).toString();
     if (path.isEmpty())
         path = state.value(QStringLiteral("hald")).toString();
-    if (path.isEmpty())
+
+    const QString data64 = state.value(QStringLiteral("lutData")).toString();
+    if (!data64.isEmpty()) {
+        // Self-contained: rebuild from the embedded bytes (no disk access).
+        QString kind = state.value(QStringLiteral("lutKind")).toString();
+        if (kind.isEmpty()) // infer from the label for forward-safety
+            kind = QFileInfo(path).suffix().compare(QLatin1String("cube"),
+                                                    Qt::CaseInsensitive) == 0
+                       ? QStringLiteral("cube")
+                       : QStringLiteral("hald");
+        if (!loadLutData(QByteArray::fromBase64(data64.toLatin1()), kind, path))
+            clear();
+    } else if (path.isEmpty()) {
         clear();
-    else
-        loadLut(path);
+    } else {
+        loadLut(path); // legacy project: load from the referenced file
+    }
     setIntensity(static_cast<float>(
         state.value(QStringLiteral("intensity")).toDouble(1.0)));
 }

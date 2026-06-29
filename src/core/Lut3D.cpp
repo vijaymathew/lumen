@@ -71,13 +71,29 @@ Lut3D Lut3D::fromCubeFile(const QString &path, QString *error)
             *error = QStringLiteral("Could not open '%1'").arg(path);
         return {};
     }
+    return fromCubeData(file.readAll(), error);
+}
 
+Lut3D Lut3D::fromHaldData(const QByteArray &bytes, QString *error)
+{
+    QString loadError;
+    Image img = Image::fromBytes(bytes.constData(), bytes.size(), &loadError);
+    if (img.isNull()) {
+        if (error)
+            *error = loadError;
+        return {};
+    }
+    return fromHaldImage(img.toQImage(), error);
+}
+
+Lut3D Lut3D::fromCubeData(const QByteArray &bytes, QString *error)
+{
     static const QRegularExpression ws(QStringLiteral("\\s+"));
     int dim = 0;
     std::vector<float> values; // RGB triples in file order (red varies fastest)
     double domainMin[3] = {0.0, 0.0, 0.0};
     double domainMax[3] = {1.0, 1.0, 1.0};
-    QTextStream in(&file);
+    QTextStream in(bytes);
     while (!in.atEnd()) {
         const QString line = in.readLine().trimmed();
         if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
