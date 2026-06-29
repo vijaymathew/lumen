@@ -34,9 +34,11 @@ QShader loadShader(const QString &path)
 // so the 3D texture is created once and only re-uploaded on change.
 constexpr int kLut3DDim = 32;
 
-std::vector<uint8_t> resampleCube(const Lut3D &lut)
+// Resamples a LUT into the fixed-edge GPU cube as RGBA half-float. Outputs are
+// stored unclamped so HDR / out-of-range look values survive into the preview.
+std::vector<qfloat16> resampleCube(const Lut3D &lut)
 {
-    std::vector<uint8_t> cube(static_cast<size_t>(kLut3DDim) * kLut3DDim * kLut3DDim * 4);
+    std::vector<qfloat16> cube(static_cast<size_t>(kLut3DDim) * kLut3DDim * kLut3DDim * 4);
     double out[3];
     for (int b = 0; b < kLut3DDim; ++b) {
         for (int g = 0; g < kLut3DDim; ++g) {
@@ -45,9 +47,8 @@ std::vector<uint8_t> resampleCube(const Lut3D &lut)
                            b / double(kLut3DDim - 1), out);
                 const size_t idx = ((static_cast<size_t>(b) * kLut3DDim + g) * kLut3DDim + r) * 4;
                 for (int c = 0; c < 3; ++c)
-                    cube[idx + c] = static_cast<uint8_t>(
-                        std::clamp(std::lround(out[c] * 255.0), 0L, 255L));
-                cube[idx + 3] = 255;
+                    cube[idx + c] = qfloat16(static_cast<float>(out[c]));
+                cube[idx + 3] = qfloat16(1.0f);
             }
         }
     }
@@ -119,7 +120,7 @@ void CanvasWidget::setCurveLuts(const ChannelLuts &luts)
 
 void CanvasWidget::setLut3D(const Lut3D &look)
 {
-    std::vector<uint8_t> cube = resampleCube(look);
+    std::vector<qfloat16> cube = resampleCube(look);
     if (cube == m_lut3dData)
         return;
     m_lut3dData = std::move(cube);
@@ -218,7 +219,7 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
     }
 
     if (!m_lut3dTexture) {
-        m_lut3dTexture.reset(r->newTexture(QRhiTexture::RGBA8, kLut3DDim, kLut3DDim,
+        m_lut3dTexture.reset(r->newTexture(QRhiTexture::RGBA16F, kLut3DDim, kLut3DDim,
                                            kLut3DDim, 1, QRhiTexture::ThreeDimensional));
         m_lut3dTexture->create();
         m_lut3dDirty = true;
@@ -323,7 +324,7 @@ void CanvasWidget::buildExtraLayer(GpuLayer &gl, int index, QRhiResourceUpdateBa
         gl.curveTex->create();
     }
     if (!gl.lut3dTex) {
-        gl.lut3dTex.reset(r->newTexture(QRhiTexture::RGBA8, kLut3DDim, kLut3DDim, kLut3DDim,
+        gl.lut3dTex.reset(r->newTexture(QRhiTexture::RGBA16F, kLut3DDim, kLut3DDim, kLut3DDim,
                                         1, QRhiTexture::ThreeDimensional));
         gl.lut3dTex->create();
     }
@@ -358,12 +359,13 @@ void CanvasWidget::buildExtraLayer(GpuLayer &gl, int index, QRhiResourceUpdateBa
                                                 QRhiTextureUploadEntry(0, 0,
                                                     QRhiTextureSubresourceUploadDescription(cbytes))));
 
-    const std::vector<uint8_t> cube = resampleCube(gl.data.look);
-    const int sliceBytes = kLut3DDim * kLut3DDim * 4;
+    const std::vector<qfloat16> cube = resampleCube(gl.data.look);
+    const int sliceTexels = kLut3DDim * kLut3DDim * 4; // qfloat16 elements per z-slice
+    const int sliceBytes = sliceTexels * static_cast<int>(sizeof(qfloat16));
     std::vector<QByteArray> slices;
     std::vector<QRhiTextureUploadEntry> entries;
     for (int z = 0; z < kLut3DDim; ++z) {
-        slices.emplace_back(reinterpret_cast<const char *>(cube.data() + size_t(z) * sliceBytes),
+        slices.emplace_back(reinterpret_cast<const char *>(cube.data() + size_t(z) * sliceTexels),
                             sliceBytes);
         entries.emplace_back(z, 0, QRhiTextureSubresourceUploadDescription(slices.back()));
     }
@@ -602,14 +604,15 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
 
     if (m_lut3dDirty && m_lut3dTexture) {
         // One upload entry per depth slice (layer = z) of the 3D texture.
-        const int sliceBytes = kLut3DDim * kLut3DDim * 4;
+        const int sliceTexels = kLut3DDim * kLut3DDim * 4; // qfloat16 elements per z-slice
+        const int sliceBytes = sliceTexels * static_cast<int>(sizeof(qfloat16));
         std::vector<QByteArray> slices;
         std::vector<QRhiTextureUploadEntry> entries;
         slices.reserve(kLut3DDim);
         entries.reserve(kLut3DDim);
         for (int z = 0; z < kLut3DDim; ++z) {
             slices.emplace_back(reinterpret_cast<const char *>(
-                                    m_lut3dData.data() + static_cast<size_t>(z) * sliceBytes),
+                                    m_lut3dData.data() + static_cast<size_t>(z) * sliceTexels),
                                 sliceBytes);
             entries.emplace_back(z, 0, QRhiTextureSubresourceUploadDescription(slices.back()));
         }
