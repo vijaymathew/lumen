@@ -77,43 +77,79 @@ constexpr int kScrimAlpha = 140; // ~0.55
 
 // A translucent layer that dims whatever is behind it. It paints a
 // semi-transparent fill without clearing to an opaque background first, so the
-// (RHI-composited) canvas shows through, dimmed.
+// (RHI-composited) canvas shows through, dimmed. The alpha is configurable so
+// the same widget serves the heavy palette dim and a lighter "busy" dim (which
+// must keep enough of the image visible to judge the effect being applied).
 class Scrim : public QWidget {
 public:
-    using QWidget::QWidget;
+    explicit Scrim(QWidget *parent, int alpha = kScrimAlpha)
+        : QWidget(parent), m_alpha(alpha)
+    {
+    }
 
 protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
-        p.fillRect(rect(), QColor(10, 10, 11, kScrimAlpha));
+        p.fillRect(rect(), QColor(10, 10, 11, m_alpha));
     }
+
+private:
+    int m_alpha;
 };
 
-// A small "Healing…" badge with an animated spinner, shown while a background
-// inpaint is running. Mouse-transparent.
+// Lighter dim shown while a slow effect is being applied: enough to signal
+// "busy" without hiding the image the user is judging.
+constexpr int kBusyScrimAlpha = 70;
+
+// How long after the last slider tick we wait before kicking the expensive
+// sharpen/denoise base re-bake — long enough to read as "stopped sliding".
+constexpr int kHeavyBakeSettleMs = 800;
+
+// A small badge with an animated spinner, shown while a background base re-bake
+// (heal / denoise / sharpen) is running. The label names the running op. An
+// optional companion dim widget is shown/hidden in lockstep so the image dims
+// only while a slow pass is actually applying. Mouse-transparent.
 class BusyBadge : public QWidget {
 public:
     explicit BusyBadge(QWidget *parent) : QWidget(parent)
     {
         setAttribute(Qt::WA_TransparentForMouseEvents);
         setAttribute(Qt::WA_NoSystemBackground);
-        setFixedSize(132, 32);
+        setFixedSize(148, 32);
         m_spin.setInterval(70);
         connect(&m_spin, &QTimer::timeout, this, [this] {
             m_angle = (m_angle + 30) % 360;
+            m_sweep = (m_sweep + 4) % 100; // indeterminate progress strip
             update();
         });
-        // Only show once the heal has run longer than this, so quick heals
-        // (small blemishes) don't flash the badge.
+        // Only show once the op has run longer than this, so quick passes
+        // don't flash the badge.
         m_delay.setSingleShot(true);
         m_delay.setInterval(150);
         connect(&m_delay, &QTimer::timeout, this, [this] {
+            if (m_dim) {
+                m_dim->show();
+                m_dim->raise();
+            }
             show();
             raise();
             m_spin.start();
         });
         hide();
+    }
+
+    // The dim is dimmed in lockstep with the badge (shown after the same delay,
+    // hidden on stop()).
+    void setDim(QWidget *dim) { m_dim = dim; }
+
+    void setLabel(const QString &label)
+    {
+        if (m_label == label)
+            return;
+        m_label = label;
+        if (isVisible())
+            update();
     }
 
     void start()
@@ -124,9 +160,11 @@ public:
     }
     void stop()
     {
-        m_delay.stop(); // cancel a pending show if the heal finished in time
+        m_delay.stop(); // cancel a pending show if the op finished in time
         m_spin.stop();
         hide();
+        if (m_dim)
+            m_dim->hide();
     }
 
 protected:
@@ -151,14 +189,28 @@ protected:
         p.resetTransform();
 
         p.setPen(QColor(0xe8, 0xe8, 0xea));
-        p.drawText(QRect(34, 0, width() - 40, height()),
-                   Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("Healing…"));
+        p.drawText(QRect(34, 0, width() - 40, height() - 3),
+                   Qt::AlignLeft | Qt::AlignVCenter, m_label);
+
+        // Indeterminate progress strip along the bottom: a short segment that
+        // sweeps left-to-right, reinforcing "working" alongside the spinner.
+        const qreal trackX = 8.0, trackW = width() - 16.0, trackY = height() - 3.0;
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(255, 255, 255, 30));
+        p.drawRoundedRect(QRectF(trackX, trackY, trackW, 2.0), 1.0, 1.0);
+        const qreal segW = trackW * 0.3;
+        const qreal segX = trackX + (trackW - segW) * (m_sweep / 100.0);
+        p.setBrush(QColor(0x7F, 0x77, 0xDD, 220));
+        p.drawRoundedRect(QRectF(segX, trackY, segW, 2.0), 1.0, 1.0);
     }
 
 private:
     QTimer m_spin;  // animation
     QTimer m_delay; // show-after delay
     int m_angle = 0;
+    int m_sweep = 0; // 0..99 progress-strip position
+    QString m_label = QStringLiteral("Healing…");
+    QWidget *m_dim = nullptr; // companion dim, shown/hidden with the badge
 };
 
 // A transparent overlay that draws the brush cursor: an outer ring (size) and a
@@ -259,7 +311,15 @@ MainWindow::MainWindow(QWidget *parent)
                 brushRing->setRing(inWindow, outer, inner, visible);
             });
 
-    m_healBusy = new BusyBadge(this);
+    // Lighter dim shown while a slow effect applies; behind the badge, above
+    // the canvas. Created before the badge so the badge stacks above it.
+    m_busyDim = new Scrim(this, kBusyScrimAlpha);
+    m_busyDim->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_busyDim->hide();
+
+    auto *busyBadge = new BusyBadge(this);
+    busyBadge->setDim(m_busyDim);
+    m_healBusy = busyBadge;
 
     // Created before the palette so the palette stacks above it.
     m_scrim = new Scrim(this);
@@ -380,7 +440,9 @@ MainWindow::MainWindow(QWidget *parent)
     // settle shortly after the user stops dragging.
     m_bakeTimer = new QTimer(this);
     m_bakeTimer->setSingleShot(true);
-    m_bakeTimer->setInterval(140);
+    // Settle delay: the sharpen/denoise base re-bake is a full-res pass, so we
+    // only kick it once the user has clearly stopped sliding (not per tick).
+    m_bakeTimer->setInterval(kHeavyBakeSettleMs);
     connect(m_bakeTimer, &QTimer::timeout, this, [this] {
         refreshBaseImage();
         updatePreview();
@@ -909,10 +971,21 @@ void MainWindow::updatePreview()
     m_canvas->setLut3D(m_graph.previewLook());
 
     // A capped-resolution sRGB copy of the source, for evaluating data-driven
-    // (luminosity/colour) layer masks; geometric masks ignore it.
+    // (luminosity/colour) layer masks; geometric masks ignore it. Building it
+    // means a smooth-scale + format convert of the full source, so we only do it
+    // when some layer actually carries a mask. Skipping it keeps the live GPU
+    // sliders (tone/curves/mono on the Base) instant — they hit updatePreview()
+    // every tick and would otherwise stall on this per-tick copy.
+    bool needsMaskSrc = false;
+    for (int i = 1; i < m_graph.layerCount(); ++i) {
+        if (m_graph.layer(i).mask().type != MaskSpec::None) {
+            needsMaskSrc = true;
+            break;
+        }
+    }
     constexpr int cap = 1280;
     QImage maskSrc;
-    if (!m_sourceQImage.isNull()) {
+    if (needsMaskSrc && !m_sourceQImage.isNull()) {
         maskSrc = m_sourceQImage;
         if (std::max(maskSrc.width(), maskSrc.height()) > cap)
             maskSrc = maskSrc.scaled(cap, cap, Qt::KeepAspectRatio,
@@ -1511,9 +1584,15 @@ void MainWindow::refreshBaseImage(bool keepView)
     const Image src = m_workingSource.isNull() ? m_graph.source() : m_workingSource;
     const MaskBuffer mask = healActive ? m_heal->healMask() : MaskBuffer();
     const bool hq = m_heal && m_heal->highQuality();
-    if (healActive) {
-        static_cast<BusyBadge *>(m_healBusy)->start();
-        layoutOverlays(); // position the badge
+    if (healActive || denoiseActive || sharpenActive) {
+        // Label by op; heal takes precedence when several are combined.
+        const QString label = healActive ? QStringLiteral("Healing…")
+                            : denoiseActive ? QStringLiteral("Denoising…")
+                                            : QStringLiteral("Sharpening…");
+        auto *badge = static_cast<BusyBadge *>(m_healBusy);
+        badge->setLabel(label);
+        badge->start();
+        layoutOverlays(); // position the badge + dim
     }
 
     m_healWatcher.setFuture(
@@ -1895,10 +1974,15 @@ void MainWindow::layoutOverlays()
 {
     // Scrim covers the whole window, behind the palette.
     m_scrim->setGeometry(rect());
+    m_busyDim->setGeometry(rect());
     m_brushRing->setGeometry(rect());
 
-    // Busy badge: top-centre of the canvas.
+    // Busy badge: top-centre of the canvas (above its dim).
+    if (m_busyDim->isVisible())
+        m_busyDim->raise();
     m_healBusy->move((width() - m_healBusy->width()) / 2, 16);
+    if (m_healBusy->isVisible())
+        m_healBusy->raise();
 
     // Palette: fixed width, near the top-centre.
     const int pw = 360;
@@ -1953,6 +2037,8 @@ void MainWindow::layoutOverlays()
                 panel->raise();
         }
         m_brushRing->raise(); // brush cursor stays on top of the gizmo
+        if (m_busyDim->isVisible())
+            m_busyDim->raise();
         m_healBusy->raise();
     }
 

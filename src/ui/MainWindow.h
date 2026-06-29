@@ -161,7 +161,8 @@ private:
     CanvasWidget *m_canvas = nullptr;
     QWidget *m_scrim = nullptr;     // dims the image behind the command palette
     QWidget *m_brushRing = nullptr; // on-canvas brush size/hardness cursor
-    QWidget *m_healBusy = nullptr;  // animated "Healing…" badge during async heal
+    QWidget *m_healBusy = nullptr;  // animated badge during async base re-bake (heal/denoise/sharpen)
+    QWidget *m_busyDim = nullptr;   // lighter dim shown while a slow effect applies
     CommandPalette *m_palette = nullptr;
     TonePanel *m_tonePanel = nullptr;
     CurvesPanel *m_curvesPanel = nullptr;
