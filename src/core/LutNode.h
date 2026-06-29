@@ -3,6 +3,7 @@
 #include "core/EditNode.h"
 #include "core/Lut3D.h"
 
+#include <QByteArray>
 #include <QString>
 
 // LutNode applies a 3D LUT "look" (loaded from a HALD CLUT) with trilinear
@@ -38,7 +39,14 @@ public:
     void restoreState(const QJsonObject &state) override;
 
 private:
+    // Rebuilds the LUT from raw file bytes (kind: "cube" or "hald"); `displayPath`
+    // is kept only as a label. Used when restoring a LUT embedded in a project.
+    bool loadLutData(const QByteArray &bytes, const QString &kind,
+                     const QString &displayPath, QString *error = nullptr);
+
     Lut3D m_lut;
-    QString m_sourcePath;     // for persistence; empty for directly-set LUTs
+    QString m_sourcePath;     // original path, kept as a display label
+    QByteArray m_sourceBytes; // raw LUT file bytes, embedded in the project
+    QString m_kind;           // "cube" or "hald" (which parser rebuilds it)
     float m_intensity = 1.0f; // look blend [0,1]
 };

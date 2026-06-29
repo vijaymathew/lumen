@@ -13,6 +13,7 @@
 #include <QMatrix4x4>
 #include <QPointF>
 #include <QSize>
+#include <QtCore/qfloat16.h>
 
 #include <cstdint>
 #include <memory>
@@ -183,7 +184,10 @@ private:
     PreviewState m_preview;
     ChannelLuts m_luts = identityChannelLuts(); // per-channel tone curves
     bool m_lutDirty = true;
-    std::vector<uint8_t> m_lut3dData; // 32^3 RGBA cube; identity by default
+    // 32^3 RGBA half-float cube (RGBA16F); identity by default. Half-float keeps
+    // the loaded LUT's precision (and HDR/out-of-range outputs) on the GPU while
+    // retaining hardware trilinear filtering.
+    std::vector<qfloat16> m_lut3dData;
     bool m_lut3dDirty = true;
     std::vector<uint8_t> m_selMaskData{255, 0, 0, 255}; // RGBA, R=mask; 1x1 selected
     int m_selMaskW = 1;

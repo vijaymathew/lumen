@@ -12,6 +12,17 @@
 // float working format, so they drop into the same pipeline as a JPEG.
 namespace raw {
 
+// Camera colour profile pulled from LibRaw, used by white balance (WB v2) to do a
+// camera-accurate, linear-light Kelvin WB. All matrices are row-major 3x3.
+// `valid` is false for files without a known colour profile (WB then falls back
+// to the sRGB model).
+struct ColorProfile {
+    bool valid = false;
+    double camToRgb[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}; // camera → linear sRGB (rgb_cam)
+    double xyzToCam[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}; // CIE XYZ → camera (cam_xyz)
+    double asShotMul[3] = {1, 1, 1};                  // as-shot multipliers (cam_mul)
+};
+
 // Lens/camera identity extracted from the RAW's EXIF, used to look up a Lensfun
 // profile for automatic lens correction. Empty/zero fields mean "unknown".
 struct LensMetadata {
@@ -21,6 +32,7 @@ struct LensMetadata {
     float focalLength = 0;   // mm
     float aperture = 0;      // f-number at capture
     float focusDistance = 0; // metres (0 = unknown)
+    ColorProfile color;      // camera colour matrices for white balance
 };
 
 // Known camera-RAW file extensions (lowercase, no dot). Single source of truth

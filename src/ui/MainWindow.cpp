@@ -19,6 +19,7 @@
 #include "ui/LensPanel.h"
 #include "ui/MaskGizmo.h"
 #include "ui/LooksPanel.h"
+#include "ui/ColorGradePanel.h"
 #include "ui/MonoPanel.h"
 #include "ui/SharpenPanel.h"
 #include "ui/TonePanel.h"
@@ -227,8 +228,8 @@ MainWindow::MainWindow(QWidget *parent)
     // group runs first in libvips and is rendered into the preview base texture:
     // lens (warps geometry) -> heal (edits pixels) -> denoise -> sharpen (both
     // neighbourhood ops; denoise before sharpen so noise isn't amplified). Then
-    // the pointwise/LUT ops the shader replicates: tune -> curves -> lut -> mono.
-    // Selective adjustments are masked layers above the Base, not Base nodes.
+    // the pointwise/LUT ops the shader replicates: tune -> curves -> colorgrade
+    // -> lut -> mono. Selective adjustments are masked layers above the Base.
     m_lens =
         static_cast<LensCorrectionNode *>(m_graph.addNode(std::make_unique<LensCorrectionNode>()));
     m_heal = static_cast<HealNode *>(m_graph.addNode(std::make_unique<HealNode>()));
@@ -236,6 +237,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_sharpen = static_cast<SharpenNode *>(m_graph.addNode(std::make_unique<SharpenNode>()));
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
+    m_colorGrade =
+        static_cast<ColorGradeNode *>(m_graph.addNode(std::make_unique<ColorGradeNode>()));
     m_lutNode = static_cast<LutNode *>(m_graph.addNode(std::make_unique<LutNode>()));
     m_mono = static_cast<MonoNode *>(m_graph.addNode(std::make_unique<MonoNode>()));
 
@@ -277,12 +280,26 @@ MainWindow::MainWindow(QWidget *parent)
             t->setExposure(v.exposure);
             t->setContrast(v.contrast);
             t->setSaturation(v.saturation);
-            t->setTemperature(v.temperature);
+            t->setKelvin(v.kelvin);
             t->setTint(v.tint);
         }
         updatePreview(); // preview is driven by walking the graph
     });
     connect(m_tonePanel, &TonePanel::closed, this, &MainWindow::closeToneTool);
+    connect(m_tonePanel, &TonePanel::whiteBalanceResetRequested, this, [this] {
+        if (auto *t = activeTune()) {
+            t->setKelvin(t->asShotKelvin());
+            t->setTint(0.0f);
+            updatePreview();
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+                                 t->kelvin(), t->tint()});
+        }
+    });
+    connect(m_tonePanel, &TonePanel::whiteBalancePickRequested, this, [this] {
+        m_pickPurpose = PickPurpose::WhiteBalance;
+        m_canvas->setColorPickMode(true);
+        showHint(QStringLiteral("Click a neutral grey to set white balance"));
+    });
 
     m_curvesPanel = new CurvesPanel(this);
     connect(m_curvesPanel, &CurvesPanel::curveChanged, this, [this](const ChannelCurves &c) {
@@ -312,6 +329,16 @@ MainWindow::MainWindow(QWidget *parent)
         updatePreview();
     });
     connect(m_monoPanel, &MonoPanel::closed, this, &MainWindow::closeMonoTool);
+
+    m_colorGradePanel = new ColorGradePanel(this);
+    connect(m_colorGradePanel, &ColorGradePanel::valuesChanged, this,
+            [this](const ColorGradeValues &v) {
+                if (auto *g = activeColorGrade())
+                    g->setValues(v);
+                updatePreview();
+            });
+    connect(m_colorGradePanel, &ColorGradePanel::closed, this,
+            &MainWindow::closeColorGradeTool);
 
     m_lensPanel = new LensPanel(this);
     connect(m_lensPanel, &LensPanel::paramsChanged, this,
@@ -465,8 +492,10 @@ MainWindow::MainWindow(QWidget *parent)
         updatePreview();
         m_graph.commit();
     });
-    connect(m_layersPanel, &LayersPanel::maskPickColorRequested, this,
-            [this] { m_canvas->setColorPickMode(true); });
+    connect(m_layersPanel, &LayersPanel::maskPickColorRequested, this, [this] {
+        m_pickPurpose = PickPurpose::MaskColour;
+        m_canvas->setColorPickMode(true);
+    });
     connect(m_layersPanel, &LayersPanel::maskShowChanged, this, [this](int mode) {
         m_maskView = mode;
         recomputeSelectiveMask();
@@ -539,6 +568,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("fullscreen"), QStringLiteral("Toggle fullscreen")},
         {QStringLiteral("looks"), QStringLiteral("Looks (LUT)")},
         {QStringLiteral("monochrome"), QStringLiteral("Monochrome (B&W + toning)")},
+        {QStringLiteral("colorgrade"), QStringLiteral("Color grading (wheels)")},
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment")},
         {QStringLiteral("lens"), QStringLiteral("Lens & perspective")},
         {QStringLiteral("denoise"), QStringLiteral("Denoise")},
@@ -568,6 +598,8 @@ void MainWindow::runCommand(const QString &id)
         openLooksTool();
     } else if (id == QLatin1String("monochrome")) {
         openMonoTool();
+    } else if (id == QLatin1String("colorgrade")) {
+        openColorGradeTool();
     } else if (id == QLatin1String("selective")) {
         // A selective adjustment is a masked layer: add/select one, reveal its
         // mask editor (Layers panel) and the Tone tool to adjust it.
@@ -645,6 +677,10 @@ bool MainWindow::openPath(const QString &path)
         lp.focusDistance = meta.focusDistance;
     }
     m_lens->setParams(lp);
+    // Camera-accurate white balance: install the colour profile and seed the
+    // slider at the as-shot temperature (non-RAW keeps the sRGB defaults).
+    if (isRaw)
+        applyCameraProfile(meta.color, /*seedKelvin=*/true);
     refreshWorkingSource();  // build the corrected source + display QImage
     refreshBaseImage(false); // new image → fit the view
     recomputeSelectiveMask();
@@ -723,10 +759,12 @@ bool MainWindow::loadProjectFile(const QString &path)
         QMessageBox::warning(this, QStringLiteral("Lumen"), error);
         return false;
     }
+    const bool isRaw = raw::isRawPath(proj.sourceName);
+    raw::LensMetadata meta;
     Image source =
-        raw::isRawPath(proj.sourceName)
-            ? raw::decodeBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error)
-            : Image::fromBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error);
+        isRaw ? raw::decodeBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(),
+                                 &error, &meta)
+              : Image::fromBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error);
     if (source.isNull()) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Could not decode the embedded image: %1").arg(error));
@@ -741,6 +779,10 @@ bool MainWindow::loadProjectFile(const QString &path)
     m_sourceName = proj.sourceName;
     m_graph.setSource(source);
     m_graph.loadProjectState(proj.graph); // restores the lens node's params too
+    // Refresh the camera profile from the actual decode, keeping the restored
+    // WB temperature (don't reseed to as-shot).
+    if (isRaw)
+        applyCameraProfile(meta.color, /*seedKelvin=*/false);
 
     refreshWorkingSource();  // rebuild the corrected source from the restored lens
     refreshBaseImage(false); // re-applies the heal mask, fits the view
@@ -906,6 +948,18 @@ void MainWindow::updatePreview()
         m_histTimer->start();
 }
 
+void MainWindow::applyCameraProfile(const raw::ColorProfile &profile, bool seedKelvin)
+{
+    if (!profile.valid)
+        return;
+    for (int i = 0; i < m_graph.layerCount(); ++i) {
+        if (auto *t = static_cast<TuneNode *>(
+                m_graph.layer(i).nodeOfType(QStringLiteral("tune"))))
+            t->setCameraProfile(profile.camToRgb, profile.xyzToCam, profile.asShotMul,
+                                seedKelvin);
+    }
+}
+
 TuneNode *MainWindow::activeTune() const
 {
     return static_cast<TuneNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("tune")));
@@ -924,6 +978,12 @@ LutNode *MainWindow::activeLut() const
 MonoNode *MainWindow::activeMono() const
 {
     return static_cast<MonoNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("mono")));
+}
+
+ColorGradeNode *MainWindow::activeColorGrade() const
+{
+    return static_cast<ColorGradeNode *>(
+        m_graph.activeLayer().nodeOfType(QStringLiteral("colorgrade")));
 }
 
 void MainWindow::openLayersTool()
@@ -981,7 +1041,7 @@ void MainWindow::reseedOpenPanels()
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
             m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
-                                 t->temperature(), t->tint()});
+                                 t->kelvin(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
         if (auto *c = activeCurves())
@@ -995,6 +1055,10 @@ void MainWindow::reseedOpenPanels()
         if (auto *mono = activeMono())
             m_monoPanel->reveal(mono->values());
     }
+    if (m_colorGradePanel->isVisible()) {
+        if (auto *g = activeColorGrade())
+            m_colorGradePanel->reveal(g->values());
+    }
 }
 
 void MainWindow::addAdjustmentLayer()
@@ -1005,6 +1069,7 @@ void MainWindow::addAdjustmentLayer()
     // it is now the active layer).
     m_graph.addNode(std::make_unique<TuneNode>());
     m_graph.addNode(std::make_unique<CurvesNode>());
+    m_graph.addNode(std::make_unique<ColorGradeNode>());
     m_graph.addNode(std::make_unique<LutNode>());
     m_graph.addNode(std::make_unique<MonoNode>());
     Q_UNUSED(layer);
@@ -1032,7 +1097,7 @@ void MainWindow::selectLayer(int index)
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
             m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
-                                 t->temperature(), t->tint()});
+                                 t->kelvin(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
         if (auto *c = activeCurves())
@@ -1048,6 +1113,13 @@ void MainWindow::selectLayer(int index)
             m_graph.commit();
         }
         m_monoPanel->reveal(activeMono()->values());
+    }
+    if (m_colorGradePanel->isVisible()) {
+        if (!activeColorGrade()) {
+            m_graph.addNode(std::make_unique<ColorGradeNode>());
+            m_graph.commit();
+        }
+        m_colorGradePanel->reveal(activeColorGrade()->values());
     }
 }
 
@@ -1115,7 +1187,7 @@ void MainWindow::openToneTool()
     const int margin = 18;
     m_tonePanel->move(width() - m_tonePanel->width() - margin, margin);
     m_tonePanel->reveal({activeTune()->exposure(), activeTune()->contrast(),
-                         activeTune()->saturation(), activeTune()->temperature(),
+                         activeTune()->saturation(), activeTune()->kelvin(),
                          activeTune()->tint()});
 }
 
@@ -1179,6 +1251,28 @@ void MainWindow::openMonoTool()
 void MainWindow::closeMonoTool()
 {
     m_monoPanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::openColorGradeTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    // A layer added by another tool may not carry a colour-grade node yet.
+    if (!activeColorGrade()) {
+        m_graph.addNode(std::make_unique<ColorGradeNode>());
+        m_graph.commit();
+    }
+    m_colorGradePanel->adjustSize();
+    const int margin = 18;
+    m_colorGradePanel->move(width() - m_colorGradePanel->width() - margin, margin);
+    m_colorGradePanel->reveal(activeColorGrade()->values());
+}
+
+void MainWindow::closeColorGradeTool()
+{
+    m_colorGradePanel->hide();
     m_graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
@@ -1460,9 +1554,10 @@ int MainWindow::ensureSelectiveLayer()
     int idx = m_graph.activeLayerIndex();
     if (idx == 0 || !selectable(m_graph.layer(idx).mask().type)) {
         m_graph.addLayer(QStringLiteral("Selective %1").arg(m_graph.layerCount()));
-        // Full adjustment node set so any tool (Tone/Curves/Looks/Mono) works.
+        // Full adjustment node set so any tool (Tone/Curves/Grade/Looks/Mono) works.
         m_graph.addNode(std::make_unique<TuneNode>());
         m_graph.addNode(std::make_unique<CurvesNode>());
+        m_graph.addNode(std::make_unique<ColorGradeNode>());
         m_graph.addNode(std::make_unique<LutNode>());
         m_graph.addNode(std::make_unique<MonoNode>());
         idx = m_graph.activeLayerIndex();
@@ -1664,6 +1759,21 @@ void MainWindow::onColorPicked(const QPointF &norm)
                              0, m_sourceQImage.height() - 1);
     const QColor c = m_sourceQImage.pixelColor(x, y);
 
+    // White-balance eyedropper: make the sampled (as-shot baseline) pixel neutral.
+    if (m_pickPurpose == PickPurpose::WhiteBalance) {
+        m_pickPurpose = PickPurpose::MaskColour; // reset to the default purpose
+        if (auto *t = activeTune()) {
+            t->pickNeutral(static_cast<float>(c.redF()), static_cast<float>(c.greenF()),
+                           static_cast<float>(c.blueF()));
+            updatePreview();
+            if (m_tonePanel->isVisible())
+                m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+                                     t->kelvin(), t->tint()});
+            m_graph.commit();
+        }
+        return;
+    }
+
     if (m_graph.activeLayerIndex() == 0)
         return;
     Layer &layer = m_graph.activeLayer();
@@ -1689,6 +1799,8 @@ void MainWindow::closeActiveTool()
         closeLooksTool();
     else if (m_monoPanel->isVisible())
         closeMonoTool();
+    else if (m_colorGradePanel->isVisible())
+        closeColorGradeTool();
     else if (m_lensPanel->isVisible())
         closeLensTool();
     else if (m_sharpenPanel->isVisible())
@@ -1736,7 +1848,7 @@ void MainWindow::afterHistoryChange()
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
             m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
-                                 t->temperature(), t->tint()});
+                                 t->kelvin(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
         if (auto *c = activeCurves())
@@ -1749,6 +1861,10 @@ void MainWindow::afterHistoryChange()
     if (m_monoPanel->isVisible()) {
         if (auto *mono = activeMono())
             m_monoPanel->reveal(mono->values());
+    }
+    if (m_colorGradePanel->isVisible()) {
+        if (auto *g = activeColorGrade())
+            m_colorGradePanel->reveal(g->values());
     }
     if (m_lensPanel->isVisible() && m_lens) {
         m_lensPanel->reveal(m_lens->params(), m_lens->lensMatched(),
@@ -1804,6 +1920,7 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_curvesPanel);
     clampIntoView(m_looksPanel);
     clampIntoView(m_monoPanel);
+    clampIntoView(m_colorGradePanel);
     clampIntoView(m_lensPanel);
     clampIntoView(m_sharpenPanel);
     clampIntoView(m_denoisePanel);
@@ -1826,6 +1943,7 @@ void MainWindow::layoutOverlays()
                                static_cast<QWidget *>(m_curvesPanel),
                                static_cast<QWidget *>(m_looksPanel),
                                static_cast<QWidget *>(m_monoPanel),
+                               static_cast<QWidget *>(m_colorGradePanel),
                                static_cast<QWidget *>(m_lensPanel),
                                static_cast<QWidget *>(m_sharpenPanel),
                                static_cast<QWidget *>(m_denoisePanel),

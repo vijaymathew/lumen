@@ -9,6 +9,7 @@
 
 #include <atomic>
 
+#include "core/ColorGradeNode.h"
 #include "core/CurvesNode.h"
 #include "core/EditGraph.h"
 #include "core/HealNode.h"
@@ -33,6 +34,7 @@ class DenoisePanel;
 class HealPanel;
 class HistogramWidget;
 class LayersPanel;
+class ColorGradePanel;
 class LensPanel;
 class MaskGizmo;
 class LooksPanel;
@@ -90,11 +92,17 @@ private:
     void syncMaskGizmo();      // reflect the active layer's mask into the gizmo
     void updateMaskEditing();  // enable/disable the canvas brush for a Brush mask
     void endMaskBrushSession(); // commit in-progress mask-brush strokes
+    // Installs the RAW camera colour profile on every layer's TuneNode so white
+    // balance is camera-accurate. `seedKelvin` moves the slider to the as-shot
+    // temperature (opening a fresh RAW) vs keeping the restored value (projects).
+    void applyCameraProfile(const raw::ColorProfile &profile, bool seedKelvin);
+
     // The active layer's tone/curves/look/mono nodes (tools edit the active layer).
     TuneNode *activeTune() const;
     CurvesNode *activeCurves() const;
     LutNode *activeLut() const;
     MonoNode *activeMono() const;
+    ColorGradeNode *activeColorGrade() const;
     void openToneTool();
     void closeToneTool();
     void openCurvesTool();
@@ -104,6 +112,8 @@ private:
     void loadLookFile();
     void openMonoTool();
     void closeMonoTool();
+    void openColorGradeTool();
+    void closeColorGradeTool();
     void openLensTool();  // toggles the Lens & Perspective panel
     void closeLensTool();
     void openSharpenTool();  // toggles the Sharpen panel
@@ -117,6 +127,10 @@ private:
     // when the lens parameters or the source image change — NOT per heal dab.
     void refreshWorkingSource();
     void recomputeSelectiveMask(); // uploads the active layer's mask as the overlay
+    // Canvas colour-pick has two purposes: choosing a colour-mask target, or the
+    // white-balance eyedropper. `m_pickPurpose` routes the picked point.
+    enum class PickPurpose { MaskColour, WhiteBalance };
+    PickPurpose m_pickPurpose = PickPurpose::MaskColour;
     void onColorPicked(const QPointF &imageNormalized);
     // A selective adjustment is a masked layer (mask = Luminosity/Colour/Brush +
     // the layer's TuneNode), edited via the Layers panel. ensureSelectiveLayer
@@ -153,6 +167,7 @@ private:
     CurvesPanel *m_curvesPanel = nullptr;
     LooksPanel *m_looksPanel = nullptr;
     MonoPanel *m_monoPanel = nullptr;
+    ColorGradePanel *m_colorGradePanel = nullptr;
     LensPanel *m_lensPanel = nullptr;
     SharpenPanel *m_sharpenPanel = nullptr;
     DenoisePanel *m_denoisePanel = nullptr;
@@ -175,6 +190,7 @@ private:
     CurvesNode *m_curves = nullptr;      // owned by m_graph
     LutNode *m_lutNode = nullptr;        // owned by m_graph
     MonoNode *m_mono = nullptr;          // owned by m_graph
+    ColorGradeNode *m_colorGrade = nullptr; // owned by m_graph
     HealNode *m_heal = nullptr;          // owned by m_graph (second in the chain)
     LensCorrectionNode *m_lens = nullptr; // owned by m_graph (first in the chain)
     DenoiseNode *m_denoise = nullptr;     // owned by m_graph (after heal, before sharpen)

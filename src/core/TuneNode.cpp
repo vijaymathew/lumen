@@ -3,6 +3,10 @@
 
 #include "core/TuneNode.h"
 
+#include "core/WhiteBalance.h"
+
+#include <QJsonArray>
+
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -12,11 +16,30 @@ namespace {
 constexpr double kLumaR = 0.2126;
 constexpr double kLumaG = 0.7152;
 constexpr double kLumaB = 0.0722;
+
+QJsonArray matToJson(const double m[9])
+{
+    QJsonArray a;
+    for (int i = 0; i < 9; ++i)
+        a.append(m[i]);
+    return a;
+}
+
+void matFromJson(const QJsonArray &a, double m[9])
+{
+    if (a.size() != 9)
+        return;
+    for (int i = 0; i < 9; ++i)
+        m[i] = a.at(i).toDouble(m[i]);
+}
 } // namespace
 
 TuneNode::TuneNode()
     : EditNode(QStringLiteral("tune"))
 {
+    // No camera profile yet: the sRGB model stands in (camera = sRGB).
+    std::copy(wb::kIdentity3, wb::kIdentity3 + 9, m_camToRgb);
+    std::copy(wb::kSrgbXyzToRgb, wb::kSrgbXyzToRgb + 9, m_xyzToCam);
 }
 
 void TuneNode::setExposure(float ev)
@@ -46,11 +69,11 @@ void TuneNode::setSaturation(float amount)
     }
 }
 
-void TuneNode::setTemperature(float amount)
+void TuneNode::setKelvin(float kelvin)
 {
-    amount = std::clamp(amount, kMinAmount, kMaxAmount);
-    if (amount != m_temperature) {
-        m_temperature = amount;
+    kelvin = std::clamp(kelvin, kMinKelvin, kMaxKelvin);
+    if (kelvin != m_kelvin) {
+        m_kelvin = kelvin;
         invalidate();
     }
 }
@@ -64,21 +87,48 @@ void TuneNode::setTint(float amount)
     }
 }
 
-void TuneNode::wbGains(float temperature, float tint, float &r, float &g, float &b)
+void TuneNode::setCameraProfile(const double camToRgb[9], const double xyzToCam[9],
+                                const double asShotMul[3], bool seedKelvin)
 {
-    const float t = temperature / 100.0f;  // -1..1, warm(+)/cool(-)
-    const float ti = tint / 100.0f;         // -1..1, magenta(+)/green(-)
-    // Temperature is the R↔B axis; tint is mainly G, with a small R/B nudge so
-    // magenta/green read cleanly. Neutral (0,0) → unit gains.
-    r = 1.0f + 0.30f * t + 0.10f * ti;
-    g = 1.0f - 0.20f * ti;
-    b = 1.0f - 0.30f * t + 0.10f * ti;
+    std::copy(camToRgb, camToRgb + 9, m_camToRgb);
+    std::copy(xyzToCam, xyzToCam + 9, m_xyzToCam);
+    m_hasProfile = true;
+    m_asShotKelvin = static_cast<float>(
+        std::clamp(wb::estimateKelvin(m_xyzToCam, asShotMul),
+                   static_cast<double>(kMinKelvin), static_cast<double>(kMaxKelvin)));
+    if (seedKelvin)
+        m_kelvin = m_asShotKelvin;
+    invalidate();
+}
+
+void TuneNode::whiteBalanceMatrix(double outW[9]) const
+{
+    wb::wbMatrix(m_camToRgb, m_xyzToCam, m_asShotKelvin, m_kelvin, m_tint, outW);
+}
+
+void TuneNode::pickNeutral(float r, float g, float b)
+{
+    // Linearise the sampled encoded pixel to match the WB transfer (^2.2).
+    const double pl[3] = {
+        std::pow(std::max(0.0, static_cast<double>(r)), 2.2),
+        std::pow(std::max(0.0, static_cast<double>(g)), 2.2),
+        std::pow(std::max(0.0, static_cast<double>(b)), 2.2),
+    };
+    double K = m_kelvin, t = m_tint;
+    wb::solveNeutral(m_camToRgb, m_xyzToCam, m_asShotKelvin, pl, kMinKelvin, kMaxKelvin, K, t);
+    setKelvin(static_cast<float>(K));
+    setTint(static_cast<float>(t));
+}
+
+bool TuneNode::wbIsIdentity() const
+{
+    return m_kelvin == m_asShotKelvin && m_tint == 0.0f;
 }
 
 bool TuneNode::isNeutral() const
 {
     return m_exposure == 0.0f && m_contrast == 0.0f && m_saturation == 0.0f
-        && m_temperature == 0.0f && m_tint == 0.0f;
+        && wbIsIdentity();
 }
 
 void TuneNode::contributeToPreview(PreviewState &state) const
@@ -87,11 +137,63 @@ void TuneNode::contributeToPreview(PreviewState &state) const
     state.exposure += m_exposure;
     state.contrast *= 1.0f + m_contrast / 100.0f;
     state.saturation *= 1.0f + m_saturation / 100.0f;
-    float gr, gg, gb;
-    wbGains(m_temperature, m_tint, gr, gg, gb);
-    state.wbR *= gr;
-    state.wbG *= gg;
-    state.wbB *= gb;
+
+    // Accumulate the WB matrix: new = W_node · running (graph order, left-multiply).
+    if (!wbIsIdentity()) {
+        double W[9];
+        whiteBalanceMatrix(W);
+        const double cur[9] = {state.wb00, state.wb01, state.wb02,
+                               state.wb10, state.wb11, state.wb12,
+                               state.wb20, state.wb21, state.wb22};
+        double res[9];
+        wb::mat3Mul(W, cur, res);
+        state.wb00 = static_cast<float>(res[0]);
+        state.wb01 = static_cast<float>(res[1]);
+        state.wb02 = static_cast<float>(res[2]);
+        state.wb10 = static_cast<float>(res[3]);
+        state.wb11 = static_cast<float>(res[4]);
+        state.wb12 = static_cast<float>(res[5]);
+        state.wb20 = static_cast<float>(res[6]);
+        state.wb21 = static_cast<float>(res[7]);
+        state.wb22 = static_cast<float>(res[8]);
+    }
+}
+
+// Applies the WB matrix in linear light, matching the GPU shader exactly:
+// encoded(0..255) → (v/255)^2.2 → W·rgb → ^(1/2.2) → ×255. Negatives are clamped
+// to 0 before each power so saturated colours never produce NaNs. Alpha (and any
+// extra band) is left untouched.
+Image TuneNode::applyWhiteBalance(const Image &input, const double W[9]) const
+{
+    VipsImage *f = nullptr;
+    if (vips_cast(input.handle(), &f, VIPS_FORMAT_FLOAT, nullptr))
+        return input;
+    void *buf = vips_image_write_to_memory(f, nullptr);
+    const int w = f->Xsize;
+    const int h = f->Ysize;
+    const int bands = f->Bands;
+    g_object_unref(f);
+    if (!buf)
+        return input;
+
+    auto *px = static_cast<float *>(buf);
+    const long long n = static_cast<long long>(w) * h;
+    for (long long i = 0; i < n; ++i) {
+        float *p = px + i * bands;
+        double lin[3];
+        for (int c = 0; c < 3; ++c) {
+            const double v = std::max(0.0, p[c] / 255.0);
+            lin[c] = std::pow(v, 2.2);
+        }
+        double out[3];
+        wb::mat3MulVec(W, lin, out);
+        for (int c = 0; c < 3; ++c)
+            p[c] = static_cast<float>(std::pow(std::max(0.0, out[c]), 1.0 / 2.2) * 255.0);
+    }
+
+    Image result = Image::fromInterleavedFloat(px, w, h, bands);
+    g_free(buf);
+    return result.isNull() ? input : result;
 }
 
 QJsonObject TuneNode::saveState() const
@@ -100,8 +202,13 @@ QJsonObject TuneNode::saveState() const
     state[QStringLiteral("exposure")] = m_exposure;
     state[QStringLiteral("contrast")] = m_contrast;
     state[QStringLiteral("saturation")] = m_saturation;
-    state[QStringLiteral("temperature")] = m_temperature;
+    state[QStringLiteral("kelvin")] = m_kelvin;
     state[QStringLiteral("tint")] = m_tint;
+    state[QStringLiteral("asShotKelvin")] = m_asShotKelvin;
+    if (m_hasProfile) {
+        state[QStringLiteral("camToRgb")] = matToJson(m_camToRgb);
+        state[QStringLiteral("xyzToCam")] = matToJson(m_xyzToCam);
+    }
     return state;
 }
 
@@ -111,7 +218,19 @@ void TuneNode::restoreState(const QJsonObject &state)
     setExposure(static_cast<float>(state.value(QStringLiteral("exposure")).toDouble()));
     setContrast(static_cast<float>(state.value(QStringLiteral("contrast")).toDouble()));
     setSaturation(static_cast<float>(state.value(QStringLiteral("saturation")).toDouble()));
-    setTemperature(static_cast<float>(state.value(QStringLiteral("temperature")).toDouble()));
+
+    // Camera profile (RAW projects); leave the sRGB defaults otherwise.
+    if (state.contains(QStringLiteral("camToRgb"))) {
+        matFromJson(state.value(QStringLiteral("camToRgb")).toArray(), m_camToRgb);
+        matFromJson(state.value(QStringLiteral("xyzToCam")).toArray(), m_xyzToCam);
+        m_hasProfile = true;
+    }
+    m_asShotKelvin = static_cast<float>(
+        state.value(QStringLiteral("asShotKelvin")).toDouble(kDefaultKelvin));
+    // "kelvin" is the WB v2 key; old projects (encoded "temperature") have none,
+    // so default to the as-shot temperature (a neutral WB matrix).
+    setKelvin(static_cast<float>(
+        state.value(QStringLiteral("kelvin")).toDouble(m_asShotKelvin)));
     setTint(static_cast<float>(state.value(QStringLiteral("tint")).toDouble()));
 }
 
@@ -120,12 +239,21 @@ Image TuneNode::apply(const Image &input) const
     if (input.isNull() || isNeutral())
         return input;
 
+    // 0. White balance — a 3x3 matrix in linear light, before everything else
+    //    (matches the shader: WB then applyTone).
+    Image work = input;
+    if (!wbIsIdentity()) {
+        double W[9];
+        whiteBalanceMatrix(W);
+        work = applyWhiteBalance(input, W);
+    }
+
     // Factors (identical to contributeToPreview / the shader).
     const double f = std::pow(2.0, static_cast<double>(m_exposure) / 2.2); // exposure
     const double c = 1.0 + static_cast<double>(m_contrast) / 100.0;        // contrast
     const double s = 1.0 + static_cast<double>(m_saturation) / 100.0;      // saturation
 
-    VipsImage *cur = input.handle();
+    VipsImage *cur = work.handle();
     g_object_ref(cur); // own a ref through the chain
     auto replace = [&cur](VipsImage *next) {
         g_object_unref(cur);
@@ -135,27 +263,20 @@ Image TuneNode::apply(const Image &input) const
     const int bands = vips_image_get_bands(cur);
     const int colorBands = std::min(bands, 3);
 
-    // White-balance per-channel gains (applied before exposure, matching the
-    // shader's `col *= wb` ahead of applyTone).
-    float gr = 1.0f, gg = 1.0f, gb = 1.0f;
-    wbGains(m_temperature, m_tint, gr, gg, gb);
-    const double gain[3] = {gr, gg, gb};
-    const bool wbActive = m_temperature != 0.0f || m_tint != 0.0f;
-
-    // 1. WB + exposure + contrast as a single per-band affine, in 8-bit value
-    //    space: out = c*f*gain*v + 127.5*(1-c). (Encoded space; pivot mid-grey.)
-    if (m_exposure != 0.0f || m_contrast != 0.0f || wbActive) {
+    // 1. Exposure + contrast as a single per-band affine, in 8-bit value space:
+    //    out = c*f*v + 127.5*(1-c). (Encoded space; pivot mid-grey.)
+    if (m_exposure != 0.0f || m_contrast != 0.0f) {
         std::vector<double> a(bands, 1.0);
         std::vector<double> b(bands, 0.0);
         const double pivot = 127.5 * (1.0 - c);
         for (int i = 0; i < colorBands; ++i) {
-            a[i] = c * f * gain[i];
+            a[i] = c * f;
             b[i] = pivot;
         }
         VipsImage *lin = nullptr;
         if (vips_linear(cur, &lin, a.data(), b.data(), bands, nullptr)) {
             g_object_unref(cur);
-            return input;
+            return work;
         }
         replace(lin);
     }
@@ -178,14 +299,14 @@ Image TuneNode::apply(const Image &input) const
                                                              bands * bands);
         if (!matrix) {
             g_object_unref(cur);
-            return input;
+            return work;
         }
         VipsImage *recombined = nullptr;
         const int rc = vips_recomb(cur, &recombined, matrix, nullptr);
         g_object_unref(matrix);
         if (rc) {
             g_object_unref(cur);
-            return input;
+            return work;
         }
         replace(recombined);
     }

@@ -30,6 +30,31 @@ void fillMetadata(LibRaw &raw, raw::LensMetadata *meta)
     meta->focusDistance = 0.0f;
 }
 
+// Captures the camera colour matrices LibRaw computes (valid after dcraw_process)
+// for the camera-accurate white balance. rgb_cam is camera→sRGB (3x4, the 4th
+// column is the second green and is dropped); cam_xyz is XYZ→camera (4x3, drop
+// the 4th row); cam_mul are the as-shot multipliers.
+void fillColorProfile(LibRaw &raw, raw::LensMetadata *meta)
+{
+    if (!meta)
+        return;
+    const auto &col = raw.imgdata.color;
+    raw::ColorProfile &p = meta->color;
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            p.camToRgb[r * 3 + c] = col.rgb_cam[r][c];
+            p.xyzToCam[r * 3 + c] = col.cam_xyz[r][c];
+        }
+    }
+    for (int c = 0; c < 3; ++c)
+        p.asShotMul[c] = col.cam_mul[c];
+    // A real profile has a non-trivial camera→sRGB matrix and positive as-shot
+    // green; otherwise leave `valid` false so WB uses the sRGB fallback.
+    const bool hasMatrix = col.rgb_cam[0][0] != 0.0f || col.rgb_cam[0][1] != 0.0f
+                        || col.rgb_cam[1][1] != 0.0f;
+    p.valid = hasMatrix && p.asShotMul[1] > 0.0;
+}
+
 // Configure LibRaw for a viewable 16-bit sRGB result (camera white balance), then
 // demosaic and hand back an Image. Assumes the file/buffer is already opened.
 Image processToImage(LibRaw &raw, QString *error, raw::LensMetadata *meta)
@@ -52,6 +77,9 @@ Image processToImage(LibRaw &raw, QString *error, raw::LensMetadata *meta)
                          .arg(QString::fromUtf8(LibRaw::strerror(e)));
         return Image();
     }
+
+    // Colour matrices are populated by dcraw_process — capture them for WB.
+    fillColorProfile(raw, meta);
 
     int e = 0;
     libraw_processed_image_t *img = raw.dcraw_make_mem_image(&e);
