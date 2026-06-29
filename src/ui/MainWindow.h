@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QFutureWatcher>
 #include <QImage>
+#include <QJsonObject>
 #include <QMainWindow>
 #include <QPointF>
 
@@ -77,6 +78,9 @@ private:
     void showLayersPanel();   // ensures it is visible (used by the selective cmd)
     void hideLayersPanel();
     void refreshLayersPanel();
+    // Re-syncs any visible adjustment panel (tone/curves/looks/mono) with the
+    // active layer's current node values. Read-only: it never adds nodes.
+    void reseedOpenPanels();
     void addAdjustmentLayer();
     void deleteActiveLayer();
     void selectLayer(int index);
@@ -163,6 +167,10 @@ private:
     // The non-destructive edit graph. The GPU preview reads the tune node's
     // exposure live; Export walks the graph at full resolution via libvips.
     EditGraph m_graph;
+    // Snapshot of the graph in its pristine state (Base layer, neutral nodes,
+    // no selective layers), captured once after construction. Restored when a
+    // new image is opened so the previous image's edits don't carry over.
+    QJsonObject m_defaultGraphState;
     TuneNode *m_tune = nullptr;          // owned by m_graph
     CurvesNode *m_curves = nullptr;      // owned by m_graph
     LutNode *m_lutNode = nullptr;        // owned by m_graph

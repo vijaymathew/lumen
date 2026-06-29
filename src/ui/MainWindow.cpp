@@ -239,6 +239,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_lutNode = static_cast<LutNode *>(m_graph.addNode(std::make_unique<LutNode>()));
     m_mono = static_cast<MonoNode *>(m_graph.addNode(std::make_unique<MonoNode>()));
 
+    // Remember the pristine graph (neutral Base nodes, no selective layers) so
+    // openPath() can reset to it for each newly opened image.
+    m_defaultGraphState = m_graph.saveState();
+
     m_canvas = new CanvasWidget(this);
     setCentralWidget(m_canvas);
 
@@ -619,6 +623,15 @@ bool MainWindow::openPath(const QString &path)
     m_sourceName = QFileInfo(path).fileName();
     m_projectPath.clear(); // opening a raw image starts a new (unsaved) project
 
+    // A freshly opened image starts from a clean slate: clear any in-progress
+    // brush editing and reset the graph to its pristine state so the previous
+    // image's adjustments (and any selective layers) don't carry over.
+    m_brushTarget = BrushTarget::None;
+    m_maskView = 0;
+    m_brushUndo.clear();
+    m_brushMask = MaskBuffer();
+    m_graph.restoreState(m_defaultGraphState);
+
     m_graph.setSource(source); // full-res original; the lens node corrects on top
     // Seed the lens node: a RAW carries EXIF identity for automatic correction;
     // anything else starts neutral (manual perspective still available).
@@ -638,6 +651,9 @@ bool MainWindow::openPath(const QString &path)
     updatePreview();        // apply any existing edits
     m_graph.resetHistory(); // fresh undo timeline for this image
     m_sourcePath = path;
+    if (m_layersPanel->isVisible())
+        refreshLayersPanel();   // the reset dropped any selective layers
+    reseedOpenPanels();         // re-sync open tools with the neutral defaults
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
     return true;
 }
@@ -736,24 +752,7 @@ bool MainWindow::loadProjectFile(const QString &path)
     m_sourcePath = path; // export defaults to "<project>-edited.<ext>"
     if (m_layersPanel->isVisible())
         refreshLayersPanel();
-    // Reseed any open adjustment tool from the newly-active layer (guarded).
-    if (m_tonePanel->isVisible()) {
-        if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
-                                 t->temperature(), t->tint()});
-    }
-    if (m_curvesPanel->isVisible()) {
-        if (auto *c = activeCurves())
-            m_curvesPanel->reveal(c->curves());
-    }
-    if (m_looksPanel->isVisible()) {
-        if (auto *l = activeLut())
-            m_looksPanel->reveal(QFileInfo(l->sourcePath()).fileName(), l->intensity());
-    }
-    if (m_monoPanel->isVisible()) {
-        if (auto *mono = activeMono())
-            m_monoPanel->reveal(mono->values());
-    }
+    reseedOpenPanels(); // re-sync any open adjustment tool with the restored layers
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
     showHint(QStringLiteral("Opened %1").arg(QFileInfo(path).fileName()));
     return true;
@@ -970,6 +969,28 @@ void MainWindow::refreshLayersPanel()
     syncMaskGizmo();
     updateMaskEditing();
     recomputeSelectiveMask(); // keep the overlay in sync with the active layer
+}
+
+void MainWindow::reseedOpenPanels()
+{
+    // Guarded: a layer may not carry every node type (e.g. a selective layer).
+    if (m_tonePanel->isVisible()) {
+        if (auto *t = activeTune())
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+                                 t->temperature(), t->tint()});
+    }
+    if (m_curvesPanel->isVisible()) {
+        if (auto *c = activeCurves())
+            m_curvesPanel->reveal(c->curves());
+    }
+    if (m_looksPanel->isVisible()) {
+        if (auto *l = activeLut())
+            m_looksPanel->reveal(QFileInfo(l->sourcePath()).fileName(), l->intensity());
+    }
+    if (m_monoPanel->isVisible()) {
+        if (auto *mono = activeMono())
+            m_monoPanel->reveal(mono->values());
+    }
 }
 
 void MainWindow::addAdjustmentLayer()
