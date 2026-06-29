@@ -37,6 +37,7 @@ class LayersPanel;
 class ColorGradePanel;
 class LensPanel;
 class MaskGizmo;
+class ZoneGizmo;
 class LooksPanel;
 class MonoPanel;
 class SharpenPanel;
@@ -90,6 +91,7 @@ private:
     void setActiveLayerMaskType(int maskType);
     void onLayerMaskEdited(const MaskSpec &spec, bool commit);
     void syncMaskGizmo();      // reflect the active layer's mask into the gizmo
+    void syncZoneGizmo();      // reflect the active layer's zone shapes into the gizmo
     void updateMaskEditing();  // enable/disable the canvas brush for a Brush mask
     void endMaskBrushSession(); // commit in-progress mask-brush strokes
     // Installs the RAW camera colour profile on every layer's TuneNode so white
@@ -178,6 +180,7 @@ private:
     QTimer *m_bakeTimer = nullptr; // debounces sharpen base re-bake
     LayersPanel *m_layersPanel = nullptr;
     MaskGizmo *m_maskGizmo = nullptr; // on-canvas gradient/radial mask editor
+    ZoneGizmo *m_zoneGizmo = nullptr; // on-canvas exclusive-zone shape editor
     QLabel *m_hint = nullptr;
 
     // The non-destructive edit graph. The GPU preview reads the tune node's

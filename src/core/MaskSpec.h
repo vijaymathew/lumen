@@ -4,6 +4,35 @@
 
 #include <QJsonObject>
 #include <QPointF>
+#include <QVector>
+
+#include <vector>
+
+// One shape of a mask's "exclusive zone": an area where masking is allowed to
+// act. Shapes union together to define the included region (additive) and can
+// cut holes out of it (subtract). Geometry is image-normalised, matching the
+// evaluateMask coordinate convention (px = (x+0.5)/w), so — like the Radial
+// mask — a "circle" with equal normalised radii renders as an ellipse on a
+// non-square image, keeping preview==export.
+struct MaskZoneShape {
+    enum Kind { Rect, Ellipse, Polygon }; // circle = Ellipse with equal radii
+
+    Kind kind = Rect;
+    bool subtract = false; // true: cut this shape out of the included region
+
+    // Rect / Ellipse: centre + half-extents (radii) + rotation.
+    QPointF center{0.5, 0.5};
+    QPointF half{0.2, 0.2};
+    float angle = 0.0f; // radians
+
+    // Polygon (freehand): boundary vertices, image-normalised.
+    QVector<QPointF> points;
+
+    friend bool operator==(const MaskZoneShape &, const MaskZoneShape &) = default;
+
+    QJsonObject toJson() const;
+    static MaskZoneShape fromJson(const QJsonObject &);
+};
 
 // A serializable description of a layer's mask (LAYERS.md §3). Most types are
 // parametric — evaluated to per-pixel coverage [0,1] by identical math in
@@ -41,6 +70,12 @@ struct MaskSpec {
     // upscaled when evaluated. (Brush-refinement of parametric masks is a later
     // step; for now this is only used when type == Brush.)
     MaskBuffer brush;
+
+    // Exclusive zone: shapes that gate where the mask (of any type) may act.
+    // Empty = no restriction (the whole image). Applied as a coverage multiplier
+    // in evaluateMask, so it affects both the GPU preview and the export.
+    std::vector<MaskZoneShape> zones;
+    float zoneFeather = 0.05f; // soft border for the zone edges [0,1]
 
     friend bool operator==(const MaskSpec &, const MaskSpec &) = default;
 

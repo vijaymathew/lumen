@@ -18,6 +18,7 @@
 #include "ui/LayersPanel.h"
 #include "ui/LensPanel.h"
 #include "ui/MaskGizmo.h"
+#include "ui/ZoneGizmo.h"
 #include "ui/LooksPanel.h"
 #include "ui/ColorGradePanel.h"
 #include "ui/MonoPanel.h"
@@ -588,6 +589,60 @@ MainWindow::MainWindow(QWidget *parent)
             [this](const MaskSpec &s) { onLayerMaskEdited(s, /*commit=*/true); });
     connect(m_canvas, &CanvasWidget::viewChanged, m_maskGizmo, &MaskGizmo::refresh);
 
+    // On-canvas editor for the active layer's exclusive-zone shapes. It overlays
+    // the mask gizmo and forwards unconsumed clicks down to it (so a gradient/
+    // radial mask stays editable beneath the zone shapes).
+    m_zoneGizmo = new ZoneGizmo(m_canvas, this);
+    m_zoneGizmo->setFallthrough(m_maskGizmo);
+    const auto applyZones = [this](const std::vector<MaskZoneShape> &shapes, bool commit) {
+        if (m_graph.activeLayerIndex() == 0)
+            return;
+        MaskSpec spec = m_graph.activeLayer().mask();
+        spec.zones = shapes;
+        m_graph.activeLayer().setMask(spec);
+        m_layersPanel->setZoneCount(static_cast<int>(shapes.size()));
+        recomputeSelectiveMask();
+        updatePreview();
+        if (commit)
+            m_graph.commit();
+    };
+    connect(m_zoneGizmo, &ZoneGizmo::changed, this,
+            [applyZones](const std::vector<MaskZoneShape> &s) { applyZones(s, false); });
+    connect(m_zoneGizmo, &ZoneGizmo::editFinished, this,
+            [applyZones](const std::vector<MaskZoneShape> &s) { applyZones(s, true); });
+    connect(m_canvas, &CanvasWidget::viewChanged, m_zoneGizmo, &ZoneGizmo::refresh);
+
+    connect(m_layersPanel, &LayersPanel::zoneToolChanged, this, [this](int tool) {
+        m_zoneGizmo->setTool(static_cast<ZoneGizmo::Tool>(tool));
+        syncZoneGizmo(); // ensure it is shown while a tool is engaged
+    });
+    connect(m_layersPanel, &LayersPanel::zoneModeChanged, this,
+            [this](bool subtract) { m_zoneGizmo->setSubtract(subtract); });
+    connect(m_layersPanel, &LayersPanel::zoneFeatherChanged, this, [this](int percent) {
+        if (m_graph.activeLayerIndex() == 0)
+            return;
+        MaskSpec spec = m_graph.activeLayer().mask();
+        spec.zoneFeather = percent / 100.0f;
+        m_graph.activeLayer().setMask(spec);
+        recomputeSelectiveMask();
+        updatePreview();
+        m_graph.commit();
+    });
+    connect(m_layersPanel, &LayersPanel::zoneClearRequested, this, [this] {
+        if (m_graph.activeLayerIndex() == 0)
+            return;
+        MaskSpec spec = m_graph.activeLayer().mask();
+        if (spec.zones.empty())
+            return;
+        spec.zones.clear();
+        m_graph.activeLayer().setMask(spec);
+        m_layersPanel->setZoneCount(0);
+        syncZoneGizmo();
+        recomputeSelectiveMask();
+        updatePreview();
+        m_graph.commit();
+    });
+
     // Dismissible hint bar, bottom-centre over the canvas.
     m_hint = new QLabel(this);
     m_hint->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -976,9 +1031,14 @@ void MainWindow::updatePreview()
     // when some layer actually carries a mask. Skipping it keeps the live GPU
     // sliders (tone/curves/mono on the Base) instant — they hit updatePreview()
     // every tick and would otherwise stall on this per-tick copy.
+    // A layer needs mask evaluation if it has a mask type or an exclusive zone
+    // (a zone gates coverage even on a None/geometric mask).
+    const auto hasMask = [](const MaskSpec &m) {
+        return m.type != MaskSpec::None || !m.zones.empty();
+    };
     bool needsMaskSrc = false;
     for (int i = 1; i < m_graph.layerCount(); ++i) {
-        if (m_graph.layer(i).mask().type != MaskSpec::None) {
+        if (hasMask(m_graph.layer(i).mask())) {
             needsMaskSrc = true;
             break;
         }
@@ -1009,7 +1069,7 @@ void MainWindow::updatePreview()
         // composite so the overlay reads cleanly.
         if (overlayView != 0 && i == activeIdx)
             lp.opacity = 0.0f;
-        if (layer.mask().type != MaskSpec::None && mw > 0)
+        if (hasMask(layer.mask()) && mw > 0)
             lp.layerMask = evaluateMask(layer.mask(), mw, mh, maskRgba, 4);
         extras.push_back(std::move(lp));
     }
@@ -1091,6 +1151,7 @@ void MainWindow::hideLayersPanel()
         updatePreview();
     }
     syncMaskGizmo();                 // hide the gizmo
+    syncZoneGizmo();                 // hide the zone editor too
 }
 
 void MainWindow::refreshLayersPanel()
@@ -1104,6 +1165,7 @@ void MainWindow::refreshLayersPanel()
     m_layersPanel->setMaskState(m_graph.activeLayer().mask(), active == 0, m_brushSize,
                                 m_brushHardness, m_brushAdd, m_maskView);
     syncMaskGizmo();
+    syncZoneGizmo();
     updateMaskEditing();
     recomputeSelectiveMask(); // keep the overlay in sync with the active layer
 }
@@ -1225,6 +1287,7 @@ void MainWindow::setActiveLayerMaskType(int maskType)
     m_layersPanel->setMaskState(spec, /*isBaseActive=*/false, m_brushSize, m_brushHardness,
                                 m_brushAdd, m_maskView);
     syncMaskGizmo();
+    syncZoneGizmo();
     updateMaskEditing(); // turn the canvas brush on/off for a Brush mask
     recomputeSelectiveMask();
     updatePreview();
@@ -1250,6 +1313,21 @@ void MainWindow::syncMaskGizmo()
     else
         m_maskGizmo->setSpec(m_graph.activeLayer().mask());
     layoutOverlays(); // re-apply gizmo geometry + z-order
+}
+
+void MainWindow::syncZoneGizmo()
+{
+    // Zones are edited only on a non-Base layer while the Layers panel (which
+    // hosts the zone controls) is open. Otherwise the editor stays hidden.
+    const bool active = m_graph.activeLayerIndex() != 0 && m_layersPanel->isVisible();
+    if (!active) {
+        m_zoneGizmo->setVisible(false);
+        layoutOverlays();
+        return;
+    }
+    m_zoneGizmo->setShapes(m_graph.activeLayer().mask().zones);
+    m_zoneGizmo->setVisible(true);
+    layoutOverlays();
 }
 
 void MainWindow::openToneTool()
@@ -1682,7 +1760,7 @@ void MainWindow::recomputeSelectiveMask()
         m_canvas->setSelectiveMask(m_brushMask);
         return;
     }
-    if (m.type == MaskSpec::None || m_sourceQImage.isNull()) {
+    if ((m.type == MaskSpec::None && m.zones.empty()) || m_sourceQImage.isNull()) {
         m_canvas->setSelectiveMask({});
         return;
     }
@@ -2023,6 +2101,13 @@ void MainWindow::layoutOverlays()
     if (m_maskGizmo) {
         m_maskGizmo->setGeometry(m_canvas->geometry());
         m_maskGizmo->raise();
+        // Zone editor overlays (and sits above) the mask gizmo; it forwards
+        // unconsumed clicks down to it so a gradient/radial mask stays editable.
+        if (m_zoneGizmo) {
+            m_zoneGizmo->setGeometry(m_canvas->geometry());
+            if (m_zoneGizmo->isVisible())
+                m_zoneGizmo->raise();
+        }
         for (QWidget *panel : {static_cast<QWidget *>(m_tonePanel),
                                static_cast<QWidget *>(m_curvesPanel),
                                static_cast<QWidget *>(m_looksPanel),
@@ -2071,6 +2156,21 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         m_adjustHardness = (e->key() == Qt::Key_H);
         m_canvas->setBrushAdjusting(true);
         return;
+    }
+
+    // Zone editing: Delete removes the selected shape; Esc disarms a draw tool
+    // before falling through to the panel-dismiss behaviour below.
+    if (m_zoneGizmo && m_zoneGizmo->isVisible()) {
+        if ((e->key() == Qt::Key_Delete || e->key() == Qt::Key_Backspace)
+            && m_zoneGizmo->hasSelection()) {
+            m_zoneGizmo->deleteSelected();
+            return;
+        }
+        if (e->key() == Qt::Key_Escape && m_zoneGizmo->tool() != ZoneGizmo::Select) {
+            m_zoneGizmo->setTool(ZoneGizmo::Select);
+            m_layersPanel->resetZoneTool();
+            return;
+        }
     }
 
     switch (m_input.mode()) {
