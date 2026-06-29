@@ -632,8 +632,8 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         // Adjustment uniforms: a fixed fill transform for the offscreen target.
         const QMatrix4x4 fill = fillMvp(m_textureSize);
         u->updateDynamicBuffer(m_ubuf.get(), 0, 64, fill.constData());
-        static_assert(sizeof(PreviewState) == 26 * sizeof(float),
-                      "PreviewState must be 26 tightly-packed floats");
+        static_assert(sizeof(PreviewState) == 27 * sizeof(float),
+                      "PreviewState must be 27 tightly-packed floats");
         u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(PreviewState), &m_preview.exposure);
         // Present transform: zoom/pan onto the screen.
         const QMatrix4x4 mvp = computeMvp(target);

@@ -38,6 +38,7 @@ layout(std140, binding = 0) uniform buf {
     float wbR;          // white-balance gains (applied before exposure)
     float wbG;
     float wbB;
+    float selMaskOpacity; // "show mask" overlay strength [0,1] (= layer opacity)
 } ubuf;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -93,10 +94,13 @@ void main()
             col = mix(col, adj, mask);
         }
         if (ubuf.selMaskView > 0.5) {
-            if (ubuf.selMaskView < 1.5)
-                col = mix(col * 0.4, vec3(0.95, 0.2, 0.2), mask * 0.85); // red over dimmed
-            else
-                col = vec3(mask); // grayscale mask
+            // Build the overlay, then fade the whole thing by the layer's opacity
+            // so opacity has a visible effect while the mask is shown (identical
+            // to before at selMaskOpacity = 1, vanishing at 0).
+            vec3 overlaid = (ubuf.selMaskView < 1.5)
+                ? mix(col * 0.4, vec3(0.95, 0.2, 0.2), mask * 0.85) // red over dimmed
+                : vec3(mask);                                       // grayscale mask
+            col = mix(col, overlaid, ubuf.selMaskOpacity);
         }
     }
 

@@ -50,6 +50,10 @@ struct PreviewState {
     float wbR = 1.0f;
     float wbG = 1.0f;
     float wbB = 1.0f;
+    // Strength of the preview-only "show mask" overlay [0,1]. Set to the active
+    // selective layer's opacity so the highlight visibly fades as opacity drops;
+    // 1 while painting so strokes stay fully visible. Doesn't affect the export.
+    float selMaskOpacity = 1.0f;
 
     friend bool operator==(const PreviewState &, const PreviewState &) = default;
 };

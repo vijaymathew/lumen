@@ -202,6 +202,7 @@ private:
     QPointF m_lastBrushPoint;
     bool m_brushHasLast = false;
     bool m_healPainting = false;      // a heal stroke is in progress (red overlay)
+    bool m_selectivePainting = false; // a selective-mask stroke is in progress (forces the overlay)
     bool m_adjustHardness = false;    // s/h + wheel target: false=size, true=hardness
 
     // The heal (inpaint) preview runs off the UI thread so Detailed mode never

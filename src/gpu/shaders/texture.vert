@@ -33,6 +33,7 @@ layout(std140, binding = 0) uniform buf {
     float wbR;
     float wbG;
     float wbB;
+    float selMaskOpacity;
 } ubuf;
 
 void main()

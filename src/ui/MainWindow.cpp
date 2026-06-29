@@ -839,18 +839,22 @@ void MainWindow::toggleFullScreen()
 
 void MainWindow::updatePreview()
 {
-    // While actively painting a Brush mask, always show it (red) so the strokes
-    // you paint to *define* the region are visible even before a tone is dialled
-    // in — independent of the explicit "Show mask" toggle.
-    const bool brushEditing = m_brushTarget == BrushTarget::Selective
-        && m_graph.activeLayerIndex() > 0
-        && m_graph.activeLayer().mask().type == MaskSpec::Brush;
-    const int overlayView = (m_maskView != 0) ? m_maskView : (brushEditing ? 1 : 0);
+    // While actively painting a Brush-mask stroke, force the red overlay on so
+    // the strokes you paint to *define* the region are visible even before a tone
+    // is dialled in. Once the stroke ends this falls back to the explicit "Show
+    // mask" toggle, so the user can hide the highlight (and see the layer's
+    // opacity/adjustment) by choosing "Show: Off".
+    const int overlayView = (m_maskView != 0) ? m_maskView : (m_selectivePainting ? 1 : 0);
 
     PreviewState ps = m_graph.previewState();
     ps.selMaskView = static_cast<float>(overlayView); // preview-only overlay
     if (overlayView != 0)
         ps.selMaskMode = 1.0f; // overlay samples the uploaded mask texture
+    // Fade the explicit "Show mask" highlight by the active layer's opacity so
+    // opacity has a visible effect while inspecting the mask. While painting we
+    // keep it full strength so the strokes you're drawing stay visible.
+    if (!m_selectivePainting && m_maskView != 0 && m_graph.activeLayerIndex() > 0)
+        ps.selMaskOpacity = m_graph.activeLayer().opacity();
     if (m_healPainting) {
         // Show the in-progress heal stroke as a red overlay (the mask texture),
         // without any selective adjustment.
@@ -1334,6 +1338,7 @@ void MainWindow::updateMaskEditing()
         m_canvas->setSelectiveMask(m_brushMask); // show the mask being painted
     } else if (m_brushTarget == BrushTarget::Selective) {
         m_brushTarget = BrushTarget::None;
+        m_selectivePainting = false;
         m_canvas->setBrushMode(false);
     }
 }
@@ -1605,6 +1610,7 @@ void MainWindow::brushAt(const QPointF &norm)
         // it down and refresh the masked adjustment live (overlay too if shown).
         syncBrushMaskToLayer();
         m_canvas->setSelectiveMask(m_brushMask);
+        m_selectivePainting = true; // force the red overlay for the duration of the stroke
         updatePreview();
     }
 }
@@ -1612,14 +1618,21 @@ void MainWindow::brushAt(const QPointF &norm)
 void MainWindow::endBrushStroke()
 {
     m_brushHasLast = false;
-    if (m_brushTarget != BrushTarget::Heal)
-        return;
-    // Inpaint and show the result; restore the selective texture afterwards.
-    m_healPainting = false;
-    m_heal->setHealMask(m_brushMask);
-    refreshBaseImage();
-    recomputeSelectiveMask();
-    updatePreview();
+    if (m_brushTarget == BrushTarget::Heal) {
+        // Inpaint and show the result; restore the selective texture afterwards.
+        m_healPainting = false;
+        m_heal->setHealMask(m_brushMask);
+        refreshBaseImage();
+        recomputeSelectiveMask();
+        updatePreview();
+    } else if (m_brushTarget == BrushTarget::Selective) {
+        // Stroke finished: drop the transient "show strokes" overlay so the
+        // highlight follows the Show toggle and the layer's adjustment/opacity
+        // becomes visible again.
+        m_selectivePainting = false;
+        recomputeSelectiveMask();
+        updatePreview();
+    }
 }
 
 bool MainWindow::brushSessionUndo()
