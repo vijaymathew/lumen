@@ -67,6 +67,8 @@ layout(std140, binding = 0) uniform buf {
     float monoShadowR;  // split-tone shadow tint (pre-normalised to luma 1)
     float monoShadowG;
     float monoShadowB;
+    float grainAmount;  // film grain intensity/100 (0 = off)
+    float grainSize;    // grain cell size in px
 } ubuf;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -128,6 +130,24 @@ float monoBandShift(float hue)
     return b[0];
 }
 
+// Hash of an integer lattice point → [0,1]. Matches GrainNode's hash2.
+float grainHash(float x, float y)
+{
+    return fract(sin(x * 127.1 + y * 311.7) * 43758.5453123);
+}
+
+// Smooth 2D value noise in [0,1] — matches GrainNode::valueNoise.
+float grainNoise(vec2 p)
+{
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = grainHash(i.x, i.y);
+    float b = grainHash(i.x + 1.0, i.y);
+    float c = grainHash(i.x, i.y + 1.0);
+    float d = grainHash(i.x + 1.0, i.y + 1.0);
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
 void main()
 {
     vec4 c = texture(tex, v_texcoord);
@@ -174,6 +194,14 @@ void main()
         vec3 hi = vec3(ubuf.monoHighR, ubuf.monoHighG, ubuf.monoHighB);
         float hw = clamp(g + 0.5 * ubuf.monoBalance, 0.0, 1.0);
         col = g * mix(sh, hi, hw);
+    }
+    // 3.6 Film grain (final Base-layer step): monochrome value-noise keyed to the
+    //     image pixel (gl_FragCoord, full-res offscreen). 0.18 = GrainNode::kStrength,
+    //     11.0 = kSeed — keep in sync with GrainNode.
+    if (ubuf.grainAmount > 0.0) {
+        float gs = max(ubuf.grainSize, 1.0);
+        float n = grainNoise(gl_FragCoord.xy / gs + vec2(11.0));
+        col += (n - 0.5) * ubuf.grainAmount * 0.18;
     }
     // 4. Preview-only "show mask" overlay of the active layer's mask. (The old
     //    in-shader selective adjustment is vestigial — selEnabled stays 0 now

@@ -78,6 +78,10 @@ struct PreviewState {
     // Split-tone shadow tint (luma-1 normalised). Appended last; the highlight
     // tint reuses the former single-tint slots above (monoHigh*).
     float monoShadowR = 1.0f, monoShadowG = 1.0f, monoShadowB = 1.0f;
+    // GrainNode — film grain (final Base-layer step). amount = intensity/100
+    // (0 = off); size = grain cell in px. Keyed to gl_FragCoord in texture.frag.
+    float grainAmount = 0.0f;
+    float grainSize = 2.0f;
 
     friend bool operator==(const PreviewState &, const PreviewState &) = default;
 };

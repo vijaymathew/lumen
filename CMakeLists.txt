@@ -83,6 +83,8 @@ add_library(lumen_core STATIC
     src/core/LutNode.cpp
     src/core/MonoNode.h
     src/core/MonoNode.cpp
+    src/core/GrainNode.h
+    src/core/GrainNode.cpp
     src/core/NodeFactory.h
     src/core/NodeFactory.cpp
     src/core/Project.h
@@ -141,6 +143,8 @@ qt_add_executable(lumen
     src/ui/LayersPanel.cpp
     src/ui/MonoPanel.h
     src/ui/MonoPanel.cpp
+    src/ui/GrainPanel.h
+    src/ui/GrainPanel.cpp
     src/ui/LensPanel.h
     src/ui/LensPanel.cpp
     src/ui/SharpenPanel.h
@@ -313,6 +317,11 @@ if(BUILD_TESTING)
     target_link_libraries(denoise_test PRIVATE lumen_core)
     target_compile_options(denoise_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME denoise_test COMMAND denoise_test)
+
+    add_executable(grain_test tests/grain_test.cpp)
+    target_link_libraries(grain_test PRIVATE lumen_core)
+    target_compile_options(grain_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME grain_test COMMAND grain_test)
 endif()
 
 

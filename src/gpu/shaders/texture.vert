@@ -62,6 +62,8 @@ layout(std140, binding = 0) uniform buf {
     float monoShadowR; // split-tone shadow tint
     float monoShadowG;
     float monoShadowB;
+    float grainAmount; // consumed in the fragment stage
+    float grainSize;
 } ubuf;
 
 void main()

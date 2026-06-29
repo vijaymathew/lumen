@@ -17,6 +17,7 @@
 #include "core/LutNode.h"
 #include "core/MaskSpec.h"
 #include "core/DenoiseNode.h"
+#include "core/GrainNode.h"
 #include "core/Histogram.h"
 #include "core/MonoNode.h"
 #include "core/RawLoader.h"
@@ -40,6 +41,7 @@ class MaskGizmo;
 class ZoneGizmo;
 class LooksPanel;
 class MonoPanel;
+class GrainPanel;
 class SharpenPanel;
 class TonePanel;
 class QLabel;
@@ -122,6 +124,8 @@ private:
     void closeSharpenTool();
     void openDenoiseTool();  // toggles the Denoise panel
     void closeDenoiseTool();
+    void openGrainTool();    // toggles the Film Grain panel
+    void closeGrainTool();
     void toggleHistogram();  // show/hide the histogram overlay
     void updateHistogram();  // recompute from the current result (when visible)
     // Recomputes the cached lens-corrected working source (and its display
@@ -173,6 +177,7 @@ private:
     ColorGradePanel *m_colorGradePanel = nullptr;
     LensPanel *m_lensPanel = nullptr;
     SharpenPanel *m_sharpenPanel = nullptr;
+    GrainPanel *m_grainPanel = nullptr;
     DenoisePanel *m_denoisePanel = nullptr;
     HealPanel *m_healPanel = nullptr;
     HistogramWidget *m_histogram = nullptr;
@@ -199,6 +204,7 @@ private:
     LensCorrectionNode *m_lens = nullptr; // owned by m_graph (first in the chain)
     DenoiseNode *m_denoise = nullptr;     // owned by m_graph (after heal, before sharpen)
     SharpenNode *m_sharpen = nullptr;     // owned by m_graph (after denoise, before tune)
+    GrainNode *m_grain = nullptr;         // owned by m_graph (final Base node, after mono)
     Image m_workingSource;               // cached lens-corrected source (preview base input)
     QString m_sourcePath;                // for a sensible default export name
     QString m_exportExt = QStringLiteral("jpg"); // remembered export format

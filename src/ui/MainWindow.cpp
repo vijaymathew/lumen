@@ -22,6 +22,7 @@
 #include "ui/LooksPanel.h"
 #include "ui/ColorGradePanel.h"
 #include "ui/MonoPanel.h"
+#include "ui/GrainPanel.h"
 #include "ui/SharpenPanel.h"
 #include "ui/TonePanel.h"
 
@@ -294,6 +295,9 @@ MainWindow::MainWindow(QWidget *parent)
         static_cast<ColorGradeNode *>(m_graph.addNode(std::make_unique<ColorGradeNode>()));
     m_lutNode = static_cast<LutNode *>(m_graph.addNode(std::make_unique<LutNode>()));
     m_mono = static_cast<MonoNode *>(m_graph.addNode(std::make_unique<MonoNode>()));
+    // Film grain is the final finishing step (after mono), applied over the
+    // whole image. A pointwise-in-shader op, so it bakes nothing.
+    m_grain = static_cast<GrainNode *>(m_graph.addNode(std::make_unique<GrainNode>()));
 
     // Remember the pristine graph (neutral Base nodes, no selective layers) so
     // openPath() can reset to it for each newly opened image.
@@ -425,6 +429,16 @@ MainWindow::MainWindow(QWidget *parent)
                 m_bakeTimer->start();
             });
     connect(m_sharpenPanel, &SharpenPanel::closed, this, &MainWindow::closeSharpenTool);
+
+    m_grainPanel = new GrainPanel(this);
+    connect(m_grainPanel, &GrainPanel::valuesChanged, this,
+            [this](const GrainNode::Values &v) {
+                if (!m_grain)
+                    return;
+                m_grain->setValues(v);
+                updatePreview(); // grain is a live GPU step (no base re-bake)
+            });
+    connect(m_grainPanel, &GrainPanel::closed, this, &MainWindow::closeGrainTool);
 
     m_denoisePanel = new DenoisePanel(this);
     connect(m_denoisePanel, &DenoisePanel::valuesChanged, this,
@@ -703,6 +717,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("lens"), QStringLiteral("Lens & perspective")},
         {QStringLiteral("denoise"), QStringLiteral("Denoise")},
         {QStringLiteral("sharpen"), QStringLiteral("Sharpen")},
+        {QStringLiteral("grain"), QStringLiteral("Film grain")},
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
         {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)")},
         {QStringLiteral("layers"), QStringLiteral("Layers")},
@@ -742,6 +757,8 @@ void MainWindow::runCommand(const QString &id)
         openSharpenTool();
     } else if (id == QLatin1String("denoise")) {
         openDenoiseTool();
+    } else if (id == QLatin1String("grain")) {
+        openGrainTool();
     } else if (id == QLatin1String("histogram")) {
         toggleHistogram();
     } else if (id == QLatin1String("heal")) {
@@ -1483,6 +1500,25 @@ void MainWindow::closeSharpenTool()
     m_canvas->setFocus();
 }
 
+void MainWindow::openGrainTool()
+{
+    if (!m_grain)
+        return;
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_grainPanel->adjustSize();
+    const int margin = 18;
+    m_grainPanel->move(width() - m_grainPanel->width() - margin, margin);
+    m_grainPanel->reveal(m_grain->values());
+}
+
+void MainWindow::closeGrainTool()
+{
+    m_grainPanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
 void MainWindow::openDenoiseTool()
 {
     if (!m_denoise)
@@ -1977,6 +2013,8 @@ void MainWindow::closeActiveTool()
         closeSharpenTool();
     else if (m_denoisePanel->isVisible())
         closeDenoiseTool();
+    else if (m_grainPanel->isVisible())
+        closeGrainTool();
     else if (m_healPanel->isVisible())
         closeHealTool();
     else {
@@ -2044,6 +2082,8 @@ void MainWindow::afterHistoryChange()
         m_sharpenPanel->reveal(m_sharpen->values());
     if (m_denoisePanel->isVisible() && m_denoise)
         m_denoisePanel->reveal(m_denoise->values());
+    if (m_grainPanel->isVisible() && m_grain)
+        m_grainPanel->reveal(m_grain->values());
     updateHistogram(); // reflect the restored state (no-op when hidden)
     // If a mask brush is active, resync the working mask to the restored state.
     if (m_brushTarget == BrushTarget::Selective
@@ -2098,6 +2138,7 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_colorGradePanel);
     clampIntoView(m_lensPanel);
     clampIntoView(m_sharpenPanel);
+    clampIntoView(m_grainPanel);
     clampIntoView(m_denoisePanel);
     clampIntoView(m_healPanel);
     clampIntoView(m_layersPanel);
@@ -2128,6 +2169,7 @@ void MainWindow::layoutOverlays()
                                static_cast<QWidget *>(m_colorGradePanel),
                                static_cast<QWidget *>(m_lensPanel),
                                static_cast<QWidget *>(m_sharpenPanel),
+                               static_cast<QWidget *>(m_grainPanel),
                                static_cast<QWidget *>(m_denoisePanel),
                                static_cast<QWidget *>(m_healPanel),
                                static_cast<QWidget *>(m_layersPanel)}) {
