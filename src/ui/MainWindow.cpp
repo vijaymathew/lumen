@@ -341,6 +341,7 @@ MainWindow::MainWindow(QWidget *parent)
             t->setExposure(v.exposure);
             t->setContrast(v.contrast);
             t->setSaturation(v.saturation);
+            t->setVibrance(v.vibrance);
             t->setKelvin(v.kelvin);
             t->setTint(v.tint);
         }
@@ -352,7 +353,7 @@ MainWindow::MainWindow(QWidget *parent)
             t->setKelvin(t->asShotKelvin());
             t->setTint(0.0f);
             updatePreview();
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(), t->vibrance(),
                                  t->kelvin(), t->tint()});
         }
     });
@@ -1175,7 +1176,7 @@ void MainWindow::reseedOpenPanels()
     // Guarded: a layer may not carry every node type (e.g. a selective layer).
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(), t->vibrance(),
                                  t->kelvin(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
@@ -1231,7 +1232,7 @@ void MainWindow::selectLayer(int index)
     // (guarded — a layer may not carry every node type, e.g. a selective layer).
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(), t->vibrance(),
                                  t->kelvin(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
@@ -1338,8 +1339,8 @@ void MainWindow::openToneTool()
     const int margin = 18;
     m_tonePanel->move(width() - m_tonePanel->width() - margin, margin);
     m_tonePanel->reveal({activeTune()->exposure(), activeTune()->contrast(),
-                         activeTune()->saturation(), activeTune()->kelvin(),
-                         activeTune()->tint()});
+                         activeTune()->saturation(), activeTune()->vibrance(),
+                         activeTune()->kelvin(), activeTune()->tint()});
 }
 
 void MainWindow::closeToneTool()
@@ -1924,7 +1925,7 @@ void MainWindow::onColorPicked(const QPointF &norm)
                            static_cast<float>(c.blueF()));
             updatePreview();
             if (m_tonePanel->isVisible())
-                m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+                m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(), t->vibrance(),
                                      t->kelvin(), t->tint()});
             m_graph.commit();
         }
@@ -2004,7 +2005,7 @@ void MainWindow::afterHistoryChange()
     // a layer may not carry every node type, e.g. a selective layer has tune only).
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(),
+            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(), t->vibrance(),
                                  t->kelvin(), t->tint()});
     }
     if (m_curvesPanel->isVisible()) {
