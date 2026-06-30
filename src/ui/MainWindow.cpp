@@ -797,6 +797,9 @@ MainWindow::MainWindow(QWidget *parent)
             [applyZones](const std::vector<MaskZoneShape> &s) { applyZones(s, false); });
     connect(m_zoneGizmo, &ZoneGizmo::editFinished, this,
             [applyZones](const std::vector<MaskZoneShape> &s) { applyZones(s, true); });
+    // After a shape is drawn the gizmo returns to Select; reflect that on the panel.
+    connect(m_zoneGizmo, &ZoneGizmo::toolReset, this,
+            [this] { m_layersPanel->resetZoneTool(); });
     connect(m_canvas, &CanvasWidget::viewChanged, m_zoneGizmo, &ZoneGizmo::refresh);
 
     // On-canvas crop rectangle editor (only visible while the Crop tool is open).
@@ -817,9 +820,14 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_canvas, &CanvasWidget::viewChanged, m_cropGizmo, [this] { m_cropGizmo->update(); });
 
     connect(m_layersPanel, &LayersPanel::zoneToolChanged, this, [this](int tool) {
+        // Engaging a tool implies you want to see the overlay: un-hide first.
+        if (m_overlaysHidden)
+            setOverlayGeometryVisible(true);
         m_zoneGizmo->setTool(static_cast<ZoneGizmo::Tool>(tool));
         syncZoneGizmo(); // ensure it is shown while a tool is engaged
     });
+    connect(m_layersPanel, &LayersPanel::overlayVisibilityChanged, this,
+            [this](bool visible) { setOverlayGeometryVisible(visible); });
     connect(m_layersPanel, &LayersPanel::zoneModeChanged, this,
             [this](bool subtract) { m_zoneGizmo->setSubtract(subtract); });
     connect(m_layersPanel, &LayersPanel::zoneFeatherChanged, this, [this](int percent) {
@@ -1832,8 +1840,9 @@ void MainWindow::onLayerMaskEdited(const MaskSpec &spec, bool commit)
 
 void MainWindow::syncMaskGizmo()
 {
-    // The gizmo shows itself only for gradient/radial masks on a non-Base layer.
-    if (m_graph.activeLayerIndex() == 0)
+    // The gizmo shows itself only for gradient/radial masks on a non-Base layer —
+    // and never while the user has hidden the overlay geometry.
+    if (m_overlaysHidden || m_graph.activeLayerIndex() == 0)
         m_maskGizmo->setSpec(MaskSpec{}); // None → hides
     else
         m_maskGizmo->setSpec(m_graph.activeLayer().mask());
@@ -1843,8 +1852,9 @@ void MainWindow::syncMaskGizmo()
 void MainWindow::syncZoneGizmo()
 {
     // Zones are edited only on a non-Base layer while the Layers panel (which
-    // hosts the zone controls) is open. Otherwise the editor stays hidden.
-    const bool active = m_graph.activeLayerIndex() != 0 && m_layersPanel->isVisible();
+    // hosts the zone controls) is open, and never while overlays are hidden.
+    const bool active = !m_overlaysHidden && m_graph.activeLayerIndex() != 0
+                        && m_layersPanel->isVisible();
     if (!active) {
         m_zoneGizmo->setVisible(false);
         layoutOverlays();
@@ -1853,6 +1863,16 @@ void MainWindow::syncZoneGizmo()
     m_zoneGizmo->setShapes(m_graph.activeLayer().mask().zones);
     m_zoneGizmo->setVisible(true);
     layoutOverlays();
+}
+
+void MainWindow::setOverlayGeometryVisible(bool visible)
+{
+    m_overlaysHidden = !visible;
+    m_layersPanel->setOverlayVisible(visible); // keep the panel toggle in sync
+    syncMaskGizmo();
+    syncZoneGizmo();
+    showHint(visible ? QStringLiteral("Overlay shapes shown")
+                     : QStringLiteral("Overlay shapes hidden"));
 }
 
 void MainWindow::openToneTool()
@@ -2881,6 +2901,15 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         && (e->key() == Qt::Key_S || e->key() == Qt::Key_H)) {
         m_adjustHardness = (e->key() == Qt::Key_H);
         m_canvas->setBrushAdjusting(true);
+        return;
+    }
+
+    // H toggles the overlay geometry while a selective layer is being edited.
+    // (Reached only when no brush is active — the brush guard above returns first,
+    // so this never clashes with the brush-hardness H binding.)
+    if (e->key() == Qt::Key_H && !e->isAutoRepeat() && m_layersPanel->isVisible()
+        && m_graph.activeLayerIndex() != 0) {
+        setOverlayGeometryVisible(m_overlaysHidden);
         return;
     }
 

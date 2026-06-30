@@ -132,6 +132,9 @@ private:
     void onLayerMaskEdited(const MaskSpec &spec, bool commit);
     void syncMaskGizmo();      // reflect the active layer's mask into the gizmo
     void syncZoneGizmo();      // reflect the active layer's zone shapes into the gizmo
+    // Show/hide the on-canvas overlay geometry (zone shapes + mask gizmo); a
+    // transient view preference. Hidden is view-only (the mask still renders).
+    void setOverlayGeometryVisible(bool visible);
     void updateMaskEditing();  // enable/disable the canvas brush for a Brush mask
     void endMaskBrushSession(); // commit in-progress mask-brush strokes
     // Installs the RAW camera colour profile on every layer's TuneNode so white
@@ -281,6 +284,7 @@ private:
     QString m_sourceName;                // original source file name
     QString m_projectPath;               // current .lumen path (empty until saved/opened)
     int m_maskView = 0;                  // selective mask overlay (preview-only)
+    bool m_overlaysHidden = false;       // user hid the on-canvas gizmo geometry
 
     // Autosave & crash recovery. While m_projectPath is empty, autosave writes
     // m_recoveryPath in ~/.lumen/projects; once saved/opened it targets the user

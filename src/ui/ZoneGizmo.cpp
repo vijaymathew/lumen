@@ -147,6 +147,7 @@ void ZoneGizmo::paintEvent(QPaintEvent *)
     p.setRenderHint(QPainter::Antialiasing, true);
     const QColor halo(0, 0, 0, 150);
     const QColor add(255, 255, 255, 230), sub(255, 90, 90, 235);
+    const QColor highlight(255, 213, 0, 240); // selected shape (amber)
     const QColor fill(255, 255, 255, 210);
 
     const auto handle = [&](QPointF wn) {
@@ -162,7 +163,9 @@ void ZoneGizmo::paintEvent(QPaintEvent *)
     for (int i = 0; i < static_cast<int>(m_shapes.size()); ++i) {
         const MaskZoneShape &s = m_shapes[i];
         const bool selected = (i == m_selected);
-        const QColor c = s.subtract ? sub : add;
+        // Selected shapes draw amber so the selection is unmistakable; subtract
+        // shapes keep their dashed outline (set below) to stay distinguishable.
+        const QColor c = selected ? highlight : (s.subtract ? sub : add);
 
         QPolygonF poly;
         if (s.kind == MaskZoneShape::Polygon) {
@@ -365,8 +368,14 @@ void ZoneGizmo::mouseReleaseEvent(QMouseEvent *e)
             emit changed(m_shapes);
             return;
         }
+        // A finished shape returns the tool to Select (keeping the new shape
+        // selected) so the next click selects/manipulates it instead of drawing
+        // yet another shape. The panel re-checks its Select button via toolReset.
+        m_tool = Select;
+        m_active = {};
         update();
         emit editFinished(m_shapes);
+        emit toolReset();
         return;
     }
 

@@ -7,6 +7,7 @@
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QVBoxLayout>
 
@@ -215,8 +216,17 @@ LayersPanel::LayersPanel(QWidget *parent)
     zoneTitle->setObjectName(QStringLiteral("rowName"));
     m_zoneCount = new QLabel(QString(), m_zoneSection);
     m_zoneCount->setObjectName(QStringLiteral("rowValue"));
+    // Toggle the on-canvas overlay geometry (zone shapes + mask gizmo). Checked =
+    // shown. Hidden is view-only; the mask effect still renders.
+    m_overlayShowButton = new QPushButton(QStringLiteral("Show"), m_zoneSection);
+    m_overlayShowButton->setCheckable(true);
+    m_overlayShowButton->setChecked(true);
+    m_overlayShowButton->setToolTip(QStringLiteral("Show/hide the overlay shapes (H)"));
+    connect(m_overlayShowButton, &QPushButton::toggled, this,
+            &LayersPanel::overlayVisibilityChanged);
     zoneTitleRow->addWidget(zoneTitle);
     zoneTitleRow->addStretch(1);
+    zoneTitleRow->addWidget(m_overlayShowButton);
     zoneTitleRow->addWidget(m_zoneCount);
     zoneLayout->addLayout(zoneTitleRow);
 
@@ -476,6 +486,13 @@ void LayersPanel::resetZoneTool()
 {
     for (int i = 0; i < m_zoneToolButtons.size(); ++i)
         m_zoneToolButtons[i]->setChecked(i == 0);
+}
+
+void LayersPanel::setOverlayVisible(bool visible)
+{
+    // Reflect the state (e.g. toggled by the H shortcut) without re-emitting.
+    QSignalBlocker block(m_overlayShowButton);
+    m_overlayShowButton->setChecked(visible);
 }
 
 void LayersPanel::setTargetColor(const QColor &color)
