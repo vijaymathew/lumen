@@ -49,11 +49,13 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QKeyEvent>
+#include <QMouseEvent>
 #include <QPainter>
 
 #include <cmath>
 #include <QLabel>
 #include <QMessageBox>
+#include <QHBoxLayout>
 #include <QPushButton>
 #include <QSettings>
 #include <QShortcut>
@@ -875,6 +877,48 @@ MainWindow::MainWindow(QWidget *parent)
         "padding: 6px 16px; color: #c8c8cc; font-size: 12px;"));
     m_hint->setText(modeHintText()); // Browse legend at startup
     m_hint->adjustSize();
+
+    // View-toggle cluster, bottom-right. Glanceable on/off buttons for the
+    // histogram, clipping warnings, and history (Adjustments) panel — the same
+    // state the G / J / A keys and the palette flip. Buttons reflect current
+    // state via syncViewToggles(); clicking routes through the same toggles.
+    m_viewToggles = new QWidget(this);
+    m_viewToggles->setObjectName(QStringLiteral("viewToggles"));
+    m_viewToggles->setAttribute(Qt::WA_StyledBackground, true);
+    m_viewToggles->setStyleSheet(QStringLiteral(
+        "#viewToggles { background: rgba(20,20,22,0.85); border-radius: 8px; }"
+        "#viewToggles QPushButton { background: transparent; border: none;"
+        " color: #c8c8cc; padding: 5px 11px; font-size: 12px; border-radius: 6px; }"
+        "#viewToggles QPushButton:hover { background: #2a2a2e; }"
+        "#viewToggles QPushButton:checked { background: #3a3a40; color: #f0f0f1; }"
+        "#clusterGrip { color: #6a6a70; font-size: 13px; padding: 0 2px; }"));
+    auto *vtLayout = new QHBoxLayout(m_viewToggles);
+    vtLayout->setContentsMargins(6, 4, 6, 4);
+    vtLayout->setSpacing(4);
+    // Drag handle: grab here to move the cluster (the buttons consume their own
+    // clicks, so they can't double as a drag surface).
+    m_clusterGrip = new QLabel(QStringLiteral("⠿"), m_viewToggles);
+    m_clusterGrip->setObjectName(QStringLiteral("clusterGrip"));
+    m_clusterGrip->setCursor(Qt::SizeAllCursor);
+    m_clusterGrip->installEventFilter(this);
+    vtLayout->addWidget(m_clusterGrip);
+    const auto addToggle = [&](const QString &label, std::function<void()> onClick) {
+        auto *b = new QPushButton(label, m_viewToggles);
+        b->setCheckable(true);
+        b->setFocusPolicy(Qt::NoFocus); // never steal keyboard focus from the canvas
+        connect(b, &QPushButton::clicked, this, [onClick] { onClick(); });
+        vtLayout->addWidget(b);
+        return b;
+    };
+    m_histToggleBtn = addToggle(QStringLiteral("Histogram"), [this] { toggleHistogram(); });
+    m_clipToggleBtn = addToggle(QStringLiteral("Clipping"), [this] { toggleClipping(); });
+    m_historyToggleBtn = addToggle(QStringLiteral("History"), [this] { openAdjustmentsTool(); });
+    m_viewToggles->adjustSize();
+    syncViewToggles();
+
+    // The histogram is a plain painted widget, so its whole surface drags.
+    m_histogram->setCursor(Qt::SizeAllCursor);
+    m_histogram->installEventFilter(this);
 
     buildCommands();
 
@@ -2204,12 +2248,14 @@ void MainWindow::toggleHistogram()
         return;
     if (m_histogram->isVisible()) {
         m_histogram->hide();
+        syncViewToggles();
         return;
     }
     m_histogram->show();
     m_histogram->raise();
     layoutOverlays();   // place it
     updateHistogram();  // fill it immediately
+    syncViewToggles();
 }
 
 void MainWindow::toggleClipping()
@@ -2218,6 +2264,68 @@ void MainWindow::toggleClipping()
     m_canvas->setClipping(m_showClipping);
     showHint(m_showClipping ? QStringLiteral("Clipping warnings on — red = highlights, blue = shadows")
                             : QStringLiteral("Clipping warnings off"));
+    syncViewToggles();
+}
+
+void MainWindow::syncViewToggles()
+{
+    if (!m_viewToggles)
+        return;
+    m_histToggleBtn->setChecked(m_histogram && m_histogram->isVisible());
+    m_clipToggleBtn->setChecked(m_showClipping);
+    m_historyToggleBtn->setChecked(m_adjustmentsPanel && m_adjustmentsPanel->isVisible());
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    // Drag the persistent overlays: the histogram by its surface, the view-toggle
+    // cluster by its grip (moving the whole cluster). Delta math in global coords
+    // is independent of which child delivered the event.
+    QWidget *target = nullptr;
+    bool *moved = nullptr;
+    if (watched == m_histogram) {
+        target = m_histogram;
+        moved = &m_histMoved;
+    } else if (watched == m_clusterGrip) {
+        target = m_viewToggles;
+        moved = &m_clusterMoved;
+    }
+
+    if (target) {
+        switch (event->type()) {
+        case QEvent::MouseButtonPress: {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton) {
+                m_draggingOverlay = target;
+                m_overlayDragStartGlobal = me->globalPosition().toPoint();
+                m_overlayStartPos = target->pos();
+                return true;
+            }
+            break;
+        }
+        case QEvent::MouseMove:
+            if (m_draggingOverlay == target) {
+                auto *me = static_cast<QMouseEvent *>(event);
+                const QPoint delta = me->globalPosition().toPoint() - m_overlayDragStartGlobal;
+                QPoint p = m_overlayStartPos + delta;
+                p.setX(std::clamp(p.x(), 0, std::max(0, width() - target->width())));
+                p.setY(std::clamp(p.y(), 0, std::max(0, height() - target->height())));
+                target->move(p);
+                *moved = true;
+                return true;
+            }
+            break;
+        case QEvent::MouseButtonRelease:
+            if (m_draggingOverlay == target) {
+                m_draggingOverlay = nullptr;
+                return true;
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::updateHistogram()
@@ -2439,6 +2547,7 @@ void MainWindow::openAdjustmentsTool()
     m_adjustmentsPanel->reveal();
     rebuildAdjustments();
     layoutOverlays();
+    syncViewToggles();
 }
 
 void MainWindow::closeAdjustmentsTool()
@@ -2448,6 +2557,7 @@ void MainWindow::closeAdjustmentsTool()
     exitPeek();
     m_adjustmentsPanel->hide();
     layoutOverlays();
+    syncViewToggles();
 }
 
 void MainWindow::refreshWorkingSource()
@@ -3064,8 +3174,9 @@ QString MainWindow::modeHintText() const
     case InputController::Mode::Browse:
     default:
         return QStringLiteral(
-            "/  or right-click  ·  command palette       Ctrl+O open · Ctrl+S save · "
-            "\\ before/after · J clipping · F11 fullscreen");
+            "/  or right-click  ·  command palette       "
+            "G histogram · J clipping · A history · \\ before/after       "
+            "Ctrl+O open · Ctrl+S save · F11 fullscreen");
     }
 }
 
@@ -3125,9 +3236,17 @@ void MainWindow::layoutOverlays()
             m_cropPanel->raise(); // keep the panel clickable above the gizmo
     }
 
-    // Histogram: bottom-left of the canvas, above the hint bar.
+    // Histogram: bottom-left of the canvas, above the hint bar — unless the user
+    // has dragged it, in which case keep their spot (just clamp it into view).
     if (m_histogram && m_histogram->isVisible()) {
-        m_histogram->move(18, height() - m_histogram->height() - 64);
+        if (m_histMoved) {
+            QPoint p = m_histogram->pos();
+            p.setX(std::clamp(p.x(), 0, std::max(0, width() - m_histogram->width())));
+            p.setY(std::clamp(p.y(), 0, std::max(0, height() - m_histogram->height())));
+            m_histogram->move(p);
+        } else {
+            m_histogram->move(18, height() - m_histogram->height() - 64);
+        }
         m_histogram->raise();
     }
 
@@ -3169,6 +3288,21 @@ void MainWindow::layoutOverlays()
 
     // Hint bar: bottom-centre.
     m_hint->move((width() - m_hint->width()) / 2, height() - m_hint->height() - 18);
+
+    // View-toggle cluster: bottom-right, opposite the histogram (bottom-left).
+    // Once dragged, keep the user's position (clamped into view).
+    if (m_viewToggles) {
+        m_viewToggles->adjustSize();
+        if (m_clusterMoved) {
+            QPoint p = m_viewToggles->pos();
+            p.setX(std::clamp(p.x(), 0, std::max(0, width() - m_viewToggles->width())));
+            p.setY(std::clamp(p.y(), 0, std::max(0, height() - m_viewToggles->height())));
+            m_viewToggles->move(p);
+        } else {
+            m_viewToggles->move(width() - m_viewToggles->width() - 18,
+                                height() - m_viewToggles->height() - 18);
+        }
+    }
 }
 
 void MainWindow::resizeEvent(QResizeEvent *e)
@@ -3205,10 +3339,19 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         return;
     }
 
-    // 'J' toggles clipping warnings (Lightroom muscle memory); works while a tone
-    // tool is open so you can watch the blinkies as you push exposure.
+    // View-toggle keys, available whenever an image is loaded (any mode): 'J'
+    // clipping, 'G' histo(G)ram, 'A' history (Adjustments panel). Their on/off
+    // state is mirrored in the bottom-right cluster and the hint legend.
     if (e->key() == Qt::Key_J && !e->isAutoRepeat() && !m_graph.source().isNull()) {
         toggleClipping();
+        return;
+    }
+    if (e->key() == Qt::Key_G && !e->isAutoRepeat() && !m_graph.source().isNull()) {
+        toggleHistogram();
+        return;
+    }
+    if (e->key() == Qt::Key_A && !e->isAutoRepeat() && !m_graph.source().isNull()) {
+        openAdjustmentsTool(); // toggles the history panel
         return;
     }
 

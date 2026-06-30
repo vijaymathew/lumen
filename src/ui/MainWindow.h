@@ -53,6 +53,7 @@ class VignettePanel;
 class SharpenPanel;
 class TonePanel;
 class QLabel;
+class QPushButton;
 class QTimer;
 
 // MainWindow is the immersive shell: a fullscreen canvas with a "/"-triggered
@@ -84,6 +85,10 @@ protected:
     // widget has focus, so the active tool can always be closed.
     void keyPressEvent(QKeyEvent *e) override;
     void keyReleaseEvent(QKeyEvent *e) override;
+    // Drag handling for the persistent overlays (histogram via its surface, the
+    // view-toggle cluster via its grip). Once dragged, layoutOverlays() stops
+    // auto-pinning that overlay and only clamps it back into view.
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void buildCommands();
@@ -194,6 +199,10 @@ private:
     void toggleHistogram();  // show/hide the histogram overlay
     void updateHistogram();  // recompute from the current result (when visible)
     void toggleClipping();   // show/hide on-canvas clipping warnings ("blinkies")
+    // Reflects the current histogram / clipping / history state into the
+    // bottom-right view-toggle cluster (keeps the buttons in sync with the
+    // keyboard + palette paths that can flip the same state).
+    void syncViewToggles();
     // Recomputes the cached lens-corrected working source (and its display
     // QImage) from the original; cheap no-op when no correction is active. Called
     // when the lens parameters or the source image change — NOT per heal dab.
@@ -290,6 +299,19 @@ private:
     ZoneGizmo *m_zoneGizmo = nullptr; // on-canvas exclusive-zone shape editor
     CropGizmo *m_cropGizmo = nullptr; // on-canvas crop rectangle editor
     QLabel *m_hint = nullptr;
+    // Bottom-right cluster of glanceable view toggles (mirror the G/J/A keys).
+    QWidget *m_viewToggles = nullptr;
+    QLabel *m_clusterGrip = nullptr; // drag handle for the cluster
+    QPushButton *m_histToggleBtn = nullptr;
+    QPushButton *m_clipToggleBtn = nullptr;
+    QPushButton *m_historyToggleBtn = nullptr;
+    // Overlay-drag state. The *Moved flags latch once the user repositions an
+    // overlay so layoutOverlays() leaves it where they put it (clamped to view).
+    QWidget *m_draggingOverlay = nullptr;
+    QPoint m_overlayDragStartGlobal;
+    QPoint m_overlayStartPos;
+    bool m_histMoved = false;
+    bool m_clusterMoved = false;
 
     // The non-destructive edit graph. The GPU preview reads the tune node's
     // exposure live; Export walks the graph at full resolution via libvips.
