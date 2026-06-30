@@ -958,6 +958,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("crop"), QStringLiteral("Crop & rotate")},
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
         {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)")},
+        {QStringLiteral("clipping"), QStringLiteral("Clipping warnings (toggle)")},
         {QStringLiteral("layers"), QStringLiteral("Layers")},
         {QStringLiteral("adjustments"), QStringLiteral("Adjustments (history)")},
         {QStringLiteral("quit"), QStringLiteral("Quit Lumen")},
@@ -1008,6 +1009,8 @@ void MainWindow::runCommand(const QString &id)
         openCropTool();
     } else if (id == QLatin1String("histogram")) {
         toggleHistogram();
+    } else if (id == QLatin1String("clipping")) {
+        toggleClipping();
     } else if (id == QLatin1String("heal")) {
         openHealTool();
     } else if (id == QLatin1String("layers")) {
@@ -2209,6 +2212,14 @@ void MainWindow::toggleHistogram()
     updateHistogram();  // fill it immediately
 }
 
+void MainWindow::toggleClipping()
+{
+    m_showClipping = !m_showClipping;
+    m_canvas->setClipping(m_showClipping);
+    showHint(m_showClipping ? QStringLiteral("Clipping warnings on — red = highlights, blue = shadows")
+                            : QStringLiteral("Clipping warnings off"));
+}
+
 void MainWindow::updateHistogram()
 {
     if (!m_histogram || !m_histogram->isVisible())
@@ -3054,7 +3065,7 @@ QString MainWindow::modeHintText() const
     default:
         return QStringLiteral(
             "/  or right-click  ·  command palette       Ctrl+O open · Ctrl+S save · "
-            "\\ before/after · F11 fullscreen");
+            "\\ before/after · J clipping · F11 fullscreen");
     }
 }
 
@@ -3191,6 +3202,13 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     if (e->key() == Qt::Key_Backslash && !e->isAutoRepeat()
         && !m_graph.source().isNull()) {
         setCompareOriginal(!m_compareOriginal);
+        return;
+    }
+
+    // 'J' toggles clipping warnings (Lightroom muscle memory); works while a tone
+    // tool is open so you can watch the blinkies as you push exposure.
+    if (e->key() == Qt::Key_J && !e->isAutoRepeat() && !m_graph.source().isNull()) {
+        toggleClipping();
         return;
     }
 

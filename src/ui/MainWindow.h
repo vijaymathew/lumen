@@ -193,6 +193,7 @@ private:
     double sourceAspect() const; // original (un-oriented) source width/height
     void toggleHistogram();  // show/hide the histogram overlay
     void updateHistogram();  // recompute from the current result (when visible)
+    void toggleClipping();   // show/hide on-canvas clipping warnings ("blinkies")
     // Recomputes the cached lens-corrected working source (and its display
     // QImage) from the original; cheap no-op when no correction is active. Called
     // when the lens parameters or the source image change — NOT per heal dab.
@@ -319,6 +320,7 @@ private:
     QString m_sourceName;                // original source file name
     QString m_projectPath;               // current .lumen path (empty until saved/opened)
     int m_maskView = 0;                  // selective mask overlay (preview-only)
+    bool m_showClipping = false;         // on-canvas clipping warnings (preview-only)
     bool m_overlaysHidden = false;       // user hid the on-canvas gizmo geometry
 
     // Autosave & crash recovery. While m_projectPath is empty, autosave writes

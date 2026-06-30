@@ -76,6 +76,10 @@ public:
     // Creative (post-crop) vignette params for the present pass. Mirrors the
     // export-side core/Vignette.cpp; positioned over the displayed cropped frame.
     void setVignette(const VignetteParams &v);
+
+    // Clipping warnings ("blinkies"): when on, the present pass paints blown
+    // highlights red and crushed shadows blue over the final displayed colour.
+    void setClipping(bool on);
     // Effective displayed image size (device-independent units relative to the
     // source texture), accounting for orientation + crop in the current mode.
     QSizeF effectiveImageSize() const;
@@ -199,6 +203,7 @@ private:
     CropState m_crop;
     CropViewMode m_cropView = CropNone;
     VignetteParams m_vignette; // creative vignette (present pass)
+    bool m_showClipping = false; // clipping warnings overlay (present pass)
 
     // View state, in device pixels.
     float m_zoom = 1.0f;
