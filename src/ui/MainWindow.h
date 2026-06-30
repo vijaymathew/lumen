@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QFutureWatcher>
+#include <QHash>
 #include <QImage>
 #include <QJsonObject>
 #include <QMainWindow>
@@ -53,6 +54,7 @@ class VignettePanel;
 class SharpenPanel;
 class TonePanel;
 class QLabel;
+class QPushButton;
 class QTimer;
 
 // MainWindow is the immersive shell: a fullscreen canvas with a "/"-triggered
@@ -84,6 +86,10 @@ protected:
     // widget has focus, so the active tool can always be closed.
     void keyPressEvent(QKeyEvent *e) override;
     void keyReleaseEvent(QKeyEvent *e) override;
+    // Drag handling for the persistent overlays (histogram via its surface, the
+    // view-toggle cluster via its grip). Once dragged, layoutOverlays() stops
+    // auto-pinning that overlay and only clamps it back into view.
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void buildCommands();
@@ -115,6 +121,9 @@ private:
     // Resets the dirty baselines to the current document (called after open/save).
     void resetAutosaveBaseline();
     void toggleFullScreen();
+    // Overlays a small "✕" close button on a floating panel's top-right corner
+    // and routes it to `onClose` — a pointer counterpart to the Esc/Enter close.
+    void addPanelCloseButton(QWidget *panel, std::function<void()> onClose);
     void showHint(const QString &text);
     // The persistent which-key legend for the current input mode. Shown in the
     // hint bar whenever the mode changes; transient showHint() messages override
@@ -193,6 +202,11 @@ private:
     double sourceAspect() const; // original (un-oriented) source width/height
     void toggleHistogram();  // show/hide the histogram overlay
     void updateHistogram();  // recompute from the current result (when visible)
+    void toggleClipping();   // show/hide on-canvas clipping warnings ("blinkies")
+    // Reflects the current histogram / clipping / history state into the
+    // bottom-right view-toggle cluster (keeps the buttons in sync with the
+    // keyboard + palette paths that can flip the same state).
+    void syncViewToggles();
     // Recomputes the cached lens-corrected working source (and its display
     // QImage) from the original; cheap no-op when no correction is active. Called
     // when the lens parameters or the source image change — NOT per heal dab.
@@ -289,6 +303,21 @@ private:
     ZoneGizmo *m_zoneGizmo = nullptr; // on-canvas exclusive-zone shape editor
     CropGizmo *m_cropGizmo = nullptr; // on-canvas crop rectangle editor
     QLabel *m_hint = nullptr;
+    // Bottom-right cluster of glanceable view toggles (mirror the G/J/A keys).
+    QWidget *m_viewToggles = nullptr;
+    QLabel *m_clusterGrip = nullptr; // drag handle for the cluster
+    QPushButton *m_histToggleBtn = nullptr;
+    QPushButton *m_clipToggleBtn = nullptr;
+    QPushButton *m_historyToggleBtn = nullptr;
+    // Overlay-drag state. The *Moved flags latch once the user repositions an
+    // overlay so layoutOverlays() leaves it where they put it (clamped to view).
+    QWidget *m_draggingOverlay = nullptr;
+    QPoint m_overlayDragStartGlobal;
+    QPoint m_overlayStartPos;
+    bool m_histMoved = false;
+    bool m_clusterMoved = false;
+    // Per-panel "✕" close buttons, repositioned to the top-right on panel resize.
+    QHash<QWidget *, QPushButton *> m_panelClose;
 
     // The non-destructive edit graph. The GPU preview reads the tune node's
     // exposure live; Export walks the graph at full resolution via libvips.
@@ -319,6 +348,7 @@ private:
     QString m_sourceName;                // original source file name
     QString m_projectPath;               // current .lumen path (empty until saved/opened)
     int m_maskView = 0;                  // selective mask overlay (preview-only)
+    bool m_showClipping = false;         // on-canvas clipping warnings (preview-only)
     bool m_overlaysHidden = false;       // user hid the on-canvas gizmo geometry
 
     // Autosave & crash recovery. While m_projectPath is empty, autosave writes
@@ -383,4 +413,14 @@ private:
     };
     QFutureWatcher<DecodeResult> m_decodeWatcher;
     std::atomic<quint64> m_decodeGen{0};
+
+    // Export runs the full-res graph walk + libvips encode off the UI thread (a
+    // heal mask makes result() eager, and encoding a large image is slow either
+    // way). Re-entry is blocked while a write is in flight.
+    struct ExportResult {
+        bool ok = false;
+        QString error;
+        QString path;
+    };
+    QFutureWatcher<ExportResult> m_exportWatcher;
 };

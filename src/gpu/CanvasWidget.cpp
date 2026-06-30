@@ -193,8 +193,9 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
     }
 
     if (!m_presentUbuf) {
-        // mat4 mvp (64) + mat4 texXform (64) + vec4 vig0 (16) + vec4 vig1 (16) = 160.
-        m_presentUbuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 160));
+        // mat4 mvp (64) + mat4 texXform (64) + vec4 vig0 (16) + vec4 vig1 (16)
+        // + vec4 clip (16) = 176.
+        m_presentUbuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 176));
         m_presentUbuf->create();
     }
 
@@ -541,6 +542,14 @@ void CanvasWidget::setVignette(const VignetteParams &v)
     update();
 }
 
+void CanvasWidget::setClipping(bool on)
+{
+    if (m_showClipping == on)
+        return;
+    m_showClipping = on;
+    update();
+}
+
 QSizeF CanvasWidget::effectiveImageSize() const
 {
     const double W = m_textureSize.width(), H = m_textureSize.height();
@@ -742,6 +751,11 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         const float vig1[4] = {A, m_vignette.isIdentity() ? 0.0f : 1.0f, 0.0f, 0.0f};
         u->updateDynamicBuffer(m_presentUbuf.get(), 128, 16, vig0);
         u->updateDynamicBuffer(m_presentUbuf.get(), 144, 16, vig1);
+        // Clipping warnings: enabled flag + per-channel thresholds (tunable). 250
+        // / 5 out of 255 flags genuine and near-clipping without much noise.
+        const float clip[4] = {m_showClipping ? 1.0f : 0.0f, 250.0f / 255.0f,
+                               5.0f / 255.0f, 0.0f};
+        u->updateDynamicBuffer(m_presentUbuf.get(), 160, 16, clip);
 
         const QRhiViewport imgViewport(0, 0, float(m_textureSize.width()),
                                        float(m_textureSize.height()));

@@ -23,6 +23,7 @@ public:
     struct Command {
         QString id;
         QString title;
+        QString category; // section header shown in the browse (empty-query) view
     };
 
     explicit CommandPalette(QWidget *parent = nullptr);
@@ -49,6 +50,9 @@ protected:
 private:
     void refilter();
     void triggerCurrent();
+    void addHeaderItem(const QString &text); // non-selectable section label
+    int firstSelectableRow() const;          // skips header rows
+    int stepRow(int from, int dir) const;    // next selectable row in a direction
     void loadUsage();              // pull persisted counts/recency from QSettings
     void recordUse(const QString &id); // bump + persist on activation
 

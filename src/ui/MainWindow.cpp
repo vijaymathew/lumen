@@ -49,11 +49,13 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QKeyEvent>
+#include <QMouseEvent>
 #include <QPainter>
 
 #include <cmath>
 #include <QLabel>
 #include <QMessageBox>
+#include <QHBoxLayout>
 #include <QPushButton>
 #include <QSettings>
 #include <QShortcut>
@@ -635,6 +637,24 @@ MainWindow::MainWindow(QWidget *parent)
         const QImage healed = m_healWatcher.result();
         if (!healed.isNull())
             m_canvas->setImage(healed, /*keepView=*/true); // preserve zoom/pan
+        // The histogram defers itself while a bake runs; recompute now (debounced).
+        if (m_histogram->isVisible())
+            m_histTimer->start();
+    });
+
+    // Background export finished: stop the badge and report the outcome.
+    connect(&m_exportWatcher, &QFutureWatcher<ExportResult>::finished, this, [this] {
+        static_cast<BusyBadge *>(m_healBusy)->stop();
+        if (!m_exportWatcher.future().isValid())
+            return;
+        const ExportResult r = m_exportWatcher.result();
+        if (!r.ok) {
+            QMessageBox::warning(this, QStringLiteral("Lumen"),
+                                 QStringLiteral("Export failed: %1").arg(r.error));
+            return;
+        }
+        rememberDir(QStringLiteral("export"), r.path);
+        showHint(QStringLiteral("Exported to %1").arg(QFileInfo(r.path).fileName()));
     });
 
     // Background RAW re-decode finished: install the new source and rebuild the
@@ -876,6 +896,61 @@ MainWindow::MainWindow(QWidget *parent)
     m_hint->setText(modeHintText()); // Browse legend at startup
     m_hint->adjustSize();
 
+    // View-toggle cluster, bottom-right. Glanceable on/off buttons for the
+    // histogram, clipping warnings, and history (Adjustments) panel — the same
+    // state the G / J / A keys and the palette flip. Buttons reflect current
+    // state via syncViewToggles(); clicking routes through the same toggles.
+    m_viewToggles = new QWidget(this);
+    m_viewToggles->setObjectName(QStringLiteral("viewToggles"));
+    m_viewToggles->setAttribute(Qt::WA_StyledBackground, true);
+    m_viewToggles->setStyleSheet(QStringLiteral(
+        "#viewToggles { background: rgba(20,20,22,0.85); border-radius: 8px; }"
+        "#viewToggles QPushButton { background: transparent; border: none;"
+        " color: #c8c8cc; padding: 5px 11px; font-size: 12px; border-radius: 6px; }"
+        "#viewToggles QPushButton:hover { background: #2a2a2e; }"
+        "#viewToggles QPushButton:checked { background: #3a3a40; color: #f0f0f1; }"
+        "#clusterGrip { color: #6a6a70; font-size: 13px; padding: 0 2px; }"));
+    auto *vtLayout = new QHBoxLayout(m_viewToggles);
+    vtLayout->setContentsMargins(6, 4, 6, 4);
+    vtLayout->setSpacing(4);
+    // Drag handle: grab here to move the cluster (the buttons consume their own
+    // clicks, so they can't double as a drag surface).
+    m_clusterGrip = new QLabel(QStringLiteral("⠿"), m_viewToggles);
+    m_clusterGrip->setObjectName(QStringLiteral("clusterGrip"));
+    m_clusterGrip->setCursor(Qt::SizeAllCursor);
+    m_clusterGrip->installEventFilter(this);
+    vtLayout->addWidget(m_clusterGrip);
+    const auto addToggle = [&](const QString &label, std::function<void()> onClick) {
+        auto *b = new QPushButton(label, m_viewToggles);
+        b->setCheckable(true);
+        b->setFocusPolicy(Qt::NoFocus); // never steal keyboard focus from the canvas
+        connect(b, &QPushButton::clicked, this, [onClick] { onClick(); });
+        vtLayout->addWidget(b);
+        return b;
+    };
+    m_histToggleBtn = addToggle(QStringLiteral("Histogram"), [this] { toggleHistogram(); });
+    m_clipToggleBtn = addToggle(QStringLiteral("Clipping"), [this] { toggleClipping(); });
+    m_historyToggleBtn = addToggle(QStringLiteral("History"), [this] { openAdjustmentsTool(); });
+    m_viewToggles->adjustSize();
+    syncViewToggles();
+
+    // The histogram is a plain painted widget, so its whole surface drags.
+    m_histogram->setCursor(Qt::SizeAllCursor);
+    m_histogram->installEventFilter(this);
+
+    // Pointer close (✕) for every floating panel. Tool panels share closeActiveTool
+    // (only one is open at a time); the persistent panels close themselves.
+    const auto closeTool = [this] { closeActiveTool(); };
+    QWidget *toolPanels[] = {m_tonePanel,    m_curvesPanel,  m_looksPanel,
+                             m_monoPanel,     m_colorGradePanel, m_lensPanel,
+                             m_sharpenPanel,  m_denoisePanel, m_defringePanel,
+                             m_rawPanel,      m_grainPanel,   m_vignettePanel,
+                             m_cropPanel,     m_healPanel};
+    for (QWidget *p : toolPanels)
+        addPanelCloseButton(p, closeTool);
+    addPanelCloseButton(m_layersPanel, [this] { hideLayersPanel(); });
+    addPanelCloseButton(m_adjustmentsPanel, [this] { closeAdjustmentsTool(); });
+
     buildCommands();
 
     // Shell shortcuts. Bare keys are avoided so they don't clash with typing in
@@ -926,41 +1001,55 @@ MainWindow::~MainWindow()
         m_histWatcher.waitForFinished();
     if (m_decodeWatcher.isRunning())
         m_decodeWatcher.waitForFinished();
+    if (m_exportWatcher.isRunning())
+        m_exportWatcher.waitForFinished();
     if (m_autosaveWatcher.isRunning())
         m_autosaveWatcher.waitForFinished();
 }
 
 void MainWindow::buildCommands()
 {
-    // ids consumed by runCommand(). Editing tools are placeholders for now.
+    // ids consumed by runCommand(). Declared grouped by category and in a stable,
+    // workflow order: the palette emits a section header whenever the category
+    // changes in the browse view, so keep each category's commands consecutive.
+    const QString file = QStringLiteral("File");
+    const QString toneColor = QStringLiteral("Tone & Color");
+    const QString detail = QStringLiteral("Detail & Repair");
+    const QString cropLens = QStringLiteral("Crop & Lens");
+    const QString effects = QStringLiteral("Effects");
+    const QString selective = QStringLiteral("Selective");
+    const QString edit = QStringLiteral("Edit");
+    const QString view = QStringLiteral("View");
+    const QString app = QStringLiteral("App");
     m_palette->setCommands({
-        {QStringLiteral("open"), QStringLiteral("Open image…")},
-        {QStringLiteral("open-project"), QStringLiteral("Open project (.lumen)…")},
-        {QStringLiteral("save-project"), QStringLiteral("Save project (.lumen)…")},
-        {QStringLiteral("export"), QStringLiteral("Export image…")},
-        {QStringLiteral("tone"), QStringLiteral("Tone (exposure, contrast, saturation)")},
-        {QStringLiteral("curves"), QStringLiteral("Curves")},
-        {QStringLiteral("undo"), QStringLiteral("Undo")},
-        {QStringLiteral("redo"), QStringLiteral("Redo")},
-        {QStringLiteral("reset-view"), QStringLiteral("Reset view")},
-        {QStringLiteral("fullscreen"), QStringLiteral("Toggle fullscreen")},
-        {QStringLiteral("looks"), QStringLiteral("Looks (LUT)")},
-        {QStringLiteral("monochrome"), QStringLiteral("Monochrome (B&W + toning)")},
-        {QStringLiteral("colorgrade"), QStringLiteral("Color grading (wheels)")},
-        {QStringLiteral("selective"), QStringLiteral("Selective adjustment")},
-        {QStringLiteral("lens"), QStringLiteral("Lens & perspective")},
-        {QStringLiteral("denoise"), QStringLiteral("Denoise")},
-        {QStringLiteral("defringe"), QStringLiteral("Defringe")},
-        {QStringLiteral("raw"), QStringLiteral("RAW defaults (auto adjustments)")},
-        {QStringLiteral("sharpen"), QStringLiteral("Sharpen")},
-        {QStringLiteral("grain"), QStringLiteral("Film grain")},
-        {QStringLiteral("vignette"), QStringLiteral("Vignette")},
-        {QStringLiteral("crop"), QStringLiteral("Crop & rotate")},
-        {QStringLiteral("heal"), QStringLiteral("Healing brush")},
-        {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)")},
-        {QStringLiteral("layers"), QStringLiteral("Layers")},
-        {QStringLiteral("adjustments"), QStringLiteral("Adjustments (history)")},
-        {QStringLiteral("quit"), QStringLiteral("Quit Lumen")},
+        {QStringLiteral("open"), QStringLiteral("Open image…"), file},
+        {QStringLiteral("open-project"), QStringLiteral("Open project (.lumen)…"), file},
+        {QStringLiteral("save-project"), QStringLiteral("Save project (.lumen)…"), file},
+        {QStringLiteral("export"), QStringLiteral("Export image…"), file},
+        {QStringLiteral("tone"), QStringLiteral("Tone (exposure, contrast, saturation)"), toneColor},
+        {QStringLiteral("curves"), QStringLiteral("Curves"), toneColor},
+        {QStringLiteral("colorgrade"), QStringLiteral("Color grading (wheels)"), toneColor},
+        {QStringLiteral("monochrome"), QStringLiteral("Monochrome (B&W + toning)"), toneColor},
+        {QStringLiteral("looks"), QStringLiteral("Looks (LUT)"), toneColor},
+        {QStringLiteral("sharpen"), QStringLiteral("Sharpen"), detail},
+        {QStringLiteral("denoise"), QStringLiteral("Denoise"), detail},
+        {QStringLiteral("defringe"), QStringLiteral("Defringe"), detail},
+        {QStringLiteral("heal"), QStringLiteral("Healing brush"), detail},
+        {QStringLiteral("raw"), QStringLiteral("RAW defaults (auto adjustments)"), detail},
+        {QStringLiteral("crop"), QStringLiteral("Crop & rotate"), cropLens},
+        {QStringLiteral("lens"), QStringLiteral("Lens & perspective"), cropLens},
+        {QStringLiteral("grain"), QStringLiteral("Film grain"), effects},
+        {QStringLiteral("vignette"), QStringLiteral("Vignette"), effects},
+        {QStringLiteral("selective"), QStringLiteral("Selective adjustment"), selective},
+        {QStringLiteral("layers"), QStringLiteral("Layers"), selective},
+        {QStringLiteral("undo"), QStringLiteral("Undo"), edit},
+        {QStringLiteral("redo"), QStringLiteral("Redo"), edit},
+        {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)"), view},
+        {QStringLiteral("clipping"), QStringLiteral("Clipping warnings (toggle)"), view},
+        {QStringLiteral("adjustments"), QStringLiteral("Adjustments (history)"), view},
+        {QStringLiteral("reset-view"), QStringLiteral("Reset view"), view},
+        {QStringLiteral("fullscreen"), QStringLiteral("Toggle fullscreen"), view},
+        {QStringLiteral("quit"), QStringLiteral("Quit Lumen"), app},
     });
 }
 
@@ -1008,6 +1097,8 @@ void MainWindow::runCommand(const QString &id)
         openCropTool();
     } else if (id == QLatin1String("histogram")) {
         toggleHistogram();
+    } else if (id == QLatin1String("clipping")) {
+        toggleClipping();
     } else if (id == QLatin1String("heal")) {
         openHealTool();
     } else if (id == QLatin1String("layers")) {
@@ -1496,6 +1587,10 @@ void MainWindow::exportImage()
         showHint(QStringLiteral("Open an image before exporting"));
         return;
     }
+    if (m_exportWatcher.isRunning()) {
+        showHint(QStringLiteral("An export is already in progress"));
+        return;
+    }
 
     // 1. Choose format + quality.
     ExportDialog dlg(this);
@@ -1523,16 +1618,33 @@ void MainWindow::exportImage()
     if (QFileInfo(path).suffix().isEmpty())
         path += QStringLiteral(".") + m_exportExt;
 
-    // 3. Walk the graph at full resolution, then write via libvips.
-    const Image result = m_graph.result();
-    QString error;
-    if (!result.saveToFile(path, quality, bits, &error)) {
-        QMessageBox::warning(this, QStringLiteral("Lumen"),
-                             QStringLiteral("Export failed: %1").arg(error));
-        return;
-    }
-    rememberDir(QStringLiteral("export"), path);
-    showHint(QStringLiteral("Exported to %1").arg(QFileInfo(path).fileName()));
+    // 3. Walk the graph and write at full resolution OFF the UI thread: a full-res
+    //    libvips encode is slow, and with an active heal mask result() runs the
+    //    inpaint inline (HealNode::apply is eager) — either would freeze the app.
+    //    The busy badge shows progress; re-entry is blocked above. The finished
+    //    handler reports success/failure.
+    const bool healActive =
+        m_heal && m_heal->isEnabled() && !m_heal->healMask().isEmpty();
+    // For the non-heal case the pipeline is lazy, so snapshot it on the UI thread
+    // (race-free) and only materialise on the worker; with heal active, build it
+    // on the worker so the eager inpaint never blocks the UI.
+    const Image snapshot = healActive ? Image() : m_graph.result();
+    auto *badge = static_cast<BusyBadge *>(m_healBusy);
+    badge->setLabel(QStringLiteral("Exporting…"));
+    badge->start();
+    layoutOverlays();
+    m_exportWatcher.setFuture(QtConcurrent::run(
+        [this, path, quality, bits, healActive, snapshot]() -> ExportResult {
+            ExportResult r;
+            r.path = path;
+            const Image result = healActive ? m_graph.result() : snapshot;
+            if (result.isNull()) {
+                r.error = QStringLiteral("nothing to export");
+                return r;
+            }
+            r.ok = result.saveToFile(path, quality, bits, &r.error);
+            return r;
+        }));
 }
 
 void MainWindow::toggleFullScreen()
@@ -2201,31 +2313,136 @@ void MainWindow::toggleHistogram()
         return;
     if (m_histogram->isVisible()) {
         m_histogram->hide();
+        syncViewToggles();
         return;
     }
     m_histogram->show();
     m_histogram->raise();
     layoutOverlays();   // place it
     updateHistogram();  // fill it immediately
+    syncViewToggles();
+}
+
+void MainWindow::toggleClipping()
+{
+    m_showClipping = !m_showClipping;
+    m_canvas->setClipping(m_showClipping);
+    showHint(m_showClipping ? QStringLiteral("Clipping warnings on — red = highlights, blue = shadows")
+                            : QStringLiteral("Clipping warnings off"));
+    syncViewToggles();
+}
+
+void MainWindow::syncViewToggles()
+{
+    if (!m_viewToggles)
+        return;
+    m_histToggleBtn->setChecked(m_histogram && m_histogram->isVisible());
+    m_clipToggleBtn->setChecked(m_showClipping);
+    m_historyToggleBtn->setChecked(m_adjustmentsPanel && m_adjustmentsPanel->isVisible());
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    // Keep a panel's ✕ pinned to its top-right corner when the panel resizes.
+    if (event->type() == QEvent::Resize) {
+        if (auto it = m_panelClose.constFind(static_cast<QWidget *>(watched));
+            it != m_panelClose.constEnd()) {
+            QWidget *p = static_cast<QWidget *>(watched);
+            QPushButton *btn = it.value();
+            btn->move(p->width() - btn->width() - 8, 8);
+            btn->raise();
+        }
+        // fall through (don't consume the resize)
+    }
+
+    // Drag the persistent overlays: the histogram by its surface, the view-toggle
+    // cluster by its grip (moving the whole cluster). Delta math in global coords
+    // is independent of which child delivered the event.
+    QWidget *target = nullptr;
+    bool *moved = nullptr;
+    if (watched == m_histogram) {
+        target = m_histogram;
+        moved = &m_histMoved;
+    } else if (watched == m_clusterGrip) {
+        target = m_viewToggles;
+        moved = &m_clusterMoved;
+    }
+
+    if (target) {
+        switch (event->type()) {
+        case QEvent::MouseButtonPress: {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton) {
+                m_draggingOverlay = target;
+                m_overlayDragStartGlobal = me->globalPosition().toPoint();
+                m_overlayStartPos = target->pos();
+                return true;
+            }
+            break;
+        }
+        case QEvent::MouseMove:
+            if (m_draggingOverlay == target) {
+                auto *me = static_cast<QMouseEvent *>(event);
+                const QPoint delta = me->globalPosition().toPoint() - m_overlayDragStartGlobal;
+                QPoint p = m_overlayStartPos + delta;
+                p.setX(std::clamp(p.x(), 0, std::max(0, width() - target->width())));
+                p.setY(std::clamp(p.y(), 0, std::max(0, height() - target->height())));
+                target->move(p);
+                *moved = true;
+                return true;
+            }
+            break;
+        case QEvent::MouseButtonRelease:
+            if (m_draggingOverlay == target) {
+                m_draggingOverlay = nullptr;
+                return true;
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::updateHistogram()
 {
-    if (!m_histogram || !m_histogram->isVisible())
+    if (!m_histogram || !m_histogram->isVisible() || m_graph.source().isNull())
         return;
-    // The full-res composite is the source of truth (preview == export), but
-    // pulling its pixels is slow, so compute the histogram off the UI thread. The
-    // result() Image is a self-contained, ref-counted lazy pipeline — safe to
-    // materialise on a worker while the UI thread carries on.
-    const Image result = m_graph.result();
-    if (result.isNull())
+    // Don't overlap an in-flight bake — building result() would be a second
+    // concurrent full-res inpaint. Defer; the bake's finished handler retriggers.
+    if (m_healWatcher.isRunning() || m_decodeWatcher.isRunning())
         return;
+
     const quint64 gen = ++m_histGen;
-    m_histWatcher.setFuture(QtConcurrent::run([this, gen, result]() -> HistogramData {
-        if (gen != m_histGen)
-            return HistogramData{}; // superseded
-        return computeHistogram(result);
-    }));
+    const bool healActive =
+        m_heal && m_heal->isEnabled() && !m_heal->healMask().isEmpty();
+    if (healActive) {
+        // result() is EAGER when a heal mask is active — HealNode::apply runs the
+        // inpaint inline (see HealNode.cpp), so it must NEVER be built on the UI
+        // thread (that froze the app when toggling the histogram mid-heal). Build
+        // and materialise it on a worker. No bake is in flight (guarded above), so
+        // the graph is quiescent for the snapshot.
+        m_histWatcher.setFuture(QtConcurrent::run([this, gen]() -> HistogramData {
+            if (gen != m_histGen)
+                return HistogramData{};
+            const Image result = m_graph.result();
+            if (result.isNull() || gen != m_histGen)
+                return HistogramData{};
+            return computeHistogram(result);
+        }));
+    } else {
+        // No eager node: the pipeline is lazy, so build the snapshot on the UI
+        // thread (cheap, race-free) and only materialise it on the worker.
+        const Image result = m_graph.result();
+        if (result.isNull())
+            return;
+        m_histWatcher.setFuture(QtConcurrent::run([this, gen, result]() -> HistogramData {
+            if (gen != m_histGen)
+                return HistogramData{}; // superseded
+            return computeHistogram(result);
+        }));
+    }
 }
 
 void MainWindow::rebuildPreviewFromGraph()
@@ -2428,6 +2645,7 @@ void MainWindow::openAdjustmentsTool()
     m_adjustmentsPanel->reveal();
     rebuildAdjustments();
     layoutOverlays();
+    syncViewToggles();
 }
 
 void MainWindow::closeAdjustmentsTool()
@@ -2437,6 +2655,7 @@ void MainWindow::closeAdjustmentsTool()
     exitPeek();
     m_adjustmentsPanel->hide();
     layoutOverlays();
+    syncViewToggles();
 }
 
 void MainWindow::refreshWorkingSource()
@@ -3031,6 +3250,28 @@ void MainWindow::afterHistoryChange()
         rebuildAdjustments(); // history nav changes the active-edit set
 }
 
+void MainWindow::addPanelCloseButton(QWidget *panel, std::function<void()> onClose)
+{
+    auto *btn = new QPushButton(QStringLiteral("✕"), panel);
+    btn->setObjectName(QStringLiteral("panelClose"));
+    btn->setFocusPolicy(Qt::NoFocus); // never steal keyboard focus from the canvas
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setFixedSize(20, 20);
+    btn->setToolTip(QStringLiteral("Close (Esc)"));
+    // Fully specify every property: each panel sets its own generic `QPushButton`
+    // rule (padding/border/bg), which would otherwise leak in and clip the glyph.
+    btn->setStyleSheet(QStringLiteral(
+        "#panelClose { background: #2a2a2e; color: #d6d6d9;"
+        " border: 1px solid #38383d; border-radius: 10px; padding: 0;"
+        " font-size: 12px; font-weight: bold; }"
+        "#panelClose:hover { background: #c0444a; color: #ffffff; border-color: #c0444a; }"));
+    connect(btn, &QPushButton::clicked, this, [onClose] { onClose(); });
+    m_panelClose.insert(panel, btn);
+    panel->installEventFilter(this); // reposition on resize (see eventFilter)
+    btn->move(panel->width() - btn->width() - 8, 8); // fixed-width panels: place now
+    btn->raise();
+}
+
 void MainWindow::showHint(const QString &text)
 {
     m_hint->setText(text);
@@ -3053,8 +3294,9 @@ QString MainWindow::modeHintText() const
     case InputController::Mode::Browse:
     default:
         return QStringLiteral(
-            "/  or right-click  ·  command palette       Ctrl+O open · Ctrl+S save · "
-            "\\ before/after · F11 fullscreen");
+            "/  or right-click  ·  command palette       "
+            "G histogram · J clipping · A history · \\ before/after       "
+            "Ctrl+O open · Ctrl+S save · F11 fullscreen");
     }
 }
 
@@ -3114,9 +3356,17 @@ void MainWindow::layoutOverlays()
             m_cropPanel->raise(); // keep the panel clickable above the gizmo
     }
 
-    // Histogram: bottom-left of the canvas, above the hint bar.
+    // Histogram: bottom-left of the canvas, above the hint bar — unless the user
+    // has dragged it, in which case keep their spot (just clamp it into view).
     if (m_histogram && m_histogram->isVisible()) {
-        m_histogram->move(18, height() - m_histogram->height() - 64);
+        if (m_histMoved) {
+            QPoint p = m_histogram->pos();
+            p.setX(std::clamp(p.x(), 0, std::max(0, width() - m_histogram->width())));
+            p.setY(std::clamp(p.y(), 0, std::max(0, height() - m_histogram->height())));
+            m_histogram->move(p);
+        } else {
+            m_histogram->move(18, height() - m_histogram->height() - 64);
+        }
         m_histogram->raise();
     }
 
@@ -3158,6 +3408,21 @@ void MainWindow::layoutOverlays()
 
     // Hint bar: bottom-centre.
     m_hint->move((width() - m_hint->width()) / 2, height() - m_hint->height() - 18);
+
+    // View-toggle cluster: bottom-right, opposite the histogram (bottom-left).
+    // Once dragged, keep the user's position (clamped into view).
+    if (m_viewToggles) {
+        m_viewToggles->adjustSize();
+        if (m_clusterMoved) {
+            QPoint p = m_viewToggles->pos();
+            p.setX(std::clamp(p.x(), 0, std::max(0, width() - m_viewToggles->width())));
+            p.setY(std::clamp(p.y(), 0, std::max(0, height() - m_viewToggles->height())));
+            m_viewToggles->move(p);
+        } else {
+            m_viewToggles->move(width() - m_viewToggles->width() - 18,
+                                height() - m_viewToggles->height() - 18);
+        }
+    }
 }
 
 void MainWindow::resizeEvent(QResizeEvent *e)
@@ -3191,6 +3456,22 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     if (e->key() == Qt::Key_Backslash && !e->isAutoRepeat()
         && !m_graph.source().isNull()) {
         setCompareOriginal(!m_compareOriginal);
+        return;
+    }
+
+    // View-toggle keys, available whenever an image is loaded (any mode): 'J'
+    // clipping, 'G' histo(G)ram, 'A' history (Adjustments panel). Their on/off
+    // state is mirrored in the bottom-right cluster and the hint legend.
+    if (e->key() == Qt::Key_J && !e->isAutoRepeat() && !m_graph.source().isNull()) {
+        toggleClipping();
+        return;
+    }
+    if (e->key() == Qt::Key_G && !e->isAutoRepeat() && !m_graph.source().isNull()) {
+        toggleHistogram();
+        return;
+    }
+    if (e->key() == Qt::Key_A && !e->isAutoRepeat() && !m_graph.source().isNull()) {
+        openAdjustmentsTool(); // toggles the history panel
         return;
     }
 

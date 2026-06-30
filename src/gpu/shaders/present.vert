@@ -14,6 +14,7 @@ layout(std140, binding = 0) uniform buf {
     mat4 texXform; // output unit-quad → source texcoord (crop + orientation)
     vec4 vig0;     // creative vignette: amount, midpoint, roundness, feather
     vec4 vig1;     // aspect (W/H), enabled, pad, pad
+    vec4 clip;     // clipping warnings: enabled, hi threshold, lo threshold, pad
 } ubuf;
 
 void main()

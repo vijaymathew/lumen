@@ -10,6 +10,7 @@ layout(std140, binding = 0) uniform buf {
     mat4 texXform;
     vec4 vig0; // creative vignette: amount, midpoint, roundness, feather
     vec4 vig1; // aspect (W/H), enabled, pad, pad
+    vec4 clip; // clipping warnings: enabled, hi threshold, lo threshold, pad
 } ubuf;
 
 layout(binding = 1) uniform sampler2D tex; // the composited offscreen result
@@ -34,6 +35,20 @@ void main()
         float t = smoothstep(m, m + f, d);
         float gain = clamp(1.0 + (amount / 100.0) * t, 0.0, 4.0);
         c.rgb *= gain;
+    }
+
+    // Clipping warnings ("blinkies"), computed on the final displayed colour so
+    // they reflect what export would write. Highlights flag if ANY channel is
+    // blown (a single clipped channel = lost detail you usually can't recover);
+    // shadows flag only where ALL channels are crushed, so saturated colours
+    // (e.g. pure red, whose G/B sit near zero) don't read as shadow clipping.
+    if (ubuf.clip.x > 0.5) {
+        float hi = ubuf.clip.y;
+        float lo = ubuf.clip.z;
+        if (c.r >= hi || c.g >= hi || c.b >= hi)
+            c = vec4(1.0, 0.0, 0.0, 1.0);       // red = blown highlight
+        else if (c.r <= lo && c.g <= lo && c.b <= lo)
+            c = vec4(0.0, 0.4, 1.0, 1.0);       // blue = crushed shadow
     }
 
     fragColor = c;
