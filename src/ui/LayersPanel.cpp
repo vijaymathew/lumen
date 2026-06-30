@@ -123,6 +123,33 @@ LayersPanel::LayersPanel(QWidget *parent)
     connect(m_low, &QSlider::valueChanged, this, emitRange);
     connect(m_high, &QSlider::valueChanged, this, emitRange);
 
+    // One-tap tonal presets: set the luminosity range (plus a generous feather so
+    // the band doesn't posterise) to Shadows / Midtones / Highlights. The sliders
+    // stay live for fine-tuning afterwards.
+    const auto applyLumPreset = [this](int low, int high, int feather) {
+        {
+            const QSignalBlocker bl(m_low), bh(m_high);
+            m_low->setValue(low);
+            m_high->setValue(high);
+        }
+        m_lowValue->setText(QString::number(low));
+        m_highValue->setText(QString::number(high));
+        emit maskRangeChanged(low, high);
+        m_feather->setValue(feather); // emits maskFeatherChanged + syncs its label
+    };
+    struct LumPreset { const char *label; int low, high, feather; };
+    auto *presetRow = new QHBoxLayout;
+    presetRow->setContentsMargins(0, 0, 0, 0);
+    for (const LumPreset &p : {LumPreset{"Shadows", 0, 35, 40},
+                               LumPreset{"Midtones", 25, 75, 40},
+                               LumPreset{"Highlights", 65, 100, 40}}) {
+        auto *b = new QPushButton(QString::fromLatin1(p.label), m_lumSection);
+        connect(b, &QPushButton::clicked, this,
+                [applyLumPreset, p] { applyLumPreset(p.low, p.high, p.feather); });
+        presetRow->addWidget(b);
+    }
+    lumLayout->insertLayout(0, presetRow); // above the Range low/high sliders
+
     // Colour sub-section.
     m_colorSection = new QWidget(m_maskSection);
     auto *colorLayout = new QVBoxLayout(m_colorSection);
