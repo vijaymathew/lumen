@@ -16,7 +16,9 @@
 #include "core/LensCorrectionNode.h"
 #include "core/LutNode.h"
 #include "core/MaskSpec.h"
+#include "core/DefringeNode.h"
 #include "core/DenoiseNode.h"
+#include "core/GrainNode.h"
 #include "core/Histogram.h"
 #include "core/MonoNode.h"
 #include "core/RawLoader.h"
@@ -31,6 +33,8 @@ class CanvasWidget;
 class CommandPalette;
 class CurvesPanel;
 class DenoisePanel;
+class DefringePanel;
+class RawSettingsPanel;
 class HealPanel;
 class HistogramWidget;
 class LayersPanel;
@@ -38,8 +42,12 @@ class ColorGradePanel;
 class LensPanel;
 class MaskGizmo;
 class ZoneGizmo;
+class CropGizmo;
+class CropPanel;
 class LooksPanel;
 class MonoPanel;
+class GrainPanel;
+class VignettePanel;
 class SharpenPanel;
 class TonePanel;
 class QLabel;
@@ -54,6 +62,7 @@ class MainWindow : public QMainWindow {
 
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    ~MainWindow() override;
 
     // Loads an image at startup (e.g. a path passed on the command line).
     bool openPath(const QString &path);
@@ -122,6 +131,25 @@ private:
     void closeSharpenTool();
     void openDenoiseTool();  // toggles the Denoise panel
     void closeDenoiseTool();
+    void openDefringeTool(); // toggles the Defringe panel
+    void closeDefringeTool();
+    void openRawTool();      // toggles the RAW Defaults panel
+    void closeRawTool();
+    // Re-decodes the currently open RAW with m_rawOptions (from its kept source
+    // bytes) and rebuilds the pipeline, preserving edits and view. No-op for a
+    // non-RAW source.
+    void redecodeCurrent();
+    void openGrainTool();    // toggles the Film Grain panel
+    void closeGrainTool();
+    void openVignetteTool(); // toggles the Vignette panel
+    void closeVignetteTool();
+    void openCropTool();     // toggles the Crop & Rotate panel
+    void closeCropTool();
+    // Pushes the graph's crop to the canvas with the right view mode for the
+    // current context (Editing while the crop tool is open; full frame while a
+    // gizmo/pick tool needs it; else the cropped browse view).
+    void updateCropView();
+    double sourceAspect() const; // original (un-oriented) source width/height
     void toggleHistogram();  // show/hide the histogram overlay
     void updateHistogram();  // recompute from the current result (when visible)
     // Recomputes the cached lens-corrected working source (and its display
@@ -173,7 +201,12 @@ private:
     ColorGradePanel *m_colorGradePanel = nullptr;
     LensPanel *m_lensPanel = nullptr;
     SharpenPanel *m_sharpenPanel = nullptr;
+    GrainPanel *m_grainPanel = nullptr;
+    VignettePanel *m_vignettePanel = nullptr;
+    CropPanel *m_cropPanel = nullptr;
     DenoisePanel *m_denoisePanel = nullptr;
+    DefringePanel *m_defringePanel = nullptr;
+    RawSettingsPanel *m_rawPanel = nullptr;
     HealPanel *m_healPanel = nullptr;
     HistogramWidget *m_histogram = nullptr;
     QTimer *m_histTimer = nullptr; // debounces histogram recompute
@@ -181,6 +214,7 @@ private:
     LayersPanel *m_layersPanel = nullptr;
     MaskGizmo *m_maskGizmo = nullptr; // on-canvas gradient/radial mask editor
     ZoneGizmo *m_zoneGizmo = nullptr; // on-canvas exclusive-zone shape editor
+    CropGizmo *m_cropGizmo = nullptr; // on-canvas crop rectangle editor
     QLabel *m_hint = nullptr;
 
     // The non-destructive edit graph. The GPU preview reads the tune node's
@@ -197,8 +231,10 @@ private:
     ColorGradeNode *m_colorGrade = nullptr; // owned by m_graph
     HealNode *m_heal = nullptr;          // owned by m_graph (second in the chain)
     LensCorrectionNode *m_lens = nullptr; // owned by m_graph (first in the chain)
-    DenoiseNode *m_denoise = nullptr;     // owned by m_graph (after heal, before sharpen)
+    DenoiseNode *m_denoise = nullptr;     // owned by m_graph (after heal, before defringe)
+    DefringeNode *m_defringe = nullptr;   // owned by m_graph (after denoise, before sharpen)
     SharpenNode *m_sharpen = nullptr;     // owned by m_graph (after denoise, before tune)
+    GrainNode *m_grain = nullptr;         // owned by m_graph (final Base node, after mono)
     Image m_workingSource;               // cached lens-corrected source (preview base input)
     QString m_sourcePath;                // for a sensible default export name
     QString m_exportExt = QStringLiteral("jpg"); // remembered export format
@@ -208,6 +244,13 @@ private:
     QString m_sourceName;                // original source file name
     QString m_projectPath;               // current .lumen path (empty until saved/opened)
     int m_maskView = 0;                  // selective mask overlay (preview-only)
+
+    // Automatic-RAW configuration. m_rawOptions are decode-time (baked, stored
+    // per-project in the .lumen); m_rawLensDefaults seed the lens node on open.
+    // Both default to the global preference (loadRawDefaults) at construction.
+    raw::RawDecodeOptions m_rawOptions;
+    raw::RawLensDefaults m_rawLensDefaults;
+    QTimer *m_redecodeTimer = nullptr;   // debounces re-decode on RAW option drags
 
     // Shared brush-paint session (used by the selective brush and the heal
     // brush, one at a time).
@@ -234,4 +277,14 @@ private:
     // the UI thread; the latest request wins.
     QFutureWatcher<HistogramData> m_histWatcher;
     std::atomic<quint64> m_histGen{0};
+
+    // RAW re-decode (a full demosaic) also runs off the UI thread so the app
+    // stays responsive and the busy badge can animate; the latest request wins.
+    struct DecodeResult {
+        Image image;
+        raw::LensMetadata meta;
+        QString error;
+    };
+    QFutureWatcher<DecodeResult> m_decodeWatcher;
+    std::atomic<quint64> m_decodeGen{0};
 };

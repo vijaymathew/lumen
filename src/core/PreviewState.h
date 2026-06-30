@@ -34,17 +34,18 @@ struct PreviewState {
     float selMaskMode = 0.0f;    // 0 luminosity (parametric), 1 texture (uploaded mask)
     float selInvert = 0.0f;      // 1 = invert the mask
     float layerOpacity = 1.0f;   // this layer's blend onto the running result
-    // MonoNode — monochrome conversion + toning. Weights are pre-normalised
-    // (sum 1) and the tint is pre-normalised to luma 1 so the shader is a plain
-    // dot + per-channel multiply (matches MonoNode::apply()).
+    // MonoNode — monochrome conversion + split toning. Weights are pre-normalised
+    // (sum 1) and the shadow/highlight tints are pre-normalised to luma 1
+    // (computed CPU-side by tintFromHue), so the shader blends them by luminance
+    // and multiplies (matches MonoNode::apply()).
     float monoEnabled = 0.0f;       // 0/1
     float monoR = 0.2126f;          // B&W mix weights (Rec.709 luma by default)
     float monoG = 0.7152f;
     float monoB = 0.0722f;
-    float monoToneStrength = 0.0f;  // tint blend [0,1]
-    float monoToneR = 1.0f;         // tint colour, normalised to luma 1
-    float monoToneG = 1.0f;
-    float monoToneB = 1.0f;
+    float monoBalance = 0.0f;       // split-tone crossover shift [-1,1]
+    float monoHighR = 1.0f;         // highlight tint, normalised to luma 1
+    float monoHighG = 1.0f;
+    float monoHighB = 1.0f;
     // TuneNode — white balance as a linear-light 3x3 matrix (row-major), applied
     // before exposure (encoded → ^2.2 → W·rgb → ^(1/2.2)); identity = neutral.
     // Accumulated across nodes by matrix multiply. The nine scalars pack tightly
@@ -68,6 +69,19 @@ struct PreviewState {
     // across nodes), 0 = neutral. Appended last so existing field offsets (and the
     // std140 uniform layout) are undisturbed. Matches texture.frag's applyTone.
     float vibrance = 0.0f;
+    // MonoNode — per-color B&W mix: 8 hue bands at 0/45/.../315° (Red, Orange,
+    // Yellow, Green, Aqua, Blue, Purple, Magenta), each in [-1,1], 0 = neutral.
+    // Named scalars (not a GLSL array) so std140 packs them tightly, matching the
+    // contiguous-float upload. Matches texture.frag's mono band block.
+    float monoBand0 = 0.0f, monoBand1 = 0.0f, monoBand2 = 0.0f, monoBand3 = 0.0f;
+    float monoBand4 = 0.0f, monoBand5 = 0.0f, monoBand6 = 0.0f, monoBand7 = 0.0f;
+    // Split-tone shadow tint (luma-1 normalised). Appended last; the highlight
+    // tint reuses the former single-tint slots above (monoHigh*).
+    float monoShadowR = 1.0f, monoShadowG = 1.0f, monoShadowB = 1.0f;
+    // GrainNode — film grain (final Base-layer step). amount = intensity/100
+    // (0 = off); size = grain cell in px. Keyed to gl_FragCoord in texture.frag.
+    float grainAmount = 0.0f;
+    float grainSize = 2.0f;
 
     friend bool operator==(const PreviewState &, const PreviewState &) = default;
 };

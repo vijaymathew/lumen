@@ -2,6 +2,7 @@
 
 #include "core/Image.h"
 
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 
@@ -11,6 +12,36 @@
 // a 16-bit sRGB Image (camera white balance, sRGB primaries) promoted to the
 // float working format, so they drop into the same pipeline as a JPEG.
 namespace raw {
+
+// The automatic adjustments LibRaw bakes in at decode time. Defaults reproduce
+// Lumen's historical behaviour exactly (auto-bright on, clip highlights, as-shot
+// camera WB, AHD demosaic), so a default-constructed value is a no-op change.
+// These are baked into the pixels, so they are persisted per-project (.lumen).
+struct RawDecodeOptions {
+    enum Wb { Camera = 0, Auto = 1, None = 2 }; // as-shot / auto-grey-world / neutral
+
+    bool autoBright = true;           // LibRaw no_auto_bright = !autoBright
+    float autoBrightThreshold = 0.01f; // auto_bright_thr (fraction clipped to white)
+    int highlight = 0;                // LibRaw `highlight`: 0 clip, 2 blend, 3 reconstruct
+    int wb = Camera;                  // white-balance source
+    int demosaic = 3;                 // user_qual: 0 linear,1 VNG,2 PPG,3 AHD,4 DCB
+
+    friend bool operator==(const RawDecodeOptions &, const RawDecodeOptions &) = default;
+
+    QJsonObject toJson() const;
+    static RawDecodeOptions fromJson(const QJsonObject &);
+};
+
+// Default state of the (Lensfun) automatic lens corrections seeded onto a freshly
+// opened RAW's LensCorrectionNode. A global preference only — the lens node itself
+// persists per-project, so these aren't stored in the .lumen.
+struct RawLensDefaults {
+    bool distortion = true;
+    bool tca = true;
+    bool vignetting = true;
+
+    friend bool operator==(const RawLensDefaults &, const RawLensDefaults &) = default;
+};
 
 // Camera colour profile pulled from LibRaw, used by white balance (WB v2) to do a
 // camera-accurate, linear-light Kelvin WB. All matrices are row-major 3x3.
@@ -43,11 +74,13 @@ const QStringList &extensions();
 bool isRawPath(const QString &path);
 
 // Decodes a RAW file to a 16-bit sRGB Image. Null Image + *error on failure. When
-// `meta` is non-null it receives the camera/lens identity from EXIF.
-Image decodeFile(const QString &path, QString *error = nullptr, LensMetadata *meta = nullptr);
+// `meta` is non-null it receives the camera/lens identity from EXIF. `opts`
+// controls the automatic decode-time adjustments (default = historical behaviour).
+Image decodeFile(const QString &path, QString *error = nullptr, LensMetadata *meta = nullptr,
+                 const RawDecodeOptions &opts = {});
 
 // Decodes a RAW image from an in-memory buffer (the source embedded in a .lumen).
 Image decodeBytes(const void *data, qsizetype size, QString *error = nullptr,
-                  LensMetadata *meta = nullptr);
+                  LensMetadata *meta = nullptr, const RawDecodeOptions &opts = {});
 
 } // namespace raw

@@ -62,7 +62,8 @@ Image EditGraph::result()
         return current;
     for (auto &layer : m_layers)
         current = layer->composite(current);
-    return current;
+    current = applyCrop(current, m_crop); // final geometric stage
+    return applyVignette(current, m_vignette); // creative vignette, post-crop
 }
 
 PreviewState EditGraph::previewState() const
@@ -92,6 +93,10 @@ QJsonObject EditGraph::saveState() const
         layers.append(layer->saveState());
     root[QStringLiteral("layers")] = layers;
     root[QStringLiteral("active")] = m_activeLayer;
+    if (!m_crop.isIdentity())
+        root[QStringLiteral("crop")] = m_crop.toJson();
+    if (!m_vignette.isIdentity())
+        root[QStringLiteral("vignette")] = m_vignette.toJson();
     return root;
 }
 
@@ -116,6 +121,13 @@ void EditGraph::restoreState(const QJsonObject &state)
     m_activeLayer = state.value(QStringLiteral("active")).toInt(0);
     if (m_activeLayer < 0 || m_activeLayer >= static_cast<int>(m_layers.size()))
         m_activeLayer = 0;
+
+    m_crop = state.contains(QStringLiteral("crop"))
+                 ? CropState::fromJson(state.value(QStringLiteral("crop")).toObject())
+                 : CropState{};
+    m_vignette = state.contains(QStringLiteral("vignette"))
+                     ? VignetteParams::fromJson(state.value(QStringLiteral("vignette")).toObject())
+                     : VignetteParams{};
 }
 
 void EditGraph::loadProjectState(const QJsonObject &state)
@@ -141,6 +153,13 @@ void EditGraph::loadProjectState(const QJsonObject &state)
 
     for (auto &layer : m_layers)
         layer->invalidateFrom(0); // recompute against the loaded source
+
+    m_crop = state.contains(QStringLiteral("crop"))
+                 ? CropState::fromJson(state.value(QStringLiteral("crop")).toObject())
+                 : CropState{};
+    m_vignette = state.contains(QStringLiteral("vignette"))
+                     ? VignetteParams::fromJson(state.value(QStringLiteral("vignette")).toObject())
+                     : VignetteParams{};
 }
 
 void EditGraph::resetHistory()

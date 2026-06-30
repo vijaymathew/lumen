@@ -26,10 +26,10 @@ layout(std140, binding = 0) uniform buf {
     float monoR;
     float monoG;
     float monoB;
-    float monoToneStrength;
-    float monoToneR;
-    float monoToneG;
-    float monoToneB;
+    float monoBalance;
+    float monoHighR;
+    float monoHighG;
+    float monoHighB;
     float wb00;
     float wb01;
     float wb02;
@@ -51,6 +51,19 @@ layout(std140, binding = 0) uniform buf {
     float gradePower2;
     float selMaskOpacity;
     float vibrance; // consumed in the fragment stage
+    float monoBand0; // per-color B&W mix bands (consumed in the fragment stage)
+    float monoBand1;
+    float monoBand2;
+    float monoBand3;
+    float monoBand4;
+    float monoBand5;
+    float monoBand6;
+    float monoBand7;
+    float monoShadowR; // split-tone shadow tint
+    float monoShadowG;
+    float monoShadowB;
+    float grainAmount; // consumed in the fragment stage
+    float grainSize;
 } ubuf;
 
 void main()

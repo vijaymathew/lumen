@@ -31,10 +31,10 @@ layout(std140, binding = 0) uniform buf {
     float monoR;        // B&W mix weights (pre-normalised to sum 1)
     float monoG;
     float monoB;
-    float monoToneStrength;
-    float monoToneR;    // tint colour (pre-normalised to luma 1)
-    float monoToneG;
-    float monoToneB;
+    float monoBalance;  // split-tone crossover shift [-1,1]
+    float monoHighR;    // highlight tint (pre-normalised to luma 1)
+    float monoHighG;
+    float monoHighB;
     float wb00;         // white-balance 3x3 (row-major, linear light, pre-exposure)
     float wb01;
     float wb02;
@@ -56,6 +56,19 @@ layout(std140, binding = 0) uniform buf {
     float gradePower2;
     float selMaskOpacity; // "show mask" overlay strength [0,1] (= layer opacity)
     float vibrance;       // saturation-aware boost amount (vibrance/100), 0 = neutral
+    float monoBand0;      // per-color B&W mix: 8 hue bands at 0/45/.../315°, [-1,1]
+    float monoBand1;
+    float monoBand2;
+    float monoBand3;
+    float monoBand4;
+    float monoBand5;
+    float monoBand6;
+    float monoBand7;
+    float monoShadowR;  // split-tone shadow tint (pre-normalised to luma 1)
+    float monoShadowG;
+    float monoShadowB;
+    float grainAmount;  // film grain intensity/100 (0 = off)
+    float grainSize;    // grain cell size in px
 } ubuf;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -75,6 +88,64 @@ vec3 applyTone(vec3 c, float exposure, float contrast, float saturation, float v
         c = mix(vec3(l2), c, f);
     }
     return c;
+}
+
+// Hue of a colour in degrees [0,360) — matches MonoNode::hue6.
+float monoHue(vec3 c)
+{
+    float mx = max(c.r, max(c.g, c.b));
+    float mn = min(c.r, min(c.g, c.b));
+    float d = mx - mn;
+    if (d < 1e-6)
+        return 0.0;
+    float h;
+    if (mx == c.r)
+        h = mod((c.g - c.b) / d, 6.0);
+    else if (mx == c.g)
+        h = (c.b - c.r) / d + 2.0;
+    else
+        h = (c.r - c.g) / d + 4.0;
+    h *= 60.0;
+    if (h < 0.0)
+        h += 360.0;
+    return h;
+}
+
+// Per-color mix weight at `hue`: linear interpolation between the two adjacent
+// colour anchors at their true hue angles (last segment wraps 330°→360°) —
+// matches MonoNode::bandShift.
+float monoBandShift(float hue)
+{
+    float b[8] = float[8](ubuf.monoBand0, ubuf.monoBand1, ubuf.monoBand2, ubuf.monoBand3,
+                          ubuf.monoBand4, ubuf.monoBand5, ubuf.monoBand6, ubuf.monoBand7);
+    float c[8] = float[8](0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 330.0);
+    for (int i = 0; i < 8; ++i) {
+        float lo = c[i];
+        float hi = (i < 7) ? c[i + 1] : 360.0;
+        if (hue >= lo && hue < hi) {
+            float t = (hue - lo) / (hi - lo);
+            return b[i] * (1.0 - t) + b[(i + 1) & 7] * t;
+        }
+    }
+    return b[0];
+}
+
+// Hash of an integer lattice point → [0,1]. Matches GrainNode's hash2.
+float grainHash(float x, float y)
+{
+    return fract(sin(x * 127.1 + y * 311.7) * 43758.5453123);
+}
+
+// Smooth 2D value noise in [0,1] — matches GrainNode::valueNoise.
+float grainNoise(vec2 p)
+{
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = grainHash(i.x, i.y);
+    float b = grainHash(i.x + 1.0, i.y);
+    float c = grainHash(i.x, i.y + 1.0);
+    float d = grainHash(i.x + 1.0, i.y + 1.0);
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
 void main()
@@ -113,8 +184,24 @@ void main()
     //     math as MonoNode::apply().
     if (ubuf.monoEnabled > 0.5) {
         float g = clamp(dot(col, vec3(ubuf.monoR, ubuf.monoG, ubuf.monoB)), 0.0, 1.0);
-        vec3 toned = g * vec3(ubuf.monoToneR, ubuf.monoToneG, ubuf.monoToneB);
-        col = mix(vec3(g), toned, ubuf.monoToneStrength);
+        // Per-color mix: brighten/darken by hue, scaled by chroma (neutrals stay).
+        float chroma = max(col.r, max(col.g, col.b)) - min(col.r, min(col.g, col.b));
+        // 3.0 = MonoNode::kBandGain (keep in sync).
+        g = clamp(g * (1.0 + monoBandShift(monoHue(col)) * chroma * 3.0), 0.0, 1.0);
+        // Split toning: blend shadow→highlight tint by luminance (balance shifts
+        // the crossover); tints are luma-1 normalised so brightness is preserved.
+        vec3 sh = vec3(ubuf.monoShadowR, ubuf.monoShadowG, ubuf.monoShadowB);
+        vec3 hi = vec3(ubuf.monoHighR, ubuf.monoHighG, ubuf.monoHighB);
+        float hw = clamp(g + 0.5 * ubuf.monoBalance, 0.0, 1.0);
+        col = g * mix(sh, hi, hw);
+    }
+    // 3.6 Film grain (final Base-layer step): monochrome value-noise keyed to the
+    //     image pixel (gl_FragCoord, full-res offscreen). 0.18 = GrainNode::kStrength,
+    //     11.0 = kSeed — keep in sync with GrainNode.
+    if (ubuf.grainAmount > 0.0) {
+        float gs = max(ubuf.grainSize, 1.0);
+        float n = grainNoise(gl_FragCoord.xy / gs + vec2(11.0));
+        col += (n - 0.5) * ubuf.grainAmount * 0.18;
     }
     // 4. Preview-only "show mask" overlay of the active layer's mask. (The old
     //    in-shader selective adjustment is vestigial — selEnabled stays 0 now

@@ -101,6 +101,14 @@ void CanvasWidget::resetView()
     update();
 }
 
+void CanvasWidget::setFitZoom(float zoom)
+{
+    m_zoom = std::clamp(zoom, 0.05f, 40.0f);
+    m_pan = {0.0, 0.0};
+    emit viewChanged();
+    update();
+}
+
 void CanvasWidget::setPreviewState(const PreviewState &state)
 {
     if (m_preview == state)
@@ -178,13 +186,15 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
 
     if (!m_ubuf) {
         // std140: mat4 mvp (64) + PreviewState's floats at offset 64.
-        // 43 floats (172 bytes) → 236, rounded up to a 16-byte multiple → 240.
-        m_ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 240));
+        // 52 floats (208 bytes) → 272, rounded up to a 16-byte multiple → 320
+        // (with headroom for future fields).
+        m_ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 320));
         m_ubuf->create();
     }
 
     if (!m_presentUbuf) {
-        m_presentUbuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 64));
+        // mat4 mvp (64) + mat4 texXform (64) + vec4 vig0 (16) + vec4 vig1 (16) = 160.
+        m_presentUbuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 160));
         m_presentUbuf->create();
     }
 
@@ -316,7 +326,7 @@ void CanvasWidget::buildExtraLayer(GpuLayer &gl, int index, QRhiResourceUpdateBa
 {
     QRhi *r = rhi();
     if (!gl.ubuf) {
-        gl.ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 240));
+        gl.ubuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 320));
         gl.ubuf->create();
     }
     if (!gl.curveTex) {
@@ -477,7 +487,9 @@ void CanvasWidget::ensureOffscreen()
         auto srb = r->newShaderResourceBindings();
         srb->setBindings({
             QRhiShaderResourceBinding::uniformBuffer(
-                0, QRhiShaderResourceBinding::VertexStage, m_presentUbuf.get()),
+                0, QRhiShaderResourceBinding::VertexStage
+                       | QRhiShaderResourceBinding::FragmentStage,
+                m_presentUbuf.get()),
             QRhiShaderResourceBinding::sampledTexture(
                 1, QRhiShaderResourceBinding::FragmentStage, tex, m_sampler.get()),
         });
@@ -511,10 +523,86 @@ QMatrix4x4 CanvasWidget::fillMvp(const QSize &target)
     return m;
 }
 
+void CanvasWidget::setCropState(const CropState &crop, CropViewMode mode)
+{
+    if (m_crop == crop && m_cropView == mode)
+        return;
+    m_crop = crop;
+    m_cropView = mode;
+    update();
+    emit viewChanged(); // overlays remap against the new effective frame
+}
+
+void CanvasWidget::setVignette(const VignetteParams &v)
+{
+    if (m_vignette == v)
+        return;
+    m_vignette = v;
+    update();
+}
+
+QSizeF CanvasWidget::effectiveImageSize() const
+{
+    const double W = m_textureSize.width(), H = m_textureSize.height();
+    if (m_cropView == CropNone || m_textureSize.isEmpty())
+        return {W, H};
+    const bool swap = (m_crop.rotation == 90 || m_crop.rotation == 270);
+    const double ow = swap ? H : W;
+    const double oh = swap ? W : H;
+    if (m_cropView == CropEditing)
+        return {ow, oh}; // oriented full frame (rect ignored while editing)
+    return {ow * m_crop.rect.width(), oh * m_crop.rect.height()}; // oriented + crop
+}
+
+QMatrix4x4 CanvasWidget::cropTexXform() const
+{
+    // Maps the present output unit-quad (uo,vo) → source texcoord, encoding
+    // crop + orientation. Mirrors core applyCrop (flip → rotate → extract). Built
+    // as FlipUndo * RotInv * Crop (Crop applied to the vector first).
+    QMatrix4x4 m; // identity
+    if (m_cropView == CropNone)
+        return m;
+
+    // Crop: output unit → oriented frame. Editing shows the full oriented frame.
+    QRectF rect = (m_cropView == CropEditing) ? QRectF(0, 0, 1, 1) : m_crop.rect;
+    QMatrix4x4 crop;
+    crop.translate(rect.x(), rect.y());
+    crop.scale(rect.width(), rect.height());
+
+    // RotInv: oriented → pre-rotation (flipped-source) normalized coords.
+    QMatrix4x4 rotInv;
+    switch (m_crop.rotation) {
+    case 90: // (u,v) -> (v, 1-u)
+        rotInv = QMatrix4x4(0, 1, 0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1);
+        break;
+    case 180: // (u,v) -> (1-u, 1-v)
+        rotInv = QMatrix4x4(-1, 0, 0, 1, 0, -1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1);
+        break;
+    case 270: // (u,v) -> (1-v, u)
+        rotInv = QMatrix4x4(0, -1, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+        break;
+    default:
+        break; // 0 → identity
+    }
+
+    // FlipUndo: flips were applied to the source before rotation; undo in source.
+    QMatrix4x4 flipUndo;
+    if (m_crop.flipH) {
+        flipUndo.translate(1.0f, 0.0f);
+        flipUndo.scale(-1.0f, 1.0f);
+    }
+    if (m_crop.flipV) {
+        flipUndo.translate(0.0f, 1.0f);
+        flipUndo.scale(1.0f, -1.0f);
+    }
+
+    return flipUndo * rotInv * crop;
+}
+
 QMatrix4x4 CanvasWidget::computeMvp(const QSize &targetPixels)
 {
     const QSizeF widget(targetPixels.width(), targetPixels.height());
-    const QSizeF image(m_textureSize.width(), m_textureSize.height());
+    const QSizeF image = effectiveImageSize();
     if (image.isEmpty() || widget.isEmpty())
         return {};
 
@@ -635,12 +723,25 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         // Adjustment uniforms: a fixed fill transform for the offscreen target.
         const QMatrix4x4 fill = fillMvp(m_textureSize);
         u->updateDynamicBuffer(m_ubuf.get(), 0, 64, fill.constData());
-        static_assert(sizeof(PreviewState) == 44 * sizeof(float),
-                      "PreviewState must be 44 tightly-packed floats");
+        static_assert(sizeof(PreviewState) == 57 * sizeof(float),
+                      "PreviewState must be 57 tightly-packed floats");
         u->updateDynamicBuffer(m_ubuf.get(), 64, sizeof(PreviewState), &m_preview.exposure);
         // Present transform: zoom/pan onto the screen.
         const QMatrix4x4 mvp = computeMvp(target);
         u->updateDynamicBuffer(m_presentUbuf.get(), 0, 64, mvp.constData());
+        const QMatrix4x4 texXform = cropTexXform();
+        u->updateDynamicBuffer(m_presentUbuf.get(), 64, 64, texXform.constData());
+        // Creative vignette params (mirrors core/Vignette.cpp; positioned over the
+        // displayed cropped frame via present.vert's v_imagecoord).
+        const QSizeF eff = effectiveImageSize();
+        const float A = eff.height() > 0
+                            ? static_cast<float>(eff.width() / eff.height())
+                            : 1.0f;
+        const float vig0[4] = {m_vignette.amount, m_vignette.midpoint,
+                               m_vignette.roundness, m_vignette.feather};
+        const float vig1[4] = {A, m_vignette.isIdentity() ? 0.0f : 1.0f, 0.0f, 0.0f};
+        u->updateDynamicBuffer(m_presentUbuf.get(), 128, 16, vig0);
+        u->updateDynamicBuffer(m_presentUbuf.get(), 144, 16, vig1);
 
         const QRhiViewport imgViewport(0, 0, float(m_textureSize.width()),
                                        float(m_textureSize.height()));
@@ -730,7 +831,7 @@ void CanvasWidget::emitBrushCursor(QPointF widgetPos)
     }
     const qreal dpr = devicePixelRatioF();
     const QSizeF widget(width() * dpr, height() * dpr);
-    const QSizeF image(m_textureSize.width(), m_textureSize.height());
+    const QSizeF image = effectiveImageSize();
     const QSizeF disp = zoommath::displayedSize(widget, image, m_zoom);
     // Match MainWindow::brushAt: radius = (size/100)*0.3 of the image's smaller
     // displayed dimension. Convert device px back to logical for the overlay.
@@ -750,7 +851,7 @@ QPointF CanvasWidget::widgetForNormalized(QPointF norm, QSizeF *dispLogicalOut) 
 {
     const qreal dpr = devicePixelRatioF();
     const QSizeF widget(width() * dpr, height() * dpr);
-    const QSizeF image(m_textureSize.width(), m_textureSize.height());
+    const QSizeF image = effectiveImageSize();
     if (image.isEmpty() || widget.isEmpty())
         return {};
     const QSizeF disp = zoommath::displayedSize(widget, image, m_zoom);
@@ -766,7 +867,7 @@ QPointF CanvasWidget::normalizedForWidget(QPointF widgetLogical) const
 {
     const qreal dpr = devicePixelRatioF();
     const QSizeF widget(width() * dpr, height() * dpr);
-    const QSizeF image(m_textureSize.width(), m_textureSize.height());
+    const QSizeF image = effectiveImageSize();
     if (image.isEmpty() || widget.isEmpty())
         return {};
     const QSizeF disp = zoommath::displayedSize(widget, image, m_zoom);
@@ -780,7 +881,7 @@ QPointF CanvasWidget::imageNormalizedAt(const QPointF &widgetPos)
 {
     const qreal dpr = devicePixelRatioF();
     const QSizeF widget(width() * dpr, height() * dpr);
-    const QSizeF image(m_textureSize.width(), m_textureSize.height());
+    const QSizeF image = effectiveImageSize();
     const QPointF px = zoommath::imagePixelAt(widget, image, m_zoom, m_pan, widgetPos * dpr);
     return QPointF(std::clamp(px.x() / image.width(), 0.0, 1.0),
                    std::clamp(px.y() / image.height(), 0.0, 1.0));
@@ -859,7 +960,7 @@ void CanvasWidget::wheelEvent(QWheelEvent *e)
 void CanvasWidget::zoomAt(float factor, const QPointF &cursorDevicePx)
 {
     const QSizeF widget(width() * devicePixelRatioF(), height() * devicePixelRatioF());
-    const QSizeF image(m_textureSize.width(), m_textureSize.height());
+    const QSizeF image = effectiveImageSize();
     if (image.isEmpty() || widget.isEmpty())
         return;
 

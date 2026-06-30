@@ -55,13 +55,25 @@ void fillColorProfile(LibRaw &raw, raw::LensMetadata *meta)
     p.valid = hasMatrix && p.asShotMul[1] > 0.0;
 }
 
-// Configure LibRaw for a viewable 16-bit sRGB result (camera white balance), then
-// demosaic and hand back an Image. Assumes the file/buffer is already opened.
-Image processToImage(LibRaw &raw, QString *error, raw::LensMetadata *meta)
+// Configure LibRaw for a viewable 16-bit sRGB result, then demosaic and hand back
+// an Image. `opts` drives the automatic decode-time adjustments. Assumes the
+// file/buffer is already opened.
+Image processToImage(LibRaw &raw, QString *error, raw::LensMetadata *meta,
+                     const raw::RawDecodeOptions &opts)
 {
-    raw.imgdata.params.output_bps = 16;    // 16-bit per channel → float pipeline
-    raw.imgdata.params.output_color = 1;   // sRGB
-    raw.imgdata.params.use_camera_wb = 1;  // as-shot white balance
+    auto &p = raw.imgdata.params;
+    p.output_bps = 16;    // 16-bit per channel → float pipeline
+    p.output_color = 1;   // sRGB
+    // Automatic brightness (LibRaw scales exposure, clipping `auto_bright_thr`).
+    p.no_auto_bright = opts.autoBright ? 0 : 1;
+    p.auto_bright_thr = opts.autoBrightThreshold;
+    // Highlight handling: 0 clip, 1 unclip, 2 blend, 3+ reconstruct.
+    p.highlight = opts.highlight;
+    // White balance source.
+    p.use_camera_wb = (opts.wb == raw::RawDecodeOptions::Camera) ? 1 : 0;
+    p.use_auto_wb = (opts.wb == raw::RawDecodeOptions::Auto) ? 1 : 0;
+    // Demosaic algorithm.
+    p.user_qual = opts.demosaic;
 
     fillMetadata(raw, meta);
 
@@ -130,7 +142,8 @@ bool raw::isRawPath(const QString &path)
     return extensions().contains(QFileInfo(path).suffix().toLower());
 }
 
-Image raw::decodeFile(const QString &path, QString *error, LensMetadata *meta)
+Image raw::decodeFile(const QString &path, QString *error, LensMetadata *meta,
+                      const RawDecodeOptions &opts)
 {
     LibRaw raw;
     if (const int e = raw.open_file(path.toUtf8().constData())) {
@@ -139,10 +152,11 @@ Image raw::decodeFile(const QString &path, QString *error, LensMetadata *meta)
                          .arg(path, QString::fromUtf8(LibRaw::strerror(e)));
         return Image();
     }
-    return processToImage(raw, error, meta);
+    return processToImage(raw, error, meta, opts);
 }
 
-Image raw::decodeBytes(const void *data, qsizetype size, QString *error, LensMetadata *meta)
+Image raw::decodeBytes(const void *data, qsizetype size, QString *error, LensMetadata *meta,
+                       const RawDecodeOptions &opts)
 {
     if (!data || size <= 0) {
         if (error)
@@ -156,5 +170,28 @@ Image raw::decodeBytes(const void *data, qsizetype size, QString *error, LensMet
                          .arg(QString::fromUtf8(LibRaw::strerror(e)));
         return Image();
     }
-    return processToImage(raw, error, meta);
+    return processToImage(raw, error, meta, opts);
+}
+
+QJsonObject raw::RawDecodeOptions::toJson() const
+{
+    QJsonObject o;
+    o[QStringLiteral("autoBright")] = autoBright;
+    o[QStringLiteral("autoBrightThreshold")] = autoBrightThreshold;
+    o[QStringLiteral("highlight")] = highlight;
+    o[QStringLiteral("wb")] = wb;
+    o[QStringLiteral("demosaic")] = demosaic;
+    return o;
+}
+
+raw::RawDecodeOptions raw::RawDecodeOptions::fromJson(const QJsonObject &o)
+{
+    RawDecodeOptions v;
+    v.autoBright = o.value(QStringLiteral("autoBright")).toBool(true);
+    v.autoBrightThreshold =
+        static_cast<float>(o.value(QStringLiteral("autoBrightThreshold")).toDouble(0.01));
+    v.highlight = o.value(QStringLiteral("highlight")).toInt(0);
+    v.wb = o.value(QStringLiteral("wb")).toInt(Camera);
+    v.demosaic = o.value(QStringLiteral("demosaic")).toInt(3);
+    return v;
 }

@@ -6,6 +6,7 @@
 #include "core/MonoNode.h"
 
 #include <QColor>
+#include <QJsonObject>
 
 #include <cstdint>
 #include <cstdio>
@@ -66,18 +67,53 @@ int main(int /*argc*/, char **argv)
     c = node.apply(red).toQImage().pixelColor(0, 0);
     CHECK(near8(c.red(), 255) && near8(c.green(), 255) && near8(c.blue(), 255));
 
-    // Toning with a warm hue tints the grey: red channel ends up warmer (higher)
-    // than the blue channel. Use a mid-grey input so there's headroom both ways.
+    // Split toning: cool/blue shadows + warm highlights. A dark patch picks up the
+    // shadow tint (blue), a bright patch the highlight tint (warm); luma preserved.
     Image grey = solid(128, 128, 128);
+    Image dark = solid(40, 40, 40);
+    Image bright = solid(210, 210, 210);
     MonoValues t;
-    t.enabled = true;            // default luma weights → grey 128
-    t.toneStrength = 1.0f;
-    t.toneHue = 32.0f;           // warm / sepia
+    t.enabled = true; // default luma weights; neutral patches → no band shift
+    t.shadowHue = 220.0f;
+    t.shadowSat = 0.8f; // cool shadows
+    t.highHue = 40.0f;
+    t.highSat = 0.8f;   // warm highlights
     node.setValues(t);
-    c = node.apply(grey).toQImage().pixelColor(0, 0);
-    CHECK(c.red() > c.blue());   // warm tint
-    CHECK(near8(static_cast<int>(0.2126 * c.red() + 0.7152 * c.green()
-                                 + 0.0722 * c.blue()), 128)); // luma preserved
+    const QColor cd = node.apply(dark).toQImage().pixelColor(0, 0);
+    const QColor cb = node.apply(bright).toQImage().pixelColor(0, 0);
+    CHECK(cd.blue() > cd.red()); // shadows read cool/blue
+    CHECK(cb.red() > cb.blue()); // highlights read warm
+    CHECK(near8(static_cast<int>(0.2126 * cd.red() + 0.7152 * cd.green()
+                                 + 0.0722 * cd.blue()), 40)); // luma preserved
+    CHECK(near8(static_cast<int>(0.2126 * cb.red() + 0.7152 * cb.green()
+                                 + 0.0722 * cb.blue()), 210));
+
+    // Split-tone fields round-trip through save/restore.
+    {
+        MonoNode a;
+        MonoValues sv = t;
+        sv.balance = 0.3f;
+        a.setValues(sv);
+        MonoNode b;
+        b.restoreState(a.saveState());
+        CHECK(b.values() == a.values());
+    }
+
+    // Legacy single-tint projects migrate into the split fields (uniform tint =
+    // equal shadow/highlight, amount = strength × saturation).
+    {
+        QJsonObject legacy;
+        legacy[QStringLiteral("monoEnabled")] = true;
+        legacy[QStringLiteral("toneHue")] = 32.0;
+        legacy[QStringLiteral("toneStrength")] = 1.0;
+        legacy[QStringLiteral("toneSaturation")] = 0.5;
+        MonoNode m2;
+        m2.restoreState(legacy);
+        const MonoValues mv = m2.values();
+        CHECK(near8(static_cast<int>(mv.shadowHue), 32));
+        CHECK(mv.shadowHue == mv.highHue && mv.shadowSat == mv.highSat);
+        CHECK(mv.shadowSat > 0.45f && mv.shadowSat < 0.55f); // 1.0 × 0.5
+    }
 
     // Preview-state contribution: enabled sets monoEnabled + normalised weights.
     {
@@ -96,6 +132,49 @@ int main(int /*argc*/, char **argv)
         CHECK(ps.monoEnabled == 1.0f);
         CHECK(near8(static_cast<int>(ps.monoR * 100), 25));
         CHECK(near8(static_cast<int>(ps.monoB * 100), 50));
+    }
+
+    // Per-color mixer: a +Red band brightens a saturated red patch's grey, while
+    // a neutral grey patch is unaffected (chroma = 0, so no band shifts it).
+    {
+        MonoNode m;
+        MonoValues base;
+        base.enabled = true; // neutral bands → plain luma grey
+        m.setValues(base);
+        const int neutralRed = m.apply(red).toQImage().pixelColor(0, 0).red();
+
+        MonoValues boosted = base;
+        boosted.band[0] = 1.0f; // Red band up
+        m.setValues(boosted);
+        const int boostedRed = m.apply(red).toQImage().pixelColor(0, 0).red();
+        CHECK(boostedRed > neutralRed + 10); // red renders much brighter
+
+        const int g0 = m.apply(grey).toQImage().pixelColor(0, 0).red();
+        CHECK(near8(g0, 128)); // neutral grey untouched by the band
+
+        // Green band (index 3, hue 120°) owns greens: a saturated green darkens
+        // strongly when pulled down — locking the true-hue-centre fix.
+        Image green = solid(0, 180, 0);
+        m.setValues(base); // neutral bands
+        const int neutralGreen = m.apply(green).toQImage().pixelColor(0, 0).red();
+        MonoValues gn = base;
+        gn.band[3] = -1.0f; // Green down
+        m.setValues(gn);
+        const int darkGreen = m.apply(green).toQImage().pixelColor(0, 0).red();
+        CHECK(darkGreen < neutralGreen - 20); // clearly darker than the plain grey
+    }
+
+    // The 8 bands round-trip through save/restore.
+    {
+        MonoNode a;
+        MonoValues bv;
+        bv.enabled = true;
+        for (int i = 0; i < 8; ++i)
+            bv.band[i] = (i - 3) * 0.1f;
+        a.setValues(bv);
+        MonoNode b;
+        b.restoreState(a.saveState());
+        CHECK(b.values() == a.values());
     }
 
     ImageBuffer::shutdownLibrary();

@@ -19,9 +19,15 @@
 #include "ui/LensPanel.h"
 #include "ui/MaskGizmo.h"
 #include "ui/ZoneGizmo.h"
+#include "ui/CropGizmo.h"
+#include "ui/CropPanel.h"
 #include "ui/LooksPanel.h"
 #include "ui/ColorGradePanel.h"
 #include "ui/MonoPanel.h"
+#include "ui/GrainPanel.h"
+#include "ui/VignettePanel.h"
+#include "ui/DefringePanel.h"
+#include "ui/RawSettingsPanel.h"
 #include "ui/SharpenPanel.h"
 #include "ui/TonePanel.h"
 
@@ -70,6 +76,37 @@ void rememberDir(const QString &key, const QString &chosenPath)
         return;
     QSettings().setValue(QStringLiteral("dialogDirs/") + key,
                          QFileInfo(chosenPath).absolutePath());
+}
+
+// --- RAW decode defaults (global preference) ------------------------------
+// The automatic-RAW configuration the user sets in the RAW Defaults panel,
+// persisted globally and used to seed every new RAW open. (Per-project options
+// are stored separately in the .lumen manifest.)
+void loadRawDefaults(raw::RawDecodeOptions &opts, raw::RawLensDefaults &lens)
+{
+    QSettings s;
+    opts.autoBright = s.value(QStringLiteral("raw/autoBright"), opts.autoBright).toBool();
+    opts.autoBrightThreshold =
+        s.value(QStringLiteral("raw/autoBrightThreshold"), opts.autoBrightThreshold).toFloat();
+    opts.highlight = s.value(QStringLiteral("raw/highlight"), opts.highlight).toInt();
+    opts.wb = s.value(QStringLiteral("raw/wb"), opts.wb).toInt();
+    opts.demosaic = s.value(QStringLiteral("raw/demosaic"), opts.demosaic).toInt();
+    lens.distortion = s.value(QStringLiteral("raw/lensDistortion"), lens.distortion).toBool();
+    lens.tca = s.value(QStringLiteral("raw/lensTca"), lens.tca).toBool();
+    lens.vignetting = s.value(QStringLiteral("raw/lensVignetting"), lens.vignetting).toBool();
+}
+
+void saveRawDefaults(const raw::RawDecodeOptions &opts, const raw::RawLensDefaults &lens)
+{
+    QSettings s;
+    s.setValue(QStringLiteral("raw/autoBright"), opts.autoBright);
+    s.setValue(QStringLiteral("raw/autoBrightThreshold"), opts.autoBrightThreshold);
+    s.setValue(QStringLiteral("raw/highlight"), opts.highlight);
+    s.setValue(QStringLiteral("raw/wb"), opts.wb);
+    s.setValue(QStringLiteral("raw/demosaic"), opts.demosaic);
+    s.setValue(QStringLiteral("raw/lensDistortion"), lens.distortion);
+    s.setValue(QStringLiteral("raw/lensTca"), lens.tca);
+    s.setValue(QStringLiteral("raw/lensVignetting"), lens.vignetting);
 }
 
 // Dim opacity for overlays (0–255). A tuning value, not a fixed constant
@@ -277,6 +314,10 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setWindowTitle(QStringLiteral("Lumen"));
 
+    // Seed the automatic-RAW configuration from the global preference; the first
+    // RAW opened uses these (and each .lumen carries its own per-project copy).
+    loadRawDefaults(m_rawOptions, m_rawLensDefaults);
+
     // The graph owns the nodes; we keep raw pointers to drive them. The "baked"
     // group runs first in libvips and is rendered into the preview base texture:
     // lens (warps geometry) -> heal (edits pixels) -> denoise -> sharpen (both
@@ -287,6 +328,7 @@ MainWindow::MainWindow(QWidget *parent)
         static_cast<LensCorrectionNode *>(m_graph.addNode(std::make_unique<LensCorrectionNode>()));
     m_heal = static_cast<HealNode *>(m_graph.addNode(std::make_unique<HealNode>()));
     m_denoise = static_cast<DenoiseNode *>(m_graph.addNode(std::make_unique<DenoiseNode>()));
+    m_defringe = static_cast<DefringeNode *>(m_graph.addNode(std::make_unique<DefringeNode>()));
     m_sharpen = static_cast<SharpenNode *>(m_graph.addNode(std::make_unique<SharpenNode>()));
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
@@ -294,6 +336,9 @@ MainWindow::MainWindow(QWidget *parent)
         static_cast<ColorGradeNode *>(m_graph.addNode(std::make_unique<ColorGradeNode>()));
     m_lutNode = static_cast<LutNode *>(m_graph.addNode(std::make_unique<LutNode>()));
     m_mono = static_cast<MonoNode *>(m_graph.addNode(std::make_unique<MonoNode>()));
+    // Film grain is the final finishing step (after mono), applied over the
+    // whole image. A pointwise-in-shader op, so it bakes nothing.
+    m_grain = static_cast<GrainNode *>(m_graph.addNode(std::make_unique<GrainNode>()));
 
     // Remember the pristine graph (neutral Base nodes, no selective layers) so
     // openPath() can reset to it for each newly opened image.
@@ -426,6 +471,61 @@ MainWindow::MainWindow(QWidget *parent)
             });
     connect(m_sharpenPanel, &SharpenPanel::closed, this, &MainWindow::closeSharpenTool);
 
+    m_grainPanel = new GrainPanel(this);
+    connect(m_grainPanel, &GrainPanel::valuesChanged, this,
+            [this](const GrainNode::Values &v) {
+                if (!m_grain)
+                    return;
+                m_grain->setValues(v);
+                updatePreview(); // grain is a live GPU step (no base re-bake)
+            });
+    connect(m_grainPanel, &GrainPanel::closed, this, &MainWindow::closeGrainTool);
+
+    m_vignettePanel = new VignettePanel(this);
+    connect(m_vignettePanel, &VignettePanel::valuesChanged, this,
+            [this](const VignetteParams &v) {
+                m_graph.setVignette(v);
+                m_canvas->setVignette(v);
+                updatePreview(); // vignette is a live present-pass op (no base re-bake)
+            });
+    connect(m_vignettePanel, &VignettePanel::closed, this, &MainWindow::closeVignetteTool);
+
+    m_cropPanel = new CropPanel(this);
+    connect(m_cropPanel, &CropPanel::aspectChanged, this, [this](double aspect) {
+        if (m_cropGizmo)
+            m_cropGizmo->setAspect(aspect);
+    });
+    connect(m_cropPanel, &CropPanel::rotateRequested, this, [this](int deltaCW) {
+        CropState c = m_graph.crop();
+        c.rotation = ((c.rotation + deltaCW) % 360 + 360) % 360;
+        c.rect = QRectF(0.0, 0.0, 1.0, 1.0); // a re-orient resets the rectangle
+        m_graph.setCrop(c);
+        if (m_cropGizmo)
+            m_cropGizmo->setRect(c.rect);
+        updateCropView();
+        updatePreview();
+    });
+    connect(m_cropPanel, &CropPanel::flipRequested, this, [this](bool horizontal) {
+        CropState c = m_graph.crop();
+        if (horizontal)
+            c.flipH = !c.flipH;
+        else
+            c.flipV = !c.flipV;
+        m_graph.setCrop(c);
+        updateCropView();
+        updatePreview();
+    });
+    connect(m_cropPanel, &CropPanel::resetRequested, this, [this] {
+        m_graph.setCrop(CropState{});
+        if (m_cropGizmo)
+            m_cropGizmo->setRect(QRectF(0.0, 0.0, 1.0, 1.0));
+        if (m_cropPanel->isVisible())
+            m_cropPanel->reveal(m_graph.crop(), sourceAspect());
+        updateCropView();
+        updatePreview();
+    });
+    connect(m_cropPanel, &CropPanel::closed, this, &MainWindow::closeCropTool);
+
     m_denoisePanel = new DenoisePanel(this);
     connect(m_denoisePanel, &DenoisePanel::valuesChanged, this,
             [this](const DenoiseNode::Values &v) {
@@ -438,6 +538,45 @@ MainWindow::MainWindow(QWidget *parent)
             });
     connect(m_denoisePanel, &DenoisePanel::closed, this, &MainWindow::closeDenoiseTool);
 
+    m_defringePanel = new DefringePanel(this);
+    connect(m_defringePanel, &DefringePanel::valuesChanged, this,
+            [this](const DefringeNode::Values &v) {
+                if (!m_defringe)
+                    return;
+                m_defringe->setValues(v);
+                // Defringe bakes into the base (a full-res LAB pass); coalesce
+                // drags like denoise/sharpen.
+                m_bakeTimer->start();
+            });
+    connect(m_defringePanel, &DefringePanel::closed, this, &MainWindow::closeDefringeTool);
+
+    m_rawPanel = new RawSettingsPanel(this);
+    connect(m_rawPanel, &RawSettingsPanel::valuesChanged, this,
+            [this](const raw::RawDecodeOptions &opts, const raw::RawLensDefaults &lens) {
+                const bool decodeChanged = !(opts == m_rawOptions);
+                const bool lensChanged = !(lens == m_rawLensDefaults);
+                m_rawOptions = opts;
+                m_rawLensDefaults = lens;
+                saveRawDefaults(m_rawOptions, m_rawLensDefaults); // new global default
+                // Apply the lens-correction toggles to the open photo, preserving
+                // its perspective and other lens params.
+                if (lensChanged && m_lens) {
+                    LensCorrectionNode::Params p = m_lens->params();
+                    p.distortion = lens.distortion;
+                    p.tca = lens.tca;
+                    p.vignetting = lens.vignetting;
+                    m_lens->setParams(p);
+                }
+                if (decodeChanged) {
+                    m_redecodeTimer->start(); // debounced re-decode (also refreshes lens)
+                } else if (lensChanged) {
+                    refreshWorkingSource();
+                    refreshBaseImage(true);
+                    updatePreview();
+                }
+            });
+    connect(m_rawPanel, &RawSettingsPanel::closed, this, &MainWindow::closeRawTool);
+
     // Debounce timers: the histogram recompute and the sharpen base re-bake both
     // settle shortly after the user stops dragging.
     m_bakeTimer = new QTimer(this);
@@ -449,6 +588,12 @@ MainWindow::MainWindow(QWidget *parent)
         refreshBaseImage();
         updatePreview();
     });
+
+    // Re-decode (RAW option change) is a full demosaic, so coalesce slider drags.
+    m_redecodeTimer = new QTimer(this);
+    m_redecodeTimer->setSingleShot(true);
+    m_redecodeTimer->setInterval(kHeavyBakeSettleMs);
+    connect(m_redecodeTimer, &QTimer::timeout, this, [this] { redecodeCurrent(); });
 
     m_histogram = new HistogramWidget(this);
     m_histTimer = new QTimer(this);
@@ -480,6 +625,27 @@ MainWindow::MainWindow(QWidget *parent)
         const QImage healed = m_healWatcher.result();
         if (!healed.isNull())
             m_canvas->setImage(healed, /*keepView=*/true); // preserve zoom/pan
+    });
+
+    // Background RAW re-decode finished: install the new source and rebuild the
+    // pipeline (the watcher only delivers the latest request's future).
+    connect(&m_decodeWatcher, &QFutureWatcher<DecodeResult>::finished, this, [this] {
+        static_cast<BusyBadge *>(m_healBusy)->stop();
+        if (!m_decodeWatcher.future().isValid())
+            return;
+        const DecodeResult r = m_decodeWatcher.result();
+        if (r.image.isNull()) {
+            if (!r.error.isEmpty())
+                showHint(QStringLiteral("Could not re-decode RAW: %1").arg(r.error));
+            return;
+        }
+        m_graph.setSource(r.image);
+        // Keep the current WB temperature (don't reseed to as-shot).
+        applyCameraProfile(r.meta.color, /*seedKelvin=*/false);
+        refreshWorkingSource();  // rebuild the corrected source + display QImage
+        refreshBaseImage(true);  // keep zoom/pan (itself async if a bake is active)
+        recomputeSelectiveMask();
+        updatePreview();
     });
 
     m_healPanel = new HealPanel(this);
@@ -625,6 +791,23 @@ MainWindow::MainWindow(QWidget *parent)
             [applyZones](const std::vector<MaskZoneShape> &s) { applyZones(s, true); });
     connect(m_canvas, &CanvasWidget::viewChanged, m_zoneGizmo, &ZoneGizmo::refresh);
 
+    // On-canvas crop rectangle editor (only visible while the Crop tool is open).
+    m_cropGizmo = new CropGizmo(m_canvas, this);
+    connect(m_cropGizmo, &CropGizmo::changed, this, [this](const QRectF &r) {
+        CropState c = m_graph.crop();
+        c.rect = r;
+        m_graph.setCrop(c);
+        // Live: don't commit yet (editFinished commits); the present pass stays in
+        // Editing mode (full frame) so the gizmo keeps mapping 1:1.
+    });
+    connect(m_cropGizmo, &CropGizmo::editFinished, this, [this](const QRectF &r) {
+        CropState c = m_graph.crop();
+        c.rect = r;
+        m_graph.setCrop(c);
+        m_graph.commit();
+    });
+    connect(m_canvas, &CanvasWidget::viewChanged, m_cropGizmo, [this] { m_cropGizmo->update(); });
+
     connect(m_layersPanel, &LayersPanel::zoneToolChanged, this, [this](int tool) {
         m_zoneGizmo->setTool(static_cast<ZoneGizmo::Tool>(tool));
         syncZoneGizmo(); // ensure it is shown while a tool is engaged
@@ -682,6 +865,22 @@ MainWindow::MainWindow(QWidget *parent)
     resize(1280, 800);
 }
 
+MainWindow::~MainWindow()
+{
+    // Make sure no background pipeline task (heal/denoise/defringe/sharpen bake
+    // or the histogram compute) is still touching libvips when this window's
+    // cached images are freed — and before main() calls vips_shutdown().
+    ++m_healGen; // signal in-flight tasks to bail at their next checkpoint
+    ++m_histGen;
+    ++m_decodeGen;
+    if (m_healWatcher.isRunning())
+        m_healWatcher.waitForFinished();
+    if (m_histWatcher.isRunning())
+        m_histWatcher.waitForFinished();
+    if (m_decodeWatcher.isRunning())
+        m_decodeWatcher.waitForFinished();
+}
+
 void MainWindow::buildCommands()
 {
     // ids consumed by runCommand(). Editing tools are placeholders for now.
@@ -702,7 +901,12 @@ void MainWindow::buildCommands()
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment")},
         {QStringLiteral("lens"), QStringLiteral("Lens & perspective")},
         {QStringLiteral("denoise"), QStringLiteral("Denoise")},
+        {QStringLiteral("defringe"), QStringLiteral("Defringe")},
+        {QStringLiteral("raw"), QStringLiteral("RAW defaults (auto adjustments)")},
         {QStringLiteral("sharpen"), QStringLiteral("Sharpen")},
+        {QStringLiteral("grain"), QStringLiteral("Film grain")},
+        {QStringLiteral("vignette"), QStringLiteral("Vignette")},
+        {QStringLiteral("crop"), QStringLiteral("Crop & rotate")},
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
         {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)")},
         {QStringLiteral("layers"), QStringLiteral("Layers")},
@@ -742,6 +946,16 @@ void MainWindow::runCommand(const QString &id)
         openSharpenTool();
     } else if (id == QLatin1String("denoise")) {
         openDenoiseTool();
+    } else if (id == QLatin1String("defringe")) {
+        openDefringeTool();
+    } else if (id == QLatin1String("raw")) {
+        openRawTool();
+    } else if (id == QLatin1String("grain")) {
+        openGrainTool();
+    } else if (id == QLatin1String("vignette")) {
+        openVignetteTool();
+    } else if (id == QLatin1String("crop")) {
+        openCropTool();
     } else if (id == QLatin1String("histogram")) {
         toggleHistogram();
     } else if (id == QLatin1String("heal")) {
@@ -772,7 +986,7 @@ bool MainWindow::openPath(const QString &path)
     QString error;
     const bool isRaw = raw::isRawPath(path);
     raw::LensMetadata meta;
-    Image source = isRaw ? raw::decodeFile(path, &error, &meta)
+    Image source = isRaw ? raw::decodeFile(path, &error, &meta, m_rawOptions)
                          : Image::fromFile(path, &error);
     if (source.isNull()) {
         QMessageBox::warning(this, QStringLiteral("Lumen"), error);
@@ -805,6 +1019,10 @@ bool MainWindow::openPath(const QString &path)
         lp.focalLength = meta.focalLength;
         lp.aperture = meta.aperture;
         lp.focusDistance = meta.focusDistance;
+        // Seed the automatic lens corrections from the user's RAW defaults.
+        lp.distortion = m_rawLensDefaults.distortion;
+        lp.tca = m_rawLensDefaults.tca;
+        lp.vignetting = m_rawLensDefaults.vignetting;
     }
     m_lens->setParams(lp);
     // Camera-accurate white balance: install the colour profile and seed the
@@ -822,6 +1040,31 @@ bool MainWindow::openPath(const QString &path)
     reseedOpenPanels();         // re-sync open tools with the neutral defaults
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
     return true;
+}
+
+void MainWindow::redecodeCurrent()
+{
+    // Only RAW sources can be re-decoded (others have no decode-time options).
+    if (m_sourceBytes.isEmpty() || !raw::isRawPath(m_sourceName))
+        return;
+
+    // Run the demosaic off the UI thread so the app stays responsive and the busy
+    // badge animates; the latest request wins (m_decodeGen guards stale results).
+    const quint64 gen = ++m_decodeGen;
+    auto *badge = static_cast<BusyBadge *>(m_healBusy);
+    badge->setLabel(QStringLiteral("Decoding…"));
+    badge->start();
+    layoutOverlays(); // position the badge + dim
+
+    const QByteArray bytes = m_sourceBytes;
+    const raw::RawDecodeOptions opts = m_rawOptions;
+    m_decodeWatcher.setFuture(QtConcurrent::run([this, gen, bytes, opts]() -> DecodeResult {
+        if (gen != m_decodeGen)
+            return {}; // superseded before we even started
+        DecodeResult r;
+        r.image = raw::decodeBytes(bytes.constData(), bytes.size(), &r.error, &r.meta, opts);
+        return r;
+    }));
 }
 
 void MainWindow::saveProject()
@@ -855,8 +1098,13 @@ void MainWindow::saveProject()
         name = QStringLiteral("source.png");
     }
 
+    // Carry the per-project RAW decode options alongside the edit graph (the
+    // graph stays decode-agnostic; loadProjectFile reads this key back).
+    QJsonObject graph = m_graph.saveState();
+    graph[QStringLiteral("rawOptions")] = m_rawOptions.toJson();
+
     QString error;
-    if (!project::save(path, m_graph.saveState(), bytes, name, &error)) {
+    if (!project::save(path, graph, bytes, name, &error)) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Could not save project: %1").arg(error));
         return;
@@ -890,10 +1138,15 @@ bool MainWindow::loadProjectFile(const QString &path)
         return false;
     }
     const bool isRaw = raw::isRawPath(proj.sourceName);
+    // Restore this project's per-project decode options (absent → today's look).
+    m_rawOptions = proj.graph.contains(QStringLiteral("rawOptions"))
+                       ? raw::RawDecodeOptions::fromJson(
+                             proj.graph.value(QStringLiteral("rawOptions")).toObject())
+                       : raw::RawDecodeOptions{};
     raw::LensMetadata meta;
     Image source =
         isRaw ? raw::decodeBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(),
-                                 &error, &meta)
+                                 &error, &meta, m_rawOptions)
               : Image::fromBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error);
     if (source.isNull()) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
@@ -1037,6 +1290,7 @@ void MainWindow::updatePreview()
     m_canvas->setPreviewState(ps);
     m_canvas->setCurveLuts(m_graph.previewLut());
     m_canvas->setLut3D(m_graph.previewLook());
+    m_canvas->setVignette(m_graph.vignette()); // creative vignette (present pass)
 
     // A capped-resolution sRGB copy of the source, for evaluating data-driven
     // (luminosity/colour) layer masks; geometric masks ignore it. Building it
@@ -1148,6 +1402,7 @@ void MainWindow::showLayersPanel()
     m_layersPanel->show();
     m_layersPanel->raise();
     refreshLayersPanel();
+    updateCropView(); // full-frame rule: masks/zones edit the un-oriented frame
 }
 
 void MainWindow::hideLayersPanel()
@@ -1165,6 +1420,7 @@ void MainWindow::hideLayersPanel()
     }
     syncMaskGizmo();                 // hide the gizmo
     syncZoneGizmo();                 // hide the zone editor too
+    updateCropView();                // back to the cropped browse view
 }
 
 void MainWindow::refreshLayersPanel()
@@ -1483,6 +1739,97 @@ void MainWindow::closeSharpenTool()
     m_canvas->setFocus();
 }
 
+void MainWindow::openGrainTool()
+{
+    if (!m_grain)
+        return;
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_grainPanel->adjustSize();
+    const int margin = 18;
+    m_grainPanel->move(width() - m_grainPanel->width() - margin, margin);
+    m_grainPanel->reveal(m_grain->values());
+}
+
+void MainWindow::closeGrainTool()
+{
+    m_grainPanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::openVignetteTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_vignettePanel->adjustSize();
+    const int margin = 18;
+    m_vignettePanel->move(width() - m_vignettePanel->width() - margin, margin);
+    m_vignettePanel->reveal(m_graph.vignette());
+}
+
+void MainWindow::closeVignetteTool()
+{
+    m_vignettePanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+double MainWindow::sourceAspect() const
+{
+    if (m_sourceQImage.isNull() || m_sourceQImage.height() == 0)
+        return 1.0;
+    return static_cast<double>(m_sourceQImage.width())
+           / static_cast<double>(m_sourceQImage.height());
+}
+
+void MainWindow::openCropTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_cropPanel->adjustSize();
+    const int margin = 18;
+    m_cropPanel->move(width() - m_cropPanel->width() - margin, margin);
+    m_cropPanel->reveal(m_graph.crop(), sourceAspect());
+    m_cropGizmo->setAspect(0.0); // free until the user picks a preset
+    m_cropGizmo->setRect(m_graph.crop().rect);
+    updateCropView(); // switches the canvas into Editing (full-frame) mode
+    m_canvas->setFitZoom(0.85f); // pull the frame in so the handles clear the edges
+    m_cropGizmo->setGeometry(m_canvas->geometry());
+    m_cropGizmo->show();
+    m_cropGizmo->raise();
+    m_cropPanel->raise(); // keep the panel above the gizmo so its buttons stay clickable
+}
+
+void MainWindow::closeCropTool()
+{
+    m_cropPanel->hide();
+    m_cropGizmo->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    updateCropView(); // Applied (if cropped) or None
+    m_canvas->resetView(); // fit the (now cropped) result to the window
+    updatePreview();
+    m_canvas->setFocus();
+}
+
+void MainWindow::updateCropView()
+{
+    CanvasWidget::CropViewMode mode;
+    if (m_cropPanel->isVisible()) {
+        // The crop tool itself wants the full oriented frame to edit against.
+        mode = CanvasWidget::CropEditing;
+    } else if (m_layersPanel->isVisible() || m_healPanel->isVisible()) {
+        // Full-frame rule: gizmo/pick tools (mask/zone/heal/eyedropper) operate in
+        // the un-oriented full frame so their coordinate mapping stays exact.
+        mode = CanvasWidget::CropNone;
+    } else if (!m_graph.crop().isIdentity()) {
+        mode = CanvasWidget::CropApplied;
+    } else {
+        mode = CanvasWidget::CropNone;
+    }
+    m_canvas->setCropState(m_graph.crop(), mode);
+}
+
 void MainWindow::openDenoiseTool()
 {
     if (!m_denoise)
@@ -1498,6 +1845,48 @@ void MainWindow::closeDenoiseTool()
 {
     m_denoisePanel->hide();
     m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::openDefringeTool()
+{
+    if (!m_defringe)
+        return;
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_defringePanel->adjustSize();
+    const int margin = 18;
+    m_defringePanel->move(width() - m_defringePanel->width() - margin, margin);
+    m_defringePanel->reveal(m_defringe->values());
+}
+
+void MainWindow::closeDefringeTool()
+{
+    m_defringePanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::openRawTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_rawPanel->adjustSize();
+    const int margin = 18;
+    m_rawPanel->move(width() - m_rawPanel->width() - margin, margin);
+    m_rawPanel->reveal(m_rawOptions, m_rawLensDefaults);
+}
+
+void MainWindow::closeRawTool()
+{
+    m_rawPanel->hide();
+    // Flush a pending debounced re-decode so closing doesn't drop the last change
+    // (it runs in the background, with the busy badge).
+    if (m_redecodeTimer->isActive()) {
+        m_redecodeTimer->stop();
+        redecodeCurrent();
+    }
+    m_graph.commit(); // capture any lens-correction toggle as one undo step
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
@@ -1628,6 +2017,7 @@ void MainWindow::openHealTool()
     m_brushTarget = BrushTarget::Heal;
     m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f);
     m_canvas->setBrushMode(true);
+    updateCropView(); // full-frame rule: heal paints in the un-oriented frame
     refreshBaseImage();
     updatePreview();
 }
@@ -1640,6 +2030,7 @@ void MainWindow::closeHealTool()
     m_healPainting = false;
     m_heal->setHealMask(m_brushMask); // commit (one global undo step)
     m_brushUndo.clear();
+    updateCropView(); // back to the cropped browse view
     refreshBaseImage();
     updatePreview();
     m_graph.commit();
@@ -1650,17 +2041,21 @@ void MainWindow::closeHealTool()
 void MainWindow::refreshBaseImage(bool keepView)
 {
     // The GPU preview base = the lens-corrected source with the other "baked"
-    // neighbourhood ops applied (heal -> denoise -> sharpen); the shader then
-    // applies the pointwise/LUT ops on top. With no baked op active, the
-    // corrected source (m_sourceQImage) is already the base.
+    // neighbourhood ops applied (heal -> denoise -> defringe -> sharpen); the
+    // shader then applies the pointwise/LUT ops on top. With no baked op active,
+    // the corrected source (m_sourceQImage) is already the base.
     const bool healActive = m_heal && !m_heal->healMask().isEmpty();
     const DenoiseNode::Values dv =
         m_denoise ? m_denoise->values() : DenoiseNode::Values{};
     const bool denoiseActive = dv.enabled && (dv.luma > 0.0f || dv.chroma > 0.0f);
+    const DefringeNode::Values fv =
+        m_defringe ? m_defringe->values() : DefringeNode::Values{};
+    const bool defringeActive = fv.enabled && (fv.purple > 0.0f || fv.green > 0.0f);
     const SharpenNode::Values sv =
         m_sharpen ? m_sharpen->values() : SharpenNode::Values{};
     const bool sharpenActive = sv.enabled && sv.amount > 0.0f;
-    if (m_graph.source().isNull() || (!healActive && !denoiseActive && !sharpenActive)) {
+    if (m_graph.source().isNull()
+        || (!healActive && !denoiseActive && !defringeActive && !sharpenActive)) {
         if (!m_sourceQImage.isNull())
             m_canvas->setImage(m_sourceQImage, keepView);
         return;
@@ -1675,10 +2070,11 @@ void MainWindow::refreshBaseImage(bool keepView)
     const Image src = m_workingSource.isNull() ? m_graph.source() : m_workingSource;
     const MaskBuffer mask = healActive ? m_heal->healMask() : MaskBuffer();
     const bool hq = m_heal && m_heal->highQuality();
-    if (healActive || denoiseActive || sharpenActive) {
+    if (healActive || denoiseActive || defringeActive || sharpenActive) {
         // Label by op; heal takes precedence when several are combined.
         const QString label = healActive ? QStringLiteral("Healing…")
                             : denoiseActive ? QStringLiteral("Denoising…")
+                            : defringeActive ? QStringLiteral("Defringing…")
                                             : QStringLiteral("Sharpening…");
         auto *badge = static_cast<BusyBadge *>(m_healBusy);
         badge->setLabel(label);
@@ -1687,7 +2083,7 @@ void MainWindow::refreshBaseImage(bool keepView)
     }
 
     m_healWatcher.setFuture(
-        QtConcurrent::run([this, gen, src, mask, hq, dv, sv]() -> QImage {
+        QtConcurrent::run([this, gen, src, mask, hq, dv, fv, sv]() -> QImage {
             if (gen != m_healGen)
                 return QImage(); // superseded before we even started
             Image img = src;
@@ -1701,6 +2097,11 @@ void MainWindow::refreshBaseImage(bool keepView)
                 DenoiseNode denoise;
                 denoise.setValues(dv);
                 img = denoise.apply(img);
+            }
+            if (fv.enabled && (fv.purple > 0.0f || fv.green > 0.0f)) {
+                DefringeNode defringe;
+                defringe.setValues(fv);
+                img = defringe.apply(img);
             }
             if (sv.enabled && sv.amount > 0.0f) {
                 SharpenNode sharpen;
@@ -1977,6 +2378,16 @@ void MainWindow::closeActiveTool()
         closeSharpenTool();
     else if (m_denoisePanel->isVisible())
         closeDenoiseTool();
+    else if (m_defringePanel->isVisible())
+        closeDefringeTool();
+    else if (m_rawPanel->isVisible())
+        closeRawTool();
+    else if (m_grainPanel->isVisible())
+        closeGrainTool();
+    else if (m_vignettePanel->isVisible())
+        closeVignetteTool();
+    else if (m_cropPanel->isVisible())
+        closeCropTool();
     else if (m_healPanel->isVisible())
         closeHealTool();
     else {
@@ -2044,6 +2455,17 @@ void MainWindow::afterHistoryChange()
         m_sharpenPanel->reveal(m_sharpen->values());
     if (m_denoisePanel->isVisible() && m_denoise)
         m_denoisePanel->reveal(m_denoise->values());
+    if (m_defringePanel->isVisible() && m_defringe)
+        m_defringePanel->reveal(m_defringe->values());
+    if (m_grainPanel->isVisible() && m_grain)
+        m_grainPanel->reveal(m_grain->values());
+    if (m_vignettePanel->isVisible())
+        m_vignettePanel->reveal(m_graph.vignette());
+    if (m_cropPanel->isVisible()) {
+        m_cropPanel->reveal(m_graph.crop(), sourceAspect());
+        m_cropGizmo->setRect(m_graph.crop().rect);
+    }
+    updateCropView(); // push the restored crop/orientation to the canvas
     updateHistogram(); // reflect the restored state (no-op when hidden)
     // If a mask brush is active, resync the working mask to the restored state.
     if (m_brushTarget == BrushTarget::Selective
@@ -2098,9 +2520,22 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_colorGradePanel);
     clampIntoView(m_lensPanel);
     clampIntoView(m_sharpenPanel);
+    clampIntoView(m_grainPanel);
+    clampIntoView(m_vignettePanel);
+    clampIntoView(m_cropPanel);
     clampIntoView(m_denoisePanel);
+    clampIntoView(m_defringePanel);
+    clampIntoView(m_rawPanel);
     clampIntoView(m_healPanel);
     clampIntoView(m_layersPanel);
+
+    // The crop gizmo overlays the full canvas area while the Crop tool is open.
+    if (m_cropGizmo && m_cropGizmo->isVisible()) {
+        m_cropGizmo->setGeometry(m_canvas->geometry());
+        m_cropGizmo->raise();
+        if (m_cropPanel->isVisible())
+            m_cropPanel->raise(); // keep the panel clickable above the gizmo
+    }
 
     // Histogram: bottom-left of the canvas, above the hint bar.
     if (m_histogram && m_histogram->isVisible()) {
@@ -2128,7 +2563,12 @@ void MainWindow::layoutOverlays()
                                static_cast<QWidget *>(m_colorGradePanel),
                                static_cast<QWidget *>(m_lensPanel),
                                static_cast<QWidget *>(m_sharpenPanel),
+                               static_cast<QWidget *>(m_grainPanel),
+                               static_cast<QWidget *>(m_vignettePanel),
+                               static_cast<QWidget *>(m_cropPanel),
                                static_cast<QWidget *>(m_denoisePanel),
+                               static_cast<QWidget *>(m_defringePanel),
+                               static_cast<QWidget *>(m_rawPanel),
                                static_cast<QWidget *>(m_healPanel),
                                static_cast<QWidget *>(m_layersPanel)}) {
             if (panel && panel->isVisible())
