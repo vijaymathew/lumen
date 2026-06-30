@@ -358,6 +358,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_scrim->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_scrim->hide();
 
+    // The hint bar tracks the active mode (Browse / tool open / palette), so its
+    // legend always reflects the keys available right now.
+    connect(&m_input, &InputController::modeChanged, this,
+            [this](InputController::Mode) { updateModeHint(); });
+
     m_palette = new CommandPalette(this);
     connect(m_palette, &CommandPalette::commandTriggered, this, &MainWindow::runCommand);
     connect(m_palette, &CommandPalette::dismissed, this, [this] {
@@ -604,6 +609,22 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_canvas, &CanvasWidget::brushPoint, this, &MainWindow::brushAt);
     connect(m_canvas, &CanvasWidget::brushStrokeEnded, this, &MainWindow::endBrushStroke);
     connect(m_canvas, &CanvasWidget::brushAdjustRequested, this, &MainWindow::adjustBrush);
+
+    // Right-click anywhere on the canvas opens the palette — the same effect as
+    // the "/" key, so pointer-only users are never locked out (DESIGN.md §4.6).
+    connect(m_canvas, &CanvasWidget::paletteRequested, this, [this] {
+        switch (m_input.mode()) {
+        case InputController::Mode::Browse:
+            openCommandPalette();
+            break;
+        case InputController::Mode::ToolActive:
+            closeActiveTool(); // mirror the "/"-from-a-tool swap
+            openCommandPalette();
+            break;
+        default:
+            break;
+        }
+    });
 
     // Background heal preview finished: apply the result (the watcher only
     // delivers the latest request's future).
@@ -852,8 +873,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_hint->setStyleSheet(QStringLiteral(
         "background: rgba(20,20,22,0.85); border-radius: 8px;"
         "padding: 6px 16px; color: #c8c8cc; font-size: 12px;"));
-    m_hint->setText(QStringLiteral(
-        "/  command palette   ·   Ctrl+O open   ·   Ctrl+S save project   ·   F11 fullscreen"));
+    m_hint->setText(modeHintText()); // Browse legend at startup
     m_hint->adjustSize();
 
     buildCommands();
@@ -3016,6 +3036,31 @@ void MainWindow::showHint(const QString &text)
     m_hint->setText(text);
     m_hint->adjustSize();
     layoutOverlays();
+}
+
+QString MainWindow::modeHintText() const
+{
+    switch (m_input.mode()) {
+    case InputController::Mode::CommandPalette:
+        return QStringLiteral(
+            "↑ ↓  browse   ·   type to fuzzy-search   ·   ↵  run   ·   Esc  close");
+    case InputController::Mode::ToolActive:
+        return QStringLiteral(
+            "drag to adjust · arrows nudge   ·   ↵ / Esc  done   ·   /  switch tool");
+    case InputController::Mode::MaskEditing:
+        return QStringLiteral(
+            "drag to paint · Alt subtract · [ ] brush size   ·   ↵ / Esc  done");
+    case InputController::Mode::Browse:
+    default:
+        return QStringLiteral(
+            "/  or right-click  ·  command palette       Ctrl+O open · Ctrl+S save · "
+            "\\ before/after · F11 fullscreen");
+    }
+}
+
+void MainWindow::updateModeHint()
+{
+    showHint(modeHintText());
 }
 
 void MainWindow::layoutOverlays()

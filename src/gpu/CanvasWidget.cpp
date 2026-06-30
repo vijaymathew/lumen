@@ -889,6 +889,14 @@ QPointF CanvasWidget::imageNormalizedAt(const QPointF &widgetPos)
 
 void CanvasWidget::mousePressEvent(QMouseEvent *e)
 {
+    if (e->button() == Qt::RightButton) {
+        // Pointer-only path to the command palette. Stays out of the way while a
+        // brush/pick interaction owns the canvas.
+        if (!m_brushMode && !m_pickMode)
+            emit paletteRequested();
+        return;
+    }
+
     if (e->button() != Qt::LeftButton)
         return;
 

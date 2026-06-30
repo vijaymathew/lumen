@@ -116,6 +116,11 @@ private:
     void resetAutosaveBaseline();
     void toggleFullScreen();
     void showHint(const QString &text);
+    // The persistent which-key legend for the current input mode. Shown in the
+    // hint bar whenever the mode changes; transient showHint() messages override
+    // it until the next mode change.
+    QString modeHintText() const;
+    void updateModeHint();
     void layoutOverlays();
 
     void openCommandPalette();

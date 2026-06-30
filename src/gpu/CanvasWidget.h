@@ -102,6 +102,10 @@ public:
     void setBrushAdjusting(bool on) { m_brushAdjusting = on; }
 
 signals:
+    // Right-click on the canvas requests the command palette — a pointer-only
+    // entry point that mirrors the "/" key (docs/DESIGN.md §4.6). Inert while a
+    // brush or colour-pick is active.
+    void paletteRequested();
     void colorPointPicked(QPointF imageNormalized);
     void brushStrokeBegan();
     void brushPoint(QPointF imageNormalized);

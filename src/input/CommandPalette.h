@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QHash>
 #include <QString>
 #include <QVector>
 #include <QWidget>
@@ -11,8 +12,10 @@ class QListWidget;
 // floats over the dimmed canvas, filters commands by subsequence match, and
 // emits commandTriggered() with the chosen command id.
 //
-// Ranking by recency/frequency is a later refinement; for now it sorts by match
-// quality then declared order.
+// Ranking blends match quality with usage: while you type, the tightest
+// subsequence match wins, with frequency/recency breaking ties; on an empty
+// query the list doubles as a "most-used first" browse view. Usage is persisted
+// across sessions via QSettings.
 class CommandPalette : public QWidget {
     Q_OBJECT
 
@@ -46,8 +49,17 @@ protected:
 private:
     void refilter();
     void triggerCurrent();
+    void loadUsage();              // pull persisted counts/recency from QSettings
+    void recordUse(const QString &id); // bump + persist on activation
 
     QLineEdit *m_search = nullptr;
     QListWidget *m_list = nullptr;
     QVector<Command> m_commands;
+
+    // Usage stats keyed by command id. m_useCount = how often a command was run
+    // (frequency); m_lastUsed = a monotonic sequence number set on each run
+    // (recency, higher = more recent). m_seq hands out those numbers.
+    QHash<QString, int> m_useCount;
+    QHash<QString, qint64> m_lastUsed;
+    qint64 m_seq = 0;
 };
