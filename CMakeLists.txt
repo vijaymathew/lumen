@@ -165,6 +165,8 @@ qt_add_executable(lumen
     src/ui/DenoisePanel.cpp
     src/ui/DefringePanel.h
     src/ui/DefringePanel.cpp
+    src/ui/RawSettingsPanel.h
+    src/ui/RawSettingsPanel.cpp
     src/ui/HistogramWidget.h
     src/ui/HistogramWidget.cpp
     src/ui/MaskGizmo.h
@@ -331,6 +333,11 @@ if(BUILD_TESTING)
     target_link_libraries(defringe_test PRIVATE lumen_core)
     target_compile_options(defringe_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME defringe_test COMMAND defringe_test)
+
+    add_executable(rawoptions_test tests/rawoptions_test.cpp)
+    target_link_libraries(rawoptions_test PRIVATE lumen_core)
+    target_compile_options(rawoptions_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME rawoptions_test COMMAND rawoptions_test)
 
     add_executable(sharpen_test tests/sharpen_test.cpp)
     target_link_libraries(sharpen_test PRIVATE lumen_core)

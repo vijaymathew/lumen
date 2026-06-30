@@ -27,6 +27,7 @@
 #include "ui/GrainPanel.h"
 #include "ui/VignettePanel.h"
 #include "ui/DefringePanel.h"
+#include "ui/RawSettingsPanel.h"
 #include "ui/SharpenPanel.h"
 #include "ui/TonePanel.h"
 
@@ -75,6 +76,37 @@ void rememberDir(const QString &key, const QString &chosenPath)
         return;
     QSettings().setValue(QStringLiteral("dialogDirs/") + key,
                          QFileInfo(chosenPath).absolutePath());
+}
+
+// --- RAW decode defaults (global preference) ------------------------------
+// The automatic-RAW configuration the user sets in the RAW Defaults panel,
+// persisted globally and used to seed every new RAW open. (Per-project options
+// are stored separately in the .lumen manifest.)
+void loadRawDefaults(raw::RawDecodeOptions &opts, raw::RawLensDefaults &lens)
+{
+    QSettings s;
+    opts.autoBright = s.value(QStringLiteral("raw/autoBright"), opts.autoBright).toBool();
+    opts.autoBrightThreshold =
+        s.value(QStringLiteral("raw/autoBrightThreshold"), opts.autoBrightThreshold).toFloat();
+    opts.highlight = s.value(QStringLiteral("raw/highlight"), opts.highlight).toInt();
+    opts.wb = s.value(QStringLiteral("raw/wb"), opts.wb).toInt();
+    opts.demosaic = s.value(QStringLiteral("raw/demosaic"), opts.demosaic).toInt();
+    lens.distortion = s.value(QStringLiteral("raw/lensDistortion"), lens.distortion).toBool();
+    lens.tca = s.value(QStringLiteral("raw/lensTca"), lens.tca).toBool();
+    lens.vignetting = s.value(QStringLiteral("raw/lensVignetting"), lens.vignetting).toBool();
+}
+
+void saveRawDefaults(const raw::RawDecodeOptions &opts, const raw::RawLensDefaults &lens)
+{
+    QSettings s;
+    s.setValue(QStringLiteral("raw/autoBright"), opts.autoBright);
+    s.setValue(QStringLiteral("raw/autoBrightThreshold"), opts.autoBrightThreshold);
+    s.setValue(QStringLiteral("raw/highlight"), opts.highlight);
+    s.setValue(QStringLiteral("raw/wb"), opts.wb);
+    s.setValue(QStringLiteral("raw/demosaic"), opts.demosaic);
+    s.setValue(QStringLiteral("raw/lensDistortion"), lens.distortion);
+    s.setValue(QStringLiteral("raw/lensTca"), lens.tca);
+    s.setValue(QStringLiteral("raw/lensVignetting"), lens.vignetting);
 }
 
 // Dim opacity for overlays (0–255). A tuning value, not a fixed constant
@@ -281,6 +313,10 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     setWindowTitle(QStringLiteral("Lumen"));
+
+    // Seed the automatic-RAW configuration from the global preference; the first
+    // RAW opened uses these (and each .lumen carries its own per-project copy).
+    loadRawDefaults(m_rawOptions, m_rawLensDefaults);
 
     // The graph owns the nodes; we keep raw pointers to drive them. The "baked"
     // group runs first in libvips and is rendered into the preview base texture:
@@ -514,6 +550,33 @@ MainWindow::MainWindow(QWidget *parent)
             });
     connect(m_defringePanel, &DefringePanel::closed, this, &MainWindow::closeDefringeTool);
 
+    m_rawPanel = new RawSettingsPanel(this);
+    connect(m_rawPanel, &RawSettingsPanel::valuesChanged, this,
+            [this](const raw::RawDecodeOptions &opts, const raw::RawLensDefaults &lens) {
+                const bool decodeChanged = !(opts == m_rawOptions);
+                const bool lensChanged = !(lens == m_rawLensDefaults);
+                m_rawOptions = opts;
+                m_rawLensDefaults = lens;
+                saveRawDefaults(m_rawOptions, m_rawLensDefaults); // new global default
+                // Apply the lens-correction toggles to the open photo, preserving
+                // its perspective and other lens params.
+                if (lensChanged && m_lens) {
+                    LensCorrectionNode::Params p = m_lens->params();
+                    p.distortion = lens.distortion;
+                    p.tca = lens.tca;
+                    p.vignetting = lens.vignetting;
+                    m_lens->setParams(p);
+                }
+                if (decodeChanged) {
+                    m_redecodeTimer->start(); // debounced re-decode (also refreshes lens)
+                } else if (lensChanged) {
+                    refreshWorkingSource();
+                    refreshBaseImage(true);
+                    updatePreview();
+                }
+            });
+    connect(m_rawPanel, &RawSettingsPanel::closed, this, &MainWindow::closeRawTool);
+
     // Debounce timers: the histogram recompute and the sharpen base re-bake both
     // settle shortly after the user stops dragging.
     m_bakeTimer = new QTimer(this);
@@ -525,6 +588,12 @@ MainWindow::MainWindow(QWidget *parent)
         refreshBaseImage();
         updatePreview();
     });
+
+    // Re-decode (RAW option change) is a full demosaic, so coalesce slider drags.
+    m_redecodeTimer = new QTimer(this);
+    m_redecodeTimer->setSingleShot(true);
+    m_redecodeTimer->setInterval(kHeavyBakeSettleMs);
+    connect(m_redecodeTimer, &QTimer::timeout, this, [this] { redecodeCurrent(); });
 
     m_histogram = new HistogramWidget(this);
     m_histTimer = new QTimer(this);
@@ -809,6 +878,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("lens"), QStringLiteral("Lens & perspective")},
         {QStringLiteral("denoise"), QStringLiteral("Denoise")},
         {QStringLiteral("defringe"), QStringLiteral("Defringe")},
+        {QStringLiteral("raw"), QStringLiteral("RAW defaults (auto adjustments)")},
         {QStringLiteral("sharpen"), QStringLiteral("Sharpen")},
         {QStringLiteral("grain"), QStringLiteral("Film grain")},
         {QStringLiteral("vignette"), QStringLiteral("Vignette")},
@@ -854,6 +924,8 @@ void MainWindow::runCommand(const QString &id)
         openDenoiseTool();
     } else if (id == QLatin1String("defringe")) {
         openDefringeTool();
+    } else if (id == QLatin1String("raw")) {
+        openRawTool();
     } else if (id == QLatin1String("grain")) {
         openGrainTool();
     } else if (id == QLatin1String("vignette")) {
@@ -890,7 +962,7 @@ bool MainWindow::openPath(const QString &path)
     QString error;
     const bool isRaw = raw::isRawPath(path);
     raw::LensMetadata meta;
-    Image source = isRaw ? raw::decodeFile(path, &error, &meta)
+    Image source = isRaw ? raw::decodeFile(path, &error, &meta, m_rawOptions)
                          : Image::fromFile(path, &error);
     if (source.isNull()) {
         QMessageBox::warning(this, QStringLiteral("Lumen"), error);
@@ -923,6 +995,10 @@ bool MainWindow::openPath(const QString &path)
         lp.focalLength = meta.focalLength;
         lp.aperture = meta.aperture;
         lp.focusDistance = meta.focusDistance;
+        // Seed the automatic lens corrections from the user's RAW defaults.
+        lp.distortion = m_rawLensDefaults.distortion;
+        lp.tca = m_rawLensDefaults.tca;
+        lp.vignetting = m_rawLensDefaults.vignetting;
     }
     m_lens->setParams(lp);
     // Camera-accurate white balance: install the colour profile and seed the
@@ -940,6 +1016,30 @@ bool MainWindow::openPath(const QString &path)
     reseedOpenPanels();         // re-sync open tools with the neutral defaults
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
     return true;
+}
+
+void MainWindow::redecodeCurrent()
+{
+    // Only RAW sources can be re-decoded (others have no decode-time options).
+    if (m_sourceBytes.isEmpty() || !raw::isRawPath(m_sourceName))
+        return;
+
+    QString error;
+    raw::LensMetadata meta;
+    Image source = raw::decodeBytes(m_sourceBytes.constData(), m_sourceBytes.size(), &error,
+                                    &meta, m_rawOptions);
+    if (source.isNull()) {
+        showHint(QStringLiteral("Could not re-decode RAW: %1").arg(error));
+        return;
+    }
+    m_graph.setSource(source);
+    // Refresh the camera profile but keep the current WB temperature (don't reseed
+    // to as-shot — the user may have tuned it).
+    applyCameraProfile(meta.color, /*seedKelvin=*/false);
+    refreshWorkingSource();  // rebuild the corrected source + display QImage
+    refreshBaseImage(true);  // keep zoom/pan
+    recomputeSelectiveMask();
+    updatePreview();
 }
 
 void MainWindow::saveProject()
@@ -973,8 +1073,13 @@ void MainWindow::saveProject()
         name = QStringLiteral("source.png");
     }
 
+    // Carry the per-project RAW decode options alongside the edit graph (the
+    // graph stays decode-agnostic; loadProjectFile reads this key back).
+    QJsonObject graph = m_graph.saveState();
+    graph[QStringLiteral("rawOptions")] = m_rawOptions.toJson();
+
     QString error;
-    if (!project::save(path, m_graph.saveState(), bytes, name, &error)) {
+    if (!project::save(path, graph, bytes, name, &error)) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Could not save project: %1").arg(error));
         return;
@@ -1008,10 +1113,15 @@ bool MainWindow::loadProjectFile(const QString &path)
         return false;
     }
     const bool isRaw = raw::isRawPath(proj.sourceName);
+    // Restore this project's per-project decode options (absent → today's look).
+    m_rawOptions = proj.graph.contains(QStringLiteral("rawOptions"))
+                       ? raw::RawDecodeOptions::fromJson(
+                             proj.graph.value(QStringLiteral("rawOptions")).toObject())
+                       : raw::RawDecodeOptions{};
     raw::LensMetadata meta;
     Image source =
         isRaw ? raw::decodeBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(),
-                                 &error, &meta)
+                                 &error, &meta, m_rawOptions)
               : Image::fromBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error);
     if (source.isNull()) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
@@ -1733,6 +1843,28 @@ void MainWindow::closeDefringeTool()
     m_canvas->setFocus();
 }
 
+void MainWindow::openRawTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_rawPanel->adjustSize();
+    const int margin = 18;
+    m_rawPanel->move(width() - m_rawPanel->width() - margin, margin);
+    m_rawPanel->reveal(m_rawOptions, m_rawLensDefaults);
+}
+
+void MainWindow::closeRawTool()
+{
+    m_rawPanel->hide();
+    // If a debounced re-decode is pending, run it now so closing settles the view.
+    if (m_redecodeTimer->isActive()) {
+        m_redecodeTimer->stop();
+        redecodeCurrent();
+    }
+    m_graph.commit(); // capture any lens-correction toggle as one undo step
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
 void MainWindow::toggleHistogram()
 {
     if (!m_histogram)
@@ -2222,6 +2354,8 @@ void MainWindow::closeActiveTool()
         closeDenoiseTool();
     else if (m_defringePanel->isVisible())
         closeDefringeTool();
+    else if (m_rawPanel->isVisible())
+        closeRawTool();
     else if (m_grainPanel->isVisible())
         closeGrainTool();
     else if (m_vignettePanel->isVisible())
@@ -2365,6 +2499,7 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_cropPanel);
     clampIntoView(m_denoisePanel);
     clampIntoView(m_defringePanel);
+    clampIntoView(m_rawPanel);
     clampIntoView(m_healPanel);
     clampIntoView(m_layersPanel);
 
@@ -2407,6 +2542,7 @@ void MainWindow::layoutOverlays()
                                static_cast<QWidget *>(m_cropPanel),
                                static_cast<QWidget *>(m_denoisePanel),
                                static_cast<QWidget *>(m_defringePanel),
+                               static_cast<QWidget *>(m_rawPanel),
                                static_cast<QWidget *>(m_healPanel),
                                static_cast<QWidget *>(m_layersPanel)}) {
             if (panel && panel->isVisible())

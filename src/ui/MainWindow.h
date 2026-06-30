@@ -34,6 +34,7 @@ class CommandPalette;
 class CurvesPanel;
 class DenoisePanel;
 class DefringePanel;
+class RawSettingsPanel;
 class HealPanel;
 class HistogramWidget;
 class LayersPanel;
@@ -132,6 +133,12 @@ private:
     void closeDenoiseTool();
     void openDefringeTool(); // toggles the Defringe panel
     void closeDefringeTool();
+    void openRawTool();      // toggles the RAW Defaults panel
+    void closeRawTool();
+    // Re-decodes the currently open RAW with m_rawOptions (from its kept source
+    // bytes) and rebuilds the pipeline, preserving edits and view. No-op for a
+    // non-RAW source.
+    void redecodeCurrent();
     void openGrainTool();    // toggles the Film Grain panel
     void closeGrainTool();
     void openVignetteTool(); // toggles the Vignette panel
@@ -199,6 +206,7 @@ private:
     CropPanel *m_cropPanel = nullptr;
     DenoisePanel *m_denoisePanel = nullptr;
     DefringePanel *m_defringePanel = nullptr;
+    RawSettingsPanel *m_rawPanel = nullptr;
     HealPanel *m_healPanel = nullptr;
     HistogramWidget *m_histogram = nullptr;
     QTimer *m_histTimer = nullptr; // debounces histogram recompute
@@ -236,6 +244,13 @@ private:
     QString m_sourceName;                // original source file name
     QString m_projectPath;               // current .lumen path (empty until saved/opened)
     int m_maskView = 0;                  // selective mask overlay (preview-only)
+
+    // Automatic-RAW configuration. m_rawOptions are decode-time (baked, stored
+    // per-project in the .lumen); m_rawLensDefaults seed the lens node on open.
+    // Both default to the global preference (loadRawDefaults) at construction.
+    raw::RawDecodeOptions m_rawOptions;
+    raw::RawLensDefaults m_rawLensDefaults;
+    QTimer *m_redecodeTimer = nullptr;   // debounces re-decode on RAW option drags
 
     // Shared brush-paint session (used by the selective brush and the heal
     // brush, one at a time).
