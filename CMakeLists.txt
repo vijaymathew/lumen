@@ -309,6 +309,11 @@ if(BUILD_TESTING)
     target_compile_options(lens_node_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME lens_node_test COMMAND lens_node_test)
 
+    add_executable(crop_test tests/crop_test.cpp)
+    target_link_libraries(crop_test PRIVATE lumen_core)
+    target_compile_options(crop_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME crop_test COMMAND crop_test)
+
     add_executable(sharpen_test tests/sharpen_test.cpp)
     target_link_libraries(sharpen_test PRIVATE lumen_core)
     target_compile_options(sharpen_test PRIVATE ${LUMEN_WARNINGS})

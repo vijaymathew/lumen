@@ -134,6 +134,7 @@ private:
     // current context (Editing while the crop tool is open; full frame while a
     // gizmo/pick tool needs it; else the cropped browse view).
     void updateCropView();
+    double sourceAspect() const; // original (un-oriented) source width/height
     void toggleHistogram();  // show/hide the histogram overlay
     void updateHistogram();  // recompute from the current result (when visible)
     // Recomputes the cached lens-corrected working source (and its display
@@ -186,6 +187,7 @@ private:
     LensPanel *m_lensPanel = nullptr;
     SharpenPanel *m_sharpenPanel = nullptr;
     GrainPanel *m_grainPanel = nullptr;
+    CropPanel *m_cropPanel = nullptr;
     DenoisePanel *m_denoisePanel = nullptr;
     HealPanel *m_healPanel = nullptr;
     HistogramWidget *m_histogram = nullptr;
@@ -194,6 +196,7 @@ private:
     LayersPanel *m_layersPanel = nullptr;
     MaskGizmo *m_maskGizmo = nullptr; // on-canvas gradient/radial mask editor
     ZoneGizmo *m_zoneGizmo = nullptr; // on-canvas exclusive-zone shape editor
+    CropGizmo *m_cropGizmo = nullptr; // on-canvas crop rectangle editor
     QLabel *m_hint = nullptr;
 
     // The non-destructive edit graph. The GPU preview reads the tune node's

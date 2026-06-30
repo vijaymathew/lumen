@@ -101,6 +101,14 @@ void CanvasWidget::resetView()
     update();
 }
 
+void CanvasWidget::setFitZoom(float zoom)
+{
+    m_zoom = std::clamp(zoom, 0.05f, 40.0f);
+    m_pan = {0.0, 0.0};
+    emit viewChanged();
+    update();
+}
+
 void CanvasWidget::setPreviewState(const PreviewState &state)
 {
     if (m_preview == state)

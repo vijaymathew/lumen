@@ -19,6 +19,8 @@
 #include "ui/LensPanel.h"
 #include "ui/MaskGizmo.h"
 #include "ui/ZoneGizmo.h"
+#include "ui/CropGizmo.h"
+#include "ui/CropPanel.h"
 #include "ui/LooksPanel.h"
 #include "ui/ColorGradePanel.h"
 #include "ui/MonoPanel.h"
@@ -440,6 +442,42 @@ MainWindow::MainWindow(QWidget *parent)
             });
     connect(m_grainPanel, &GrainPanel::closed, this, &MainWindow::closeGrainTool);
 
+    m_cropPanel = new CropPanel(this);
+    connect(m_cropPanel, &CropPanel::aspectChanged, this, [this](double aspect) {
+        if (m_cropGizmo)
+            m_cropGizmo->setAspect(aspect);
+    });
+    connect(m_cropPanel, &CropPanel::rotateRequested, this, [this](int deltaCW) {
+        CropState c = m_graph.crop();
+        c.rotation = ((c.rotation + deltaCW) % 360 + 360) % 360;
+        c.rect = QRectF(0.0, 0.0, 1.0, 1.0); // a re-orient resets the rectangle
+        m_graph.setCrop(c);
+        if (m_cropGizmo)
+            m_cropGizmo->setRect(c.rect);
+        updateCropView();
+        updatePreview();
+    });
+    connect(m_cropPanel, &CropPanel::flipRequested, this, [this](bool horizontal) {
+        CropState c = m_graph.crop();
+        if (horizontal)
+            c.flipH = !c.flipH;
+        else
+            c.flipV = !c.flipV;
+        m_graph.setCrop(c);
+        updateCropView();
+        updatePreview();
+    });
+    connect(m_cropPanel, &CropPanel::resetRequested, this, [this] {
+        m_graph.setCrop(CropState{});
+        if (m_cropGizmo)
+            m_cropGizmo->setRect(QRectF(0.0, 0.0, 1.0, 1.0));
+        if (m_cropPanel->isVisible())
+            m_cropPanel->reveal(m_graph.crop(), sourceAspect());
+        updateCropView();
+        updatePreview();
+    });
+    connect(m_cropPanel, &CropPanel::closed, this, &MainWindow::closeCropTool);
+
     m_denoisePanel = new DenoisePanel(this);
     connect(m_denoisePanel, &DenoisePanel::valuesChanged, this,
             [this](const DenoiseNode::Values &v) {
@@ -639,6 +677,23 @@ MainWindow::MainWindow(QWidget *parent)
             [applyZones](const std::vector<MaskZoneShape> &s) { applyZones(s, true); });
     connect(m_canvas, &CanvasWidget::viewChanged, m_zoneGizmo, &ZoneGizmo::refresh);
 
+    // On-canvas crop rectangle editor (only visible while the Crop tool is open).
+    m_cropGizmo = new CropGizmo(m_canvas, this);
+    connect(m_cropGizmo, &CropGizmo::changed, this, [this](const QRectF &r) {
+        CropState c = m_graph.crop();
+        c.rect = r;
+        m_graph.setCrop(c);
+        // Live: don't commit yet (editFinished commits); the present pass stays in
+        // Editing mode (full frame) so the gizmo keeps mapping 1:1.
+    });
+    connect(m_cropGizmo, &CropGizmo::editFinished, this, [this](const QRectF &r) {
+        CropState c = m_graph.crop();
+        c.rect = r;
+        m_graph.setCrop(c);
+        m_graph.commit();
+    });
+    connect(m_canvas, &CanvasWidget::viewChanged, m_cropGizmo, [this] { m_cropGizmo->update(); });
+
     connect(m_layersPanel, &LayersPanel::zoneToolChanged, this, [this](int tool) {
         m_zoneGizmo->setTool(static_cast<ZoneGizmo::Tool>(tool));
         syncZoneGizmo(); // ensure it is shown while a tool is engaged
@@ -718,6 +773,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("denoise"), QStringLiteral("Denoise")},
         {QStringLiteral("sharpen"), QStringLiteral("Sharpen")},
         {QStringLiteral("grain"), QStringLiteral("Film grain")},
+        {QStringLiteral("crop"), QStringLiteral("Crop & rotate")},
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
         {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)")},
         {QStringLiteral("layers"), QStringLiteral("Layers")},
@@ -759,6 +815,8 @@ void MainWindow::runCommand(const QString &id)
         openDenoiseTool();
     } else if (id == QLatin1String("grain")) {
         openGrainTool();
+    } else if (id == QLatin1String("crop")) {
+        openCropTool();
     } else if (id == QLatin1String("histogram")) {
         toggleHistogram();
     } else if (id == QLatin1String("heal")) {
@@ -1165,6 +1223,7 @@ void MainWindow::showLayersPanel()
     m_layersPanel->show();
     m_layersPanel->raise();
     refreshLayersPanel();
+    updateCropView(); // full-frame rule: masks/zones edit the un-oriented frame
 }
 
 void MainWindow::hideLayersPanel()
@@ -1182,6 +1241,7 @@ void MainWindow::hideLayersPanel()
     }
     syncMaskGizmo();                 // hide the gizmo
     syncZoneGizmo();                 // hide the zone editor too
+    updateCropView();                // back to the cropped browse view
 }
 
 void MainWindow::refreshLayersPanel()
@@ -1519,6 +1579,61 @@ void MainWindow::closeGrainTool()
     m_canvas->setFocus();
 }
 
+double MainWindow::sourceAspect() const
+{
+    if (m_sourceQImage.isNull() || m_sourceQImage.height() == 0)
+        return 1.0;
+    return static_cast<double>(m_sourceQImage.width())
+           / static_cast<double>(m_sourceQImage.height());
+}
+
+void MainWindow::openCropTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_cropPanel->adjustSize();
+    const int margin = 18;
+    m_cropPanel->move(width() - m_cropPanel->width() - margin, margin);
+    m_cropPanel->reveal(m_graph.crop(), sourceAspect());
+    m_cropGizmo->setAspect(0.0); // free until the user picks a preset
+    m_cropGizmo->setRect(m_graph.crop().rect);
+    updateCropView(); // switches the canvas into Editing (full-frame) mode
+    m_canvas->setFitZoom(0.85f); // pull the frame in so the handles clear the edges
+    m_cropGizmo->setGeometry(m_canvas->geometry());
+    m_cropGizmo->show();
+    m_cropGizmo->raise();
+    m_cropPanel->raise(); // keep the panel above the gizmo so its buttons stay clickable
+}
+
+void MainWindow::closeCropTool()
+{
+    m_cropPanel->hide();
+    m_cropGizmo->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    updateCropView(); // Applied (if cropped) or None
+    m_canvas->resetView(); // fit the (now cropped) result to the window
+    updatePreview();
+    m_canvas->setFocus();
+}
+
+void MainWindow::updateCropView()
+{
+    CanvasWidget::CropViewMode mode;
+    if (m_cropPanel->isVisible()) {
+        // The crop tool itself wants the full oriented frame to edit against.
+        mode = CanvasWidget::CropEditing;
+    } else if (m_layersPanel->isVisible() || m_healPanel->isVisible()) {
+        // Full-frame rule: gizmo/pick tools (mask/zone/heal/eyedropper) operate in
+        // the un-oriented full frame so their coordinate mapping stays exact.
+        mode = CanvasWidget::CropNone;
+    } else if (!m_graph.crop().isIdentity()) {
+        mode = CanvasWidget::CropApplied;
+    } else {
+        mode = CanvasWidget::CropNone;
+    }
+    m_canvas->setCropState(m_graph.crop(), mode);
+}
+
 void MainWindow::openDenoiseTool()
 {
     if (!m_denoise)
@@ -1664,6 +1779,7 @@ void MainWindow::openHealTool()
     m_brushTarget = BrushTarget::Heal;
     m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f);
     m_canvas->setBrushMode(true);
+    updateCropView(); // full-frame rule: heal paints in the un-oriented frame
     refreshBaseImage();
     updatePreview();
 }
@@ -1676,6 +1792,7 @@ void MainWindow::closeHealTool()
     m_healPainting = false;
     m_heal->setHealMask(m_brushMask); // commit (one global undo step)
     m_brushUndo.clear();
+    updateCropView(); // back to the cropped browse view
     refreshBaseImage();
     updatePreview();
     m_graph.commit();
@@ -2015,6 +2132,8 @@ void MainWindow::closeActiveTool()
         closeDenoiseTool();
     else if (m_grainPanel->isVisible())
         closeGrainTool();
+    else if (m_cropPanel->isVisible())
+        closeCropTool();
     else if (m_healPanel->isVisible())
         closeHealTool();
     else {
@@ -2084,6 +2203,11 @@ void MainWindow::afterHistoryChange()
         m_denoisePanel->reveal(m_denoise->values());
     if (m_grainPanel->isVisible() && m_grain)
         m_grainPanel->reveal(m_grain->values());
+    if (m_cropPanel->isVisible()) {
+        m_cropPanel->reveal(m_graph.crop(), sourceAspect());
+        m_cropGizmo->setRect(m_graph.crop().rect);
+    }
+    updateCropView(); // push the restored crop/orientation to the canvas
     updateHistogram(); // reflect the restored state (no-op when hidden)
     // If a mask brush is active, resync the working mask to the restored state.
     if (m_brushTarget == BrushTarget::Selective
@@ -2139,9 +2263,18 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_lensPanel);
     clampIntoView(m_sharpenPanel);
     clampIntoView(m_grainPanel);
+    clampIntoView(m_cropPanel);
     clampIntoView(m_denoisePanel);
     clampIntoView(m_healPanel);
     clampIntoView(m_layersPanel);
+
+    // The crop gizmo overlays the full canvas area while the Crop tool is open.
+    if (m_cropGizmo && m_cropGizmo->isVisible()) {
+        m_cropGizmo->setGeometry(m_canvas->geometry());
+        m_cropGizmo->raise();
+        if (m_cropPanel->isVisible())
+            m_cropPanel->raise(); // keep the panel clickable above the gizmo
+    }
 
     // Histogram: bottom-left of the canvas, above the hint bar.
     if (m_histogram && m_histogram->isVisible()) {
@@ -2170,6 +2303,7 @@ void MainWindow::layoutOverlays()
                                static_cast<QWidget *>(m_lensPanel),
                                static_cast<QWidget *>(m_sharpenPanel),
                                static_cast<QWidget *>(m_grainPanel),
+                               static_cast<QWidget *>(m_cropPanel),
                                static_cast<QWidget *>(m_denoisePanel),
                                static_cast<QWidget *>(m_healPanel),
                                static_cast<QWidget *>(m_layersPanel)}) {

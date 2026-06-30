@@ -169,10 +169,14 @@ void CropGizmo::paintEvent(QPaintEvent *)
     p.setPen(QPen(QColor(255, 255, 255, 235), 1.4));
     p.drawRect(box);
 
-    // Corner handles.
-    const QPointF corners[4] = {box.topLeft(), box.topRight(), box.bottomLeft(),
-                                box.bottomRight()};
-    for (const QPointF &c : corners) {
+    // Resize handles: 4 corners + 4 edge midpoints.
+    const QPointF mid(box.center());
+    const QPointF handles[8] = {
+        box.topLeft(),    box.topRight(),    box.bottomLeft(),  box.bottomRight(),
+        {mid.x(), box.top()}, {mid.x(), box.bottom()},          // top, bottom
+        {box.left(), mid.y()}, {box.right(), mid.y()},          // left, right
+    };
+    for (const QPointF &c : handles) {
         p.setPen(QPen(QColor(0, 0, 0, 150), 3.0));
         p.setBrush(QColor(255, 255, 255, 235));
         p.drawRect(QRectF(c.x() - 3, c.y() - 3, 6, 6));

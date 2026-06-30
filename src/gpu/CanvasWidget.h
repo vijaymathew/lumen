@@ -60,6 +60,11 @@ public:
     // Resets zoom/pan so the image is fit-to-window and centred.
     void resetView();
 
+    // Centres and sets the fit-relative zoom (1.0 = fit-to-window; <1 leaves a
+    // margin). The crop tool uses this to pull the frame in from the screen edges
+    // so its handles are reachable.
+    void setFitZoom(float zoom);
+
     // Crop/orientation view. Mode: None = full source (identity); Applied =
     // oriented + cropped (browse); Editing = oriented full frame (crop tool open,
     // with the crop gizmo on top). The transform is applied in the present pass;
