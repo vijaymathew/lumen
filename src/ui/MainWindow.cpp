@@ -920,6 +920,19 @@ MainWindow::MainWindow(QWidget *parent)
     m_histogram->setCursor(Qt::SizeAllCursor);
     m_histogram->installEventFilter(this);
 
+    // Pointer close (✕) for every floating panel. Tool panels share closeActiveTool
+    // (only one is open at a time); the persistent panels close themselves.
+    const auto closeTool = [this] { closeActiveTool(); };
+    QWidget *toolPanels[] = {m_tonePanel,    m_curvesPanel,  m_looksPanel,
+                             m_monoPanel,     m_colorGradePanel, m_lensPanel,
+                             m_sharpenPanel,  m_denoisePanel, m_defringePanel,
+                             m_rawPanel,      m_grainPanel,   m_vignettePanel,
+                             m_cropPanel,     m_healPanel};
+    for (QWidget *p : toolPanels)
+        addPanelCloseButton(p, closeTool);
+    addPanelCloseButton(m_layersPanel, [this] { hideLayersPanel(); });
+    addPanelCloseButton(m_adjustmentsPanel, [this] { closeAdjustmentsTool(); });
+
     buildCommands();
 
     // Shell shortcuts. Bare keys are avoided so they don't clash with typing in
@@ -2278,6 +2291,18 @@ void MainWindow::syncViewToggles()
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
+    // Keep a panel's ✕ pinned to its top-right corner when the panel resizes.
+    if (event->type() == QEvent::Resize) {
+        if (auto it = m_panelClose.constFind(static_cast<QWidget *>(watched));
+            it != m_panelClose.constEnd()) {
+            QWidget *p = static_cast<QWidget *>(watched);
+            QPushButton *btn = it.value();
+            btn->move(p->width() - btn->width() - 8, 8);
+            btn->raise();
+        }
+        // fall through (don't consume the resize)
+    }
+
     // Drag the persistent overlays: the histogram by its surface, the view-toggle
     // cluster by its grip (moving the whole cluster). Delta math in global coords
     // is independent of which child delivered the event.
@@ -3150,6 +3175,28 @@ void MainWindow::afterHistoryChange()
     }
     if (m_adjustmentsPanel->isVisible())
         rebuildAdjustments(); // history nav changes the active-edit set
+}
+
+void MainWindow::addPanelCloseButton(QWidget *panel, std::function<void()> onClose)
+{
+    auto *btn = new QPushButton(QStringLiteral("✕"), panel);
+    btn->setObjectName(QStringLiteral("panelClose"));
+    btn->setFocusPolicy(Qt::NoFocus); // never steal keyboard focus from the canvas
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setFixedSize(20, 20);
+    btn->setToolTip(QStringLiteral("Close (Esc)"));
+    // Fully specify every property: each panel sets its own generic `QPushButton`
+    // rule (padding/border/bg), which would otherwise leak in and clip the glyph.
+    btn->setStyleSheet(QStringLiteral(
+        "#panelClose { background: #2a2a2e; color: #d6d6d9;"
+        " border: 1px solid #38383d; border-radius: 10px; padding: 0;"
+        " font-size: 12px; font-weight: bold; }"
+        "#panelClose:hover { background: #c0444a; color: #ffffff; border-color: #c0444a; }"));
+    connect(btn, &QPushButton::clicked, this, [onClose] { onClose(); });
+    m_panelClose.insert(panel, btn);
+    panel->installEventFilter(this); // reposition on resize (see eventFilter)
+    btn->move(panel->width() - btn->width() - 8, 8); // fixed-width panels: place now
+    btn->raise();
 }
 
 void MainWindow::showHint(const QString &text)

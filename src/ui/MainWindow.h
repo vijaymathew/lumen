@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QFutureWatcher>
+#include <QHash>
 #include <QImage>
 #include <QJsonObject>
 #include <QMainWindow>
@@ -120,6 +121,9 @@ private:
     // Resets the dirty baselines to the current document (called after open/save).
     void resetAutosaveBaseline();
     void toggleFullScreen();
+    // Overlays a small "✕" close button on a floating panel's top-right corner
+    // and routes it to `onClose` — a pointer counterpart to the Esc/Enter close.
+    void addPanelCloseButton(QWidget *panel, std::function<void()> onClose);
     void showHint(const QString &text);
     // The persistent which-key legend for the current input mode. Shown in the
     // hint bar whenever the mode changes; transient showHint() messages override
@@ -312,6 +316,8 @@ private:
     QPoint m_overlayStartPos;
     bool m_histMoved = false;
     bool m_clusterMoved = false;
+    // Per-panel "✕" close buttons, repositioned to the top-right on panel resize.
+    QHash<QWidget *, QPushButton *> m_panelClose;
 
     // The non-destructive edit graph. The GPU preview reads the tune node's
     // exposure live; Export walks the graph at full resolution via libvips.
