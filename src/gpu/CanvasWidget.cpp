@@ -193,8 +193,8 @@ void CanvasWidget::initialize(QRhiCommandBuffer *cb)
     }
 
     if (!m_presentUbuf) {
-        // mat4 mvp (64) + mat4 texXform (64) = 128.
-        m_presentUbuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 128));
+        // mat4 mvp (64) + mat4 texXform (64) + vec4 vig0 (16) + vec4 vig1 (16) = 160.
+        m_presentUbuf.reset(r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 160));
         m_presentUbuf->create();
     }
 
@@ -487,7 +487,9 @@ void CanvasWidget::ensureOffscreen()
         auto srb = r->newShaderResourceBindings();
         srb->setBindings({
             QRhiShaderResourceBinding::uniformBuffer(
-                0, QRhiShaderResourceBinding::VertexStage, m_presentUbuf.get()),
+                0, QRhiShaderResourceBinding::VertexStage
+                       | QRhiShaderResourceBinding::FragmentStage,
+                m_presentUbuf.get()),
             QRhiShaderResourceBinding::sampledTexture(
                 1, QRhiShaderResourceBinding::FragmentStage, tex, m_sampler.get()),
         });
@@ -529,6 +531,14 @@ void CanvasWidget::setCropState(const CropState &crop, CropViewMode mode)
     m_cropView = mode;
     update();
     emit viewChanged(); // overlays remap against the new effective frame
+}
+
+void CanvasWidget::setVignette(const VignetteParams &v)
+{
+    if (m_vignette == v)
+        return;
+    m_vignette = v;
+    update();
 }
 
 QSizeF CanvasWidget::effectiveImageSize() const
@@ -721,6 +731,17 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         u->updateDynamicBuffer(m_presentUbuf.get(), 0, 64, mvp.constData());
         const QMatrix4x4 texXform = cropTexXform();
         u->updateDynamicBuffer(m_presentUbuf.get(), 64, 64, texXform.constData());
+        // Creative vignette params (mirrors core/Vignette.cpp; positioned over the
+        // displayed cropped frame via present.vert's v_imagecoord).
+        const QSizeF eff = effectiveImageSize();
+        const float A = eff.height() > 0
+                            ? static_cast<float>(eff.width() / eff.height())
+                            : 1.0f;
+        const float vig0[4] = {m_vignette.amount, m_vignette.midpoint,
+                               m_vignette.roundness, m_vignette.feather};
+        const float vig1[4] = {A, m_vignette.isIdentity() ? 0.0f : 1.0f, 0.0f, 0.0f};
+        u->updateDynamicBuffer(m_presentUbuf.get(), 128, 16, vig0);
+        u->updateDynamicBuffer(m_presentUbuf.get(), 144, 16, vig1);
 
         const QRhiViewport imgViewport(0, 0, float(m_textureSize.width()),
                                        float(m_textureSize.height()));

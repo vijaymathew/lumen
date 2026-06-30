@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/CropState.h"
+#include "core/Vignette.h"
 #include "core/LayerPreview.h"
 #include "core/Lut.h"
 #include "core/Lut3D.h"
@@ -71,6 +72,10 @@ public:
     // the offscreen always renders the full composite.
     enum CropViewMode { CropNone, CropApplied, CropEditing };
     void setCropState(const CropState &crop, CropViewMode mode);
+
+    // Creative (post-crop) vignette params for the present pass. Mirrors the
+    // export-side core/Vignette.cpp; positioned over the displayed cropped frame.
+    void setVignette(const VignetteParams &v);
     // Effective displayed image size (device-independent units relative to the
     // source texture), accounting for orientation + crop in the current mode.
     QSizeF effectiveImageSize() const;
@@ -189,6 +194,7 @@ private:
     // Crop/orientation view state (applied in the present pass).
     CropState m_crop;
     CropViewMode m_cropView = CropNone;
+    VignetteParams m_vignette; // creative vignette (present pass)
 
     // View state, in device pixels.
     float m_zoom = 1.0f;

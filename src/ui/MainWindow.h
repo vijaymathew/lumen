@@ -16,6 +16,7 @@
 #include "core/LensCorrectionNode.h"
 #include "core/LutNode.h"
 #include "core/MaskSpec.h"
+#include "core/DefringeNode.h"
 #include "core/DenoiseNode.h"
 #include "core/GrainNode.h"
 #include "core/Histogram.h"
@@ -32,6 +33,7 @@ class CanvasWidget;
 class CommandPalette;
 class CurvesPanel;
 class DenoisePanel;
+class DefringePanel;
 class HealPanel;
 class HistogramWidget;
 class LayersPanel;
@@ -44,6 +46,7 @@ class CropPanel;
 class LooksPanel;
 class MonoPanel;
 class GrainPanel;
+class VignettePanel;
 class SharpenPanel;
 class TonePanel;
 class QLabel;
@@ -58,6 +61,7 @@ class MainWindow : public QMainWindow {
 
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    ~MainWindow() override;
 
     // Loads an image at startup (e.g. a path passed on the command line).
     bool openPath(const QString &path);
@@ -126,8 +130,12 @@ private:
     void closeSharpenTool();
     void openDenoiseTool();  // toggles the Denoise panel
     void closeDenoiseTool();
+    void openDefringeTool(); // toggles the Defringe panel
+    void closeDefringeTool();
     void openGrainTool();    // toggles the Film Grain panel
     void closeGrainTool();
+    void openVignetteTool(); // toggles the Vignette panel
+    void closeVignetteTool();
     void openCropTool();     // toggles the Crop & Rotate panel
     void closeCropTool();
     // Pushes the graph's crop to the canvas with the right view mode for the
@@ -187,8 +195,10 @@ private:
     LensPanel *m_lensPanel = nullptr;
     SharpenPanel *m_sharpenPanel = nullptr;
     GrainPanel *m_grainPanel = nullptr;
+    VignettePanel *m_vignettePanel = nullptr;
     CropPanel *m_cropPanel = nullptr;
     DenoisePanel *m_denoisePanel = nullptr;
+    DefringePanel *m_defringePanel = nullptr;
     HealPanel *m_healPanel = nullptr;
     HistogramWidget *m_histogram = nullptr;
     QTimer *m_histTimer = nullptr; // debounces histogram recompute
@@ -213,7 +223,8 @@ private:
     ColorGradeNode *m_colorGrade = nullptr; // owned by m_graph
     HealNode *m_heal = nullptr;          // owned by m_graph (second in the chain)
     LensCorrectionNode *m_lens = nullptr; // owned by m_graph (first in the chain)
-    DenoiseNode *m_denoise = nullptr;     // owned by m_graph (after heal, before sharpen)
+    DenoiseNode *m_denoise = nullptr;     // owned by m_graph (after heal, before defringe)
+    DefringeNode *m_defringe = nullptr;   // owned by m_graph (after denoise, before sharpen)
     SharpenNode *m_sharpen = nullptr;     // owned by m_graph (after denoise, before tune)
     GrainNode *m_grain = nullptr;         // owned by m_graph (final Base node, after mono)
     Image m_workingSource;               // cached lens-corrected source (preview base input)

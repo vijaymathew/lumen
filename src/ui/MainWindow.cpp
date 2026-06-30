@@ -25,6 +25,8 @@
 #include "ui/ColorGradePanel.h"
 #include "ui/MonoPanel.h"
 #include "ui/GrainPanel.h"
+#include "ui/VignettePanel.h"
+#include "ui/DefringePanel.h"
 #include "ui/SharpenPanel.h"
 #include "ui/TonePanel.h"
 
@@ -290,6 +292,7 @@ MainWindow::MainWindow(QWidget *parent)
         static_cast<LensCorrectionNode *>(m_graph.addNode(std::make_unique<LensCorrectionNode>()));
     m_heal = static_cast<HealNode *>(m_graph.addNode(std::make_unique<HealNode>()));
     m_denoise = static_cast<DenoiseNode *>(m_graph.addNode(std::make_unique<DenoiseNode>()));
+    m_defringe = static_cast<DefringeNode *>(m_graph.addNode(std::make_unique<DefringeNode>()));
     m_sharpen = static_cast<SharpenNode *>(m_graph.addNode(std::make_unique<SharpenNode>()));
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
@@ -442,6 +445,15 @@ MainWindow::MainWindow(QWidget *parent)
             });
     connect(m_grainPanel, &GrainPanel::closed, this, &MainWindow::closeGrainTool);
 
+    m_vignettePanel = new VignettePanel(this);
+    connect(m_vignettePanel, &VignettePanel::valuesChanged, this,
+            [this](const VignetteParams &v) {
+                m_graph.setVignette(v);
+                m_canvas->setVignette(v);
+                updatePreview(); // vignette is a live present-pass op (no base re-bake)
+            });
+    connect(m_vignettePanel, &VignettePanel::closed, this, &MainWindow::closeVignetteTool);
+
     m_cropPanel = new CropPanel(this);
     connect(m_cropPanel, &CropPanel::aspectChanged, this, [this](double aspect) {
         if (m_cropGizmo)
@@ -489,6 +501,18 @@ MainWindow::MainWindow(QWidget *parent)
                 m_bakeTimer->start();
             });
     connect(m_denoisePanel, &DenoisePanel::closed, this, &MainWindow::closeDenoiseTool);
+
+    m_defringePanel = new DefringePanel(this);
+    connect(m_defringePanel, &DefringePanel::valuesChanged, this,
+            [this](const DefringeNode::Values &v) {
+                if (!m_defringe)
+                    return;
+                m_defringe->setValues(v);
+                // Defringe bakes into the base (a full-res LAB pass); coalesce
+                // drags like denoise/sharpen.
+                m_bakeTimer->start();
+            });
+    connect(m_defringePanel, &DefringePanel::closed, this, &MainWindow::closeDefringeTool);
 
     // Debounce timers: the histogram recompute and the sharpen base re-bake both
     // settle shortly after the user stops dragging.
@@ -751,6 +775,19 @@ MainWindow::MainWindow(QWidget *parent)
     resize(1280, 800);
 }
 
+MainWindow::~MainWindow()
+{
+    // Make sure no background pipeline task (heal/denoise/defringe/sharpen bake
+    // or the histogram compute) is still touching libvips when this window's
+    // cached images are freed — and before main() calls vips_shutdown().
+    ++m_healGen; // signal in-flight tasks to bail at their next checkpoint
+    ++m_histGen;
+    if (m_healWatcher.isRunning())
+        m_healWatcher.waitForFinished();
+    if (m_histWatcher.isRunning())
+        m_histWatcher.waitForFinished();
+}
+
 void MainWindow::buildCommands()
 {
     // ids consumed by runCommand(). Editing tools are placeholders for now.
@@ -771,8 +808,10 @@ void MainWindow::buildCommands()
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment")},
         {QStringLiteral("lens"), QStringLiteral("Lens & perspective")},
         {QStringLiteral("denoise"), QStringLiteral("Denoise")},
+        {QStringLiteral("defringe"), QStringLiteral("Defringe")},
         {QStringLiteral("sharpen"), QStringLiteral("Sharpen")},
         {QStringLiteral("grain"), QStringLiteral("Film grain")},
+        {QStringLiteral("vignette"), QStringLiteral("Vignette")},
         {QStringLiteral("crop"), QStringLiteral("Crop & rotate")},
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
         {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)")},
@@ -813,8 +852,12 @@ void MainWindow::runCommand(const QString &id)
         openSharpenTool();
     } else if (id == QLatin1String("denoise")) {
         openDenoiseTool();
+    } else if (id == QLatin1String("defringe")) {
+        openDefringeTool();
     } else if (id == QLatin1String("grain")) {
         openGrainTool();
+    } else if (id == QLatin1String("vignette")) {
+        openVignetteTool();
     } else if (id == QLatin1String("crop")) {
         openCropTool();
     } else if (id == QLatin1String("histogram")) {
@@ -1112,6 +1155,7 @@ void MainWindow::updatePreview()
     m_canvas->setPreviewState(ps);
     m_canvas->setCurveLuts(m_graph.previewLut());
     m_canvas->setLut3D(m_graph.previewLook());
+    m_canvas->setVignette(m_graph.vignette()); // creative vignette (present pass)
 
     // A capped-resolution sRGB copy of the source, for evaluating data-driven
     // (luminosity/colour) layer masks; geometric masks ignore it. Building it
@@ -1579,6 +1623,23 @@ void MainWindow::closeGrainTool()
     m_canvas->setFocus();
 }
 
+void MainWindow::openVignetteTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_vignettePanel->adjustSize();
+    const int margin = 18;
+    m_vignettePanel->move(width() - m_vignettePanel->width() - margin, margin);
+    m_vignettePanel->reveal(m_graph.vignette());
+}
+
+void MainWindow::closeVignetteTool()
+{
+    m_vignettePanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
 double MainWindow::sourceAspect() const
 {
     if (m_sourceQImage.isNull() || m_sourceQImage.height() == 0)
@@ -1648,6 +1709,25 @@ void MainWindow::openDenoiseTool()
 void MainWindow::closeDenoiseTool()
 {
     m_denoisePanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::openDefringeTool()
+{
+    if (!m_defringe)
+        return;
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_defringePanel->adjustSize();
+    const int margin = 18;
+    m_defringePanel->move(width() - m_defringePanel->width() - margin, margin);
+    m_defringePanel->reveal(m_defringe->values());
+}
+
+void MainWindow::closeDefringeTool()
+{
+    m_defringePanel->hide();
     m_graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
@@ -1803,17 +1883,21 @@ void MainWindow::closeHealTool()
 void MainWindow::refreshBaseImage(bool keepView)
 {
     // The GPU preview base = the lens-corrected source with the other "baked"
-    // neighbourhood ops applied (heal -> denoise -> sharpen); the shader then
-    // applies the pointwise/LUT ops on top. With no baked op active, the
-    // corrected source (m_sourceQImage) is already the base.
+    // neighbourhood ops applied (heal -> denoise -> defringe -> sharpen); the
+    // shader then applies the pointwise/LUT ops on top. With no baked op active,
+    // the corrected source (m_sourceQImage) is already the base.
     const bool healActive = m_heal && !m_heal->healMask().isEmpty();
     const DenoiseNode::Values dv =
         m_denoise ? m_denoise->values() : DenoiseNode::Values{};
     const bool denoiseActive = dv.enabled && (dv.luma > 0.0f || dv.chroma > 0.0f);
+    const DefringeNode::Values fv =
+        m_defringe ? m_defringe->values() : DefringeNode::Values{};
+    const bool defringeActive = fv.enabled && (fv.purple > 0.0f || fv.green > 0.0f);
     const SharpenNode::Values sv =
         m_sharpen ? m_sharpen->values() : SharpenNode::Values{};
     const bool sharpenActive = sv.enabled && sv.amount > 0.0f;
-    if (m_graph.source().isNull() || (!healActive && !denoiseActive && !sharpenActive)) {
+    if (m_graph.source().isNull()
+        || (!healActive && !denoiseActive && !defringeActive && !sharpenActive)) {
         if (!m_sourceQImage.isNull())
             m_canvas->setImage(m_sourceQImage, keepView);
         return;
@@ -1828,10 +1912,11 @@ void MainWindow::refreshBaseImage(bool keepView)
     const Image src = m_workingSource.isNull() ? m_graph.source() : m_workingSource;
     const MaskBuffer mask = healActive ? m_heal->healMask() : MaskBuffer();
     const bool hq = m_heal && m_heal->highQuality();
-    if (healActive || denoiseActive || sharpenActive) {
+    if (healActive || denoiseActive || defringeActive || sharpenActive) {
         // Label by op; heal takes precedence when several are combined.
         const QString label = healActive ? QStringLiteral("Healing…")
                             : denoiseActive ? QStringLiteral("Denoising…")
+                            : defringeActive ? QStringLiteral("Defringing…")
                                             : QStringLiteral("Sharpening…");
         auto *badge = static_cast<BusyBadge *>(m_healBusy);
         badge->setLabel(label);
@@ -1840,7 +1925,7 @@ void MainWindow::refreshBaseImage(bool keepView)
     }
 
     m_healWatcher.setFuture(
-        QtConcurrent::run([this, gen, src, mask, hq, dv, sv]() -> QImage {
+        QtConcurrent::run([this, gen, src, mask, hq, dv, fv, sv]() -> QImage {
             if (gen != m_healGen)
                 return QImage(); // superseded before we even started
             Image img = src;
@@ -1854,6 +1939,11 @@ void MainWindow::refreshBaseImage(bool keepView)
                 DenoiseNode denoise;
                 denoise.setValues(dv);
                 img = denoise.apply(img);
+            }
+            if (fv.enabled && (fv.purple > 0.0f || fv.green > 0.0f)) {
+                DefringeNode defringe;
+                defringe.setValues(fv);
+                img = defringe.apply(img);
             }
             if (sv.enabled && sv.amount > 0.0f) {
                 SharpenNode sharpen;
@@ -2130,8 +2220,12 @@ void MainWindow::closeActiveTool()
         closeSharpenTool();
     else if (m_denoisePanel->isVisible())
         closeDenoiseTool();
+    else if (m_defringePanel->isVisible())
+        closeDefringeTool();
     else if (m_grainPanel->isVisible())
         closeGrainTool();
+    else if (m_vignettePanel->isVisible())
+        closeVignetteTool();
     else if (m_cropPanel->isVisible())
         closeCropTool();
     else if (m_healPanel->isVisible())
@@ -2201,8 +2295,12 @@ void MainWindow::afterHistoryChange()
         m_sharpenPanel->reveal(m_sharpen->values());
     if (m_denoisePanel->isVisible() && m_denoise)
         m_denoisePanel->reveal(m_denoise->values());
+    if (m_defringePanel->isVisible() && m_defringe)
+        m_defringePanel->reveal(m_defringe->values());
     if (m_grainPanel->isVisible() && m_grain)
         m_grainPanel->reveal(m_grain->values());
+    if (m_vignettePanel->isVisible())
+        m_vignettePanel->reveal(m_graph.vignette());
     if (m_cropPanel->isVisible()) {
         m_cropPanel->reveal(m_graph.crop(), sourceAspect());
         m_cropGizmo->setRect(m_graph.crop().rect);
@@ -2263,8 +2361,10 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_lensPanel);
     clampIntoView(m_sharpenPanel);
     clampIntoView(m_grainPanel);
+    clampIntoView(m_vignettePanel);
     clampIntoView(m_cropPanel);
     clampIntoView(m_denoisePanel);
+    clampIntoView(m_defringePanel);
     clampIntoView(m_healPanel);
     clampIntoView(m_layersPanel);
 
@@ -2303,8 +2403,10 @@ void MainWindow::layoutOverlays()
                                static_cast<QWidget *>(m_lensPanel),
                                static_cast<QWidget *>(m_sharpenPanel),
                                static_cast<QWidget *>(m_grainPanel),
+                               static_cast<QWidget *>(m_vignettePanel),
                                static_cast<QWidget *>(m_cropPanel),
                                static_cast<QWidget *>(m_denoisePanel),
+                               static_cast<QWidget *>(m_defringePanel),
                                static_cast<QWidget *>(m_healPanel),
                                static_cast<QWidget *>(m_layersPanel)}) {
             if (panel && panel->isVisible())

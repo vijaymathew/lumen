@@ -2,6 +2,7 @@
 
 #include "core/ColorGradeNode.h"
 #include "core/CurvesNode.h"
+#include "core/DefringeNode.h"
 #include "core/DenoiseNode.h"
 #include "core/EditNode.h"
 #include "core/GrainNode.h"
@@ -34,6 +35,8 @@ std::unique_ptr<EditNode> createNode(const QString &typeName)
         return std::make_unique<SharpenNode>();
     if (typeName == QLatin1String("denoise"))
         return std::make_unique<DenoiseNode>();
+    if (typeName == QLatin1String("defringe"))
+        return std::make_unique<DefringeNode>();
     if (typeName == QLatin1String("grain"))
         return std::make_unique<GrainNode>();
     return nullptr;

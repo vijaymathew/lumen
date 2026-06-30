@@ -87,6 +87,8 @@ add_library(lumen_core STATIC
     src/core/GrainNode.cpp
     src/core/CropState.h
     src/core/CropState.cpp
+    src/core/Vignette.h
+    src/core/Vignette.cpp
     src/core/NodeFactory.h
     src/core/NodeFactory.cpp
     src/core/Project.h
@@ -109,6 +111,8 @@ add_library(lumen_core STATIC
     src/core/SharpenNode.cpp
     src/core/DenoiseNode.h
     src/core/DenoiseNode.cpp
+    src/core/DefringeNode.h
+    src/core/DefringeNode.cpp
     src/core/Histogram.h
     src/core/Histogram.cpp
 )
@@ -149,6 +153,8 @@ qt_add_executable(lumen
     src/ui/GrainPanel.cpp
     src/ui/CropPanel.h
     src/ui/CropPanel.cpp
+    src/ui/VignettePanel.h
+    src/ui/VignettePanel.cpp
     src/ui/CropGizmo.h
     src/ui/CropGizmo.cpp
     src/ui/LensPanel.h
@@ -157,6 +163,8 @@ qt_add_executable(lumen
     src/ui/SharpenPanel.cpp
     src/ui/DenoisePanel.h
     src/ui/DenoisePanel.cpp
+    src/ui/DefringePanel.h
+    src/ui/DefringePanel.cpp
     src/ui/HistogramWidget.h
     src/ui/HistogramWidget.cpp
     src/ui/MaskGizmo.h
@@ -313,6 +321,16 @@ if(BUILD_TESTING)
     target_link_libraries(crop_test PRIVATE lumen_core)
     target_compile_options(crop_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME crop_test COMMAND crop_test)
+
+    add_executable(vignette_test tests/vignette_test.cpp)
+    target_link_libraries(vignette_test PRIVATE lumen_core)
+    target_compile_options(vignette_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME vignette_test COMMAND vignette_test)
+
+    add_executable(defringe_test tests/defringe_test.cpp)
+    target_link_libraries(defringe_test PRIVATE lumen_core)
+    target_compile_options(defringe_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME defringe_test COMMAND defringe_test)
 
     add_executable(sharpen_test tests/sharpen_test.cpp)
     target_link_libraries(sharpen_test PRIVATE lumen_core)

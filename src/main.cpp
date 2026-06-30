@@ -30,14 +30,20 @@ int main(int argc, char *argv[])
                                  QStringLiteral("Image file to open on launch"));
     parser.process(app);
 
-    MainWindow window;
-    window.show();
+    // Scope the window so it (and the libvips-backed images its edit graph
+    // caches) destruct BEFORE vips_shutdown() — unref'ing a VipsImage after the
+    // library is gone dereferences freed GLib type tables and crashes.
+    int rc = 0;
+    {
+        MainWindow window;
+        window.show();
 
-    const QStringList args = parser.positionalArguments();
-    if (!args.isEmpty())
-        window.openPath(args.first());
+        const QStringList args = parser.positionalArguments();
+        if (!args.isEmpty())
+            window.openPath(args.first());
 
-    const int rc = app.exec();
+        rc = app.exec();
+    }
     ImageBuffer::shutdownLibrary();
     return rc;
 }

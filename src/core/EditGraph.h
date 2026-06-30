@@ -2,6 +2,7 @@
 
 #include "core/CropState.h"
 #include "core/Image.h"
+#include "core/Vignette.h"
 #include "core/Layer.h"
 #include "core/Lut.h"
 #include "core/Lut3D.h"
@@ -51,6 +52,10 @@ public:
     const CropState &crop() const { return m_crop; }
     void setCrop(const CropState &crop) { m_crop = crop; }
 
+    // --- Creative vignette (post-crop finishing transform, applied in result()) -
+    const VignetteParams &vignette() const { return m_vignette; }
+    void setVignette(const VignetteParams &v) { m_vignette = v; }
+
     // --- Node ops (delegate to the active layer) ---------------------------
     EditNode *addNode(std::unique_ptr<EditNode> node);
     bool removeNode(const QString &id);
@@ -88,6 +93,7 @@ private:
     std::vector<std::unique_ptr<Layer>> m_layers; // [0] = Base, always present
     int m_activeLayer = 0;
     CropState m_crop; // final crop/orientation, applied after compositing
+    VignetteParams m_vignette; // creative vignette, applied after the crop
 
     std::vector<QJsonObject> m_history;
     int m_historyIndex = -1;
