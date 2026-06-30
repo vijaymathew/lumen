@@ -472,6 +472,7 @@ MainWindow::MainWindow(QWidget *parent)
                 m_sharpen->setValues(v);
                 // Sharpen bakes into the base; coalesce drags so we don't kick a
                 // full-res pass per tick.
+                m_bakeOp = BakeOp::Sharpen;
                 m_bakeTimer->start();
             });
     connect(m_sharpenPanel, &SharpenPanel::closed, this, &MainWindow::closeSharpenTool);
@@ -539,6 +540,7 @@ MainWindow::MainWindow(QWidget *parent)
                 m_denoise->setValues(v);
                 // Denoise bakes into the base; coalesce drags (it's a full-res
                 // LAB pass) just like sharpen.
+                m_bakeOp = BakeOp::Denoise;
                 m_bakeTimer->start();
             });
     connect(m_denoisePanel, &DenoisePanel::closed, this, &MainWindow::closeDenoiseTool);
@@ -551,6 +553,7 @@ MainWindow::MainWindow(QWidget *parent)
                 m_defringe->setValues(v);
                 // Defringe bakes into the base (a full-res LAB pass); coalesce
                 // drags like denoise/sharpen.
+                m_bakeOp = BakeOp::Defringe;
                 m_bakeTimer->start();
             });
     connect(m_defringePanel, &DefringePanel::closed, this, &MainWindow::closeDefringeTool);
@@ -2293,6 +2296,12 @@ void MainWindow::closeHealTool()
 
 void MainWindow::refreshBaseImage(bool keepView)
 {
+    // Consume the triggering-op hint (set by the panel that kicked this bake) so
+    // the badge labels the user's actual action, not whichever active pass ranks
+    // highest. Reset regardless of the path taken below.
+    const BakeOp triggeredBy = m_bakeOp;
+    m_bakeOp = BakeOp::Auto;
+
     // The GPU preview base = the lens-corrected source with the other "baked"
     // neighbourhood ops applied (heal -> denoise -> defringe -> sharpen); the
     // shader then applies the pointwise/LUT ops on top. With no baked op active,
@@ -2324,11 +2333,22 @@ void MainWindow::refreshBaseImage(bool keepView)
     const MaskBuffer mask = healActive ? m_heal->healMask() : MaskBuffer();
     const bool hq = m_heal && m_heal->highQuality();
     if (healActive || denoiseActive || defringeActive || sharpenActive) {
-        // Label by op; heal takes precedence when several are combined.
-        const QString label = healActive ? QStringLiteral("Healing…")
-                            : denoiseActive ? QStringLiteral("Denoising…")
-                            : defringeActive ? QStringLiteral("Defringing…")
-                                            : QStringLiteral("Sharpening…");
+        // Label by the op the user triggered (if it's actually active); otherwise
+        // fall back to precedence (heal first) for unattributed refreshes.
+        QString label;
+        if (triggeredBy == BakeOp::Sharpen && sharpenActive)
+            label = QStringLiteral("Sharpening…");
+        else if (triggeredBy == BakeOp::Defringe && defringeActive)
+            label = QStringLiteral("Defringing…");
+        else if (triggeredBy == BakeOp::Denoise && denoiseActive)
+            label = QStringLiteral("Denoising…");
+        else if (triggeredBy == BakeOp::Heal && healActive)
+            label = QStringLiteral("Healing…");
+        if (label.isEmpty())
+            label = healActive ? QStringLiteral("Healing…")
+                  : denoiseActive ? QStringLiteral("Denoising…")
+                  : defringeActive ? QStringLiteral("Defringing…")
+                                  : QStringLiteral("Sharpening…");
         auto *badge = static_cast<BusyBadge *>(m_healBusy);
         badge->setLabel(label);
         badge->start();

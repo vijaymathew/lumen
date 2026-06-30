@@ -188,6 +188,12 @@ private:
     // when the lens parameters or the source image change — NOT per heal dab.
     void refreshWorkingSource();
     void recomputeSelectiveMask(); // uploads the active layer's mask as the overlay
+    // The baked passes (heal/denoise/defringe/sharpen) all re-run together, so the
+    // busy badge labels by which op the user actually triggered. A handler sets
+    // m_bakeOp before kicking the bake; refreshBaseImage consumes it for the
+    // label and falls back to precedence when it's Auto (e.g. a load/lens refresh).
+    enum class BakeOp { Auto, Heal, Denoise, Defringe, Sharpen };
+    BakeOp m_bakeOp = BakeOp::Auto;
     // Canvas colour-pick has two purposes: choosing a colour-mask target, or the
     // white-balance eyedropper. `m_pickPurpose` routes the picked point.
     enum class PickPurpose { MaskColour, WhiteBalance };
