@@ -277,4 +277,14 @@ private:
     // the UI thread; the latest request wins.
     QFutureWatcher<HistogramData> m_histWatcher;
     std::atomic<quint64> m_histGen{0};
+
+    // RAW re-decode (a full demosaic) also runs off the UI thread so the app
+    // stays responsive and the busy badge can animate; the latest request wins.
+    struct DecodeResult {
+        Image image;
+        raw::LensMetadata meta;
+        QString error;
+    };
+    QFutureWatcher<DecodeResult> m_decodeWatcher;
+    std::atomic<quint64> m_decodeGen{0};
 };

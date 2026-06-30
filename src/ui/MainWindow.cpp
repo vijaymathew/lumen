@@ -627,6 +627,27 @@ MainWindow::MainWindow(QWidget *parent)
             m_canvas->setImage(healed, /*keepView=*/true); // preserve zoom/pan
     });
 
+    // Background RAW re-decode finished: install the new source and rebuild the
+    // pipeline (the watcher only delivers the latest request's future).
+    connect(&m_decodeWatcher, &QFutureWatcher<DecodeResult>::finished, this, [this] {
+        static_cast<BusyBadge *>(m_healBusy)->stop();
+        if (!m_decodeWatcher.future().isValid())
+            return;
+        const DecodeResult r = m_decodeWatcher.result();
+        if (r.image.isNull()) {
+            if (!r.error.isEmpty())
+                showHint(QStringLiteral("Could not re-decode RAW: %1").arg(r.error));
+            return;
+        }
+        m_graph.setSource(r.image);
+        // Keep the current WB temperature (don't reseed to as-shot).
+        applyCameraProfile(r.meta.color, /*seedKelvin=*/false);
+        refreshWorkingSource();  // rebuild the corrected source + display QImage
+        refreshBaseImage(true);  // keep zoom/pan (itself async if a bake is active)
+        recomputeSelectiveMask();
+        updatePreview();
+    });
+
     m_healPanel = new HealPanel(this);
     connect(m_healPanel, &HealPanel::settingsChanged, this,
             [this](int size, int hardness, bool add) {
@@ -851,10 +872,13 @@ MainWindow::~MainWindow()
     // cached images are freed — and before main() calls vips_shutdown().
     ++m_healGen; // signal in-flight tasks to bail at their next checkpoint
     ++m_histGen;
+    ++m_decodeGen;
     if (m_healWatcher.isRunning())
         m_healWatcher.waitForFinished();
     if (m_histWatcher.isRunning())
         m_histWatcher.waitForFinished();
+    if (m_decodeWatcher.isRunning())
+        m_decodeWatcher.waitForFinished();
 }
 
 void MainWindow::buildCommands()
@@ -1024,22 +1048,23 @@ void MainWindow::redecodeCurrent()
     if (m_sourceBytes.isEmpty() || !raw::isRawPath(m_sourceName))
         return;
 
-    QString error;
-    raw::LensMetadata meta;
-    Image source = raw::decodeBytes(m_sourceBytes.constData(), m_sourceBytes.size(), &error,
-                                    &meta, m_rawOptions);
-    if (source.isNull()) {
-        showHint(QStringLiteral("Could not re-decode RAW: %1").arg(error));
-        return;
-    }
-    m_graph.setSource(source);
-    // Refresh the camera profile but keep the current WB temperature (don't reseed
-    // to as-shot — the user may have tuned it).
-    applyCameraProfile(meta.color, /*seedKelvin=*/false);
-    refreshWorkingSource();  // rebuild the corrected source + display QImage
-    refreshBaseImage(true);  // keep zoom/pan
-    recomputeSelectiveMask();
-    updatePreview();
+    // Run the demosaic off the UI thread so the app stays responsive and the busy
+    // badge animates; the latest request wins (m_decodeGen guards stale results).
+    const quint64 gen = ++m_decodeGen;
+    auto *badge = static_cast<BusyBadge *>(m_healBusy);
+    badge->setLabel(QStringLiteral("Decoding…"));
+    badge->start();
+    layoutOverlays(); // position the badge + dim
+
+    const QByteArray bytes = m_sourceBytes;
+    const raw::RawDecodeOptions opts = m_rawOptions;
+    m_decodeWatcher.setFuture(QtConcurrent::run([this, gen, bytes, opts]() -> DecodeResult {
+        if (gen != m_decodeGen)
+            return {}; // superseded before we even started
+        DecodeResult r;
+        r.image = raw::decodeBytes(bytes.constData(), bytes.size(), &r.error, &r.meta, opts);
+        return r;
+    }));
 }
 
 void MainWindow::saveProject()
@@ -1855,7 +1880,8 @@ void MainWindow::openRawTool()
 void MainWindow::closeRawTool()
 {
     m_rawPanel->hide();
-    // If a debounced re-decode is pending, run it now so closing settles the view.
+    // Flush a pending debounced re-decode so closing doesn't drop the last change
+    // (it runs in the background, with the busy badge).
     if (m_redecodeTimer->isActive()) {
         m_redecodeTimer->stop();
         redecodeCurrent();
