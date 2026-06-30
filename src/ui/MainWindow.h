@@ -413,4 +413,14 @@ private:
     };
     QFutureWatcher<DecodeResult> m_decodeWatcher;
     std::atomic<quint64> m_decodeGen{0};
+
+    // Export runs the full-res graph walk + libvips encode off the UI thread (a
+    // heal mask makes result() eager, and encoding a large image is slow either
+    // way). Re-entry is blocked while a write is in flight.
+    struct ExportResult {
+        bool ok = false;
+        QString error;
+        QString path;
+    };
+    QFutureWatcher<ExportResult> m_exportWatcher;
 };

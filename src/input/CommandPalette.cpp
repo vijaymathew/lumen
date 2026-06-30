@@ -1,5 +1,7 @@
 #include "input/CommandPalette.h"
 
+#include <QColor>
+#include <QFont>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QListWidget>
@@ -120,63 +122,102 @@ bool CommandPalette::fuzzyMatch(const QString &pattern, const QString &text, int
 void CommandPalette::refilter()
 {
     const QString query = m_search ? m_search->text() : QString();
-    const bool browsing = query.isEmpty();
+    m_list->clear();
 
-    struct Scored {
-        int order;
-        int score;
-        int count;
-        qint64 lastUsed;
-        Command cmd;
-    };
-    QVector<Scored> matched;
-    matched.reserve(m_commands.size());
-
-    for (int i = 0; i < m_commands.size(); ++i) {
-        int score = 0;
-        if (fuzzyMatch(query, m_commands[i].title, &score)) {
-            const QString &id = m_commands[i].id;
-            matched.push_back(
-                {i, score, m_useCount.value(id, 0), m_lastUsed.value(id, 0), m_commands[i]});
+    if (query.isEmpty()) {
+        // Browse view: a stable, menu-like list. Commands are declared grouped by
+        // category (buildCommands), so a header is emitted whenever the category
+        // changes — no reordering, so groups stay put.
+        QString currentCategory;
+        for (const Command &c : m_commands) {
+            if (c.category != currentCategory) {
+                currentCategory = c.category;
+                if (!currentCategory.isEmpty())
+                    addHeaderItem(currentCategory);
+            }
+            auto *item = new QListWidgetItem(c.title, m_list);
+            item->setData(Qt::UserRole, c.id);
         }
-    }
-
-    std::stable_sort(matched.begin(), matched.end(), [browsing](const Scored &a, const Scored &b) {
-        if (browsing) {
-            // Empty query is a "show everything, most-used first" browse view:
-            // recency leads, frequency breaks ties, declared order is the floor.
-            if (a.lastUsed != b.lastUsed)
-                return a.lastUsed > b.lastUsed;
+    } else {
+        // Filtered view: a flat ranked list (no headers). Match quality leads;
+        // usage frequency/recency only breaks equal-quality ties.
+        struct Scored {
+            int order;
+            int score;
+            int count;
+            qint64 lastUsed;
+            const Command *cmd;
+        };
+        QVector<Scored> matched;
+        matched.reserve(m_commands.size());
+        for (int i = 0; i < m_commands.size(); ++i) {
+            int score = 0;
+            if (fuzzyMatch(query, m_commands[i].title, &score)) {
+                const QString &id = m_commands[i].id;
+                matched.push_back(
+                    {i, score, m_useCount.value(id, 0), m_lastUsed.value(id, 0), &m_commands[i]});
+            }
+        }
+        std::stable_sort(matched.begin(), matched.end(), [](const Scored &a, const Scored &b) {
+            if (a.score != b.score)
+                return a.score < b.score;
             if (a.count != b.count)
                 return a.count > b.count;
+            if (a.lastUsed != b.lastUsed)
+                return a.lastUsed > b.lastUsed;
             return a.order < b.order;
+        });
+        for (const Scored &s : matched) {
+            auto *item = new QListWidgetItem(s.cmd->title, m_list);
+            item->setData(Qt::UserRole, s.cmd->id);
         }
-        // While typing, match quality dominates; usage only breaks equal-quality
-        // ties so the tool you reach for most surfaces first.
-        if (a.score != b.score)
-            return a.score < b.score;
-        if (a.count != b.count)
-            return a.count > b.count;
-        if (a.lastUsed != b.lastUsed)
-            return a.lastUsed > b.lastUsed;
-        return a.order < b.order;
-    });
-
-    m_list->clear();
-    for (const Scored &s : matched) {
-        auto *item = new QListWidgetItem(s.cmd.title, m_list);
-        item->setData(Qt::UserRole, s.cmd.id);
     }
-    if (m_list->count() > 0)
-        m_list->setCurrentRow(0);
+
+    const int first = firstSelectableRow();
+    if (first >= 0)
+        m_list->setCurrentRow(first);
+}
+
+void CommandPalette::addHeaderItem(const QString &text)
+{
+    auto *h = new QListWidgetItem(text.toUpper(), m_list);
+    h->setFlags(Qt::NoItemFlags); // not selectable / skipped by navigation
+    QFont f = m_list->font();
+    f.setBold(true);
+    // The list font is pixel-sized (stylesheet "font-size: 13px"), so pointSizeF()
+    // is -1; scale whichever metric is actually set to keep the header smaller.
+    if (f.pointSizeF() > 0)
+        f.setPointSizeF(f.pointSizeF() * 0.8);
+    else if (f.pixelSize() > 0)
+        f.setPixelSize(std::max(1, static_cast<int>(f.pixelSize() * 0.8)));
+    h->setFont(f);
+    h->setForeground(QColor(0x7a, 0x7a, 0x80));
+}
+
+int CommandPalette::firstSelectableRow() const
+{
+    for (int i = 0; i < m_list->count(); ++i)
+        if (m_list->item(i)->flags() & Qt::ItemIsSelectable)
+            return i;
+    return -1;
+}
+
+int CommandPalette::stepRow(int from, int dir) const
+{
+    for (int i = from + dir; i >= 0 && i < m_list->count(); i += dir)
+        if (m_list->item(i)->flags() & Qt::ItemIsSelectable)
+            return i;
+    return from; // no selectable row that way — stay put
 }
 
 void CommandPalette::triggerCurrent()
 {
     QListWidgetItem *item = m_list->currentItem();
-    if (!item)
+    if (!item || !(item->flags() & Qt::ItemIsSelectable))
         return;
     const QString id = item->data(Qt::UserRole).toString();
+    if (id.isEmpty())
+        return;
     recordUse(id);
     dismiss();
     emit commandTriggered(id);
@@ -235,11 +276,11 @@ bool CommandPalette::eventFilter(QObject *watched, QEvent *event)
             return true;
         case Qt::Key_Down:
             if (m_list->count() > 0)
-                m_list->setCurrentRow(std::min(m_list->currentRow() + 1, m_list->count() - 1));
+                m_list->setCurrentRow(stepRow(m_list->currentRow(), +1));
             return true;
         case Qt::Key_Up:
             if (m_list->count() > 0)
-                m_list->setCurrentRow(std::max(m_list->currentRow() - 1, 0));
+                m_list->setCurrentRow(stepRow(m_list->currentRow(), -1));
             return true;
         default:
             break;

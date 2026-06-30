@@ -637,6 +637,24 @@ MainWindow::MainWindow(QWidget *parent)
         const QImage healed = m_healWatcher.result();
         if (!healed.isNull())
             m_canvas->setImage(healed, /*keepView=*/true); // preserve zoom/pan
+        // The histogram defers itself while a bake runs; recompute now (debounced).
+        if (m_histogram->isVisible())
+            m_histTimer->start();
+    });
+
+    // Background export finished: stop the badge and report the outcome.
+    connect(&m_exportWatcher, &QFutureWatcher<ExportResult>::finished, this, [this] {
+        static_cast<BusyBadge *>(m_healBusy)->stop();
+        if (!m_exportWatcher.future().isValid())
+            return;
+        const ExportResult r = m_exportWatcher.result();
+        if (!r.ok) {
+            QMessageBox::warning(this, QStringLiteral("Lumen"),
+                                 QStringLiteral("Export failed: %1").arg(r.error));
+            return;
+        }
+        rememberDir(QStringLiteral("export"), r.path);
+        showHint(QStringLiteral("Exported to %1").arg(QFileInfo(r.path).fileName()));
     });
 
     // Background RAW re-decode finished: install the new source and rebuild the
@@ -983,42 +1001,55 @@ MainWindow::~MainWindow()
         m_histWatcher.waitForFinished();
     if (m_decodeWatcher.isRunning())
         m_decodeWatcher.waitForFinished();
+    if (m_exportWatcher.isRunning())
+        m_exportWatcher.waitForFinished();
     if (m_autosaveWatcher.isRunning())
         m_autosaveWatcher.waitForFinished();
 }
 
 void MainWindow::buildCommands()
 {
-    // ids consumed by runCommand(). Editing tools are placeholders for now.
+    // ids consumed by runCommand(). Declared grouped by category and in a stable,
+    // workflow order: the palette emits a section header whenever the category
+    // changes in the browse view, so keep each category's commands consecutive.
+    const QString file = QStringLiteral("File");
+    const QString toneColor = QStringLiteral("Tone & Color");
+    const QString detail = QStringLiteral("Detail & Repair");
+    const QString cropLens = QStringLiteral("Crop & Lens");
+    const QString effects = QStringLiteral("Effects");
+    const QString selective = QStringLiteral("Selective");
+    const QString edit = QStringLiteral("Edit");
+    const QString view = QStringLiteral("View");
+    const QString app = QStringLiteral("App");
     m_palette->setCommands({
-        {QStringLiteral("open"), QStringLiteral("Open image…")},
-        {QStringLiteral("open-project"), QStringLiteral("Open project (.lumen)…")},
-        {QStringLiteral("save-project"), QStringLiteral("Save project (.lumen)…")},
-        {QStringLiteral("export"), QStringLiteral("Export image…")},
-        {QStringLiteral("tone"), QStringLiteral("Tone (exposure, contrast, saturation)")},
-        {QStringLiteral("curves"), QStringLiteral("Curves")},
-        {QStringLiteral("undo"), QStringLiteral("Undo")},
-        {QStringLiteral("redo"), QStringLiteral("Redo")},
-        {QStringLiteral("reset-view"), QStringLiteral("Reset view")},
-        {QStringLiteral("fullscreen"), QStringLiteral("Toggle fullscreen")},
-        {QStringLiteral("looks"), QStringLiteral("Looks (LUT)")},
-        {QStringLiteral("monochrome"), QStringLiteral("Monochrome (B&W + toning)")},
-        {QStringLiteral("colorgrade"), QStringLiteral("Color grading (wheels)")},
-        {QStringLiteral("selective"), QStringLiteral("Selective adjustment")},
-        {QStringLiteral("lens"), QStringLiteral("Lens & perspective")},
-        {QStringLiteral("denoise"), QStringLiteral("Denoise")},
-        {QStringLiteral("defringe"), QStringLiteral("Defringe")},
-        {QStringLiteral("raw"), QStringLiteral("RAW defaults (auto adjustments)")},
-        {QStringLiteral("sharpen"), QStringLiteral("Sharpen")},
-        {QStringLiteral("grain"), QStringLiteral("Film grain")},
-        {QStringLiteral("vignette"), QStringLiteral("Vignette")},
-        {QStringLiteral("crop"), QStringLiteral("Crop & rotate")},
-        {QStringLiteral("heal"), QStringLiteral("Healing brush")},
-        {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)")},
-        {QStringLiteral("clipping"), QStringLiteral("Clipping warnings (toggle)")},
-        {QStringLiteral("layers"), QStringLiteral("Layers")},
-        {QStringLiteral("adjustments"), QStringLiteral("Adjustments (history)")},
-        {QStringLiteral("quit"), QStringLiteral("Quit Lumen")},
+        {QStringLiteral("open"), QStringLiteral("Open image…"), file},
+        {QStringLiteral("open-project"), QStringLiteral("Open project (.lumen)…"), file},
+        {QStringLiteral("save-project"), QStringLiteral("Save project (.lumen)…"), file},
+        {QStringLiteral("export"), QStringLiteral("Export image…"), file},
+        {QStringLiteral("tone"), QStringLiteral("Tone (exposure, contrast, saturation)"), toneColor},
+        {QStringLiteral("curves"), QStringLiteral("Curves"), toneColor},
+        {QStringLiteral("colorgrade"), QStringLiteral("Color grading (wheels)"), toneColor},
+        {QStringLiteral("monochrome"), QStringLiteral("Monochrome (B&W + toning)"), toneColor},
+        {QStringLiteral("looks"), QStringLiteral("Looks (LUT)"), toneColor},
+        {QStringLiteral("sharpen"), QStringLiteral("Sharpen"), detail},
+        {QStringLiteral("denoise"), QStringLiteral("Denoise"), detail},
+        {QStringLiteral("defringe"), QStringLiteral("Defringe"), detail},
+        {QStringLiteral("heal"), QStringLiteral("Healing brush"), detail},
+        {QStringLiteral("raw"), QStringLiteral("RAW defaults (auto adjustments)"), detail},
+        {QStringLiteral("crop"), QStringLiteral("Crop & rotate"), cropLens},
+        {QStringLiteral("lens"), QStringLiteral("Lens & perspective"), cropLens},
+        {QStringLiteral("grain"), QStringLiteral("Film grain"), effects},
+        {QStringLiteral("vignette"), QStringLiteral("Vignette"), effects},
+        {QStringLiteral("selective"), QStringLiteral("Selective adjustment"), selective},
+        {QStringLiteral("layers"), QStringLiteral("Layers"), selective},
+        {QStringLiteral("undo"), QStringLiteral("Undo"), edit},
+        {QStringLiteral("redo"), QStringLiteral("Redo"), edit},
+        {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)"), view},
+        {QStringLiteral("clipping"), QStringLiteral("Clipping warnings (toggle)"), view},
+        {QStringLiteral("adjustments"), QStringLiteral("Adjustments (history)"), view},
+        {QStringLiteral("reset-view"), QStringLiteral("Reset view"), view},
+        {QStringLiteral("fullscreen"), QStringLiteral("Toggle fullscreen"), view},
+        {QStringLiteral("quit"), QStringLiteral("Quit Lumen"), app},
     });
 }
 
@@ -1556,6 +1587,10 @@ void MainWindow::exportImage()
         showHint(QStringLiteral("Open an image before exporting"));
         return;
     }
+    if (m_exportWatcher.isRunning()) {
+        showHint(QStringLiteral("An export is already in progress"));
+        return;
+    }
 
     // 1. Choose format + quality.
     ExportDialog dlg(this);
@@ -1583,16 +1618,33 @@ void MainWindow::exportImage()
     if (QFileInfo(path).suffix().isEmpty())
         path += QStringLiteral(".") + m_exportExt;
 
-    // 3. Walk the graph at full resolution, then write via libvips.
-    const Image result = m_graph.result();
-    QString error;
-    if (!result.saveToFile(path, quality, bits, &error)) {
-        QMessageBox::warning(this, QStringLiteral("Lumen"),
-                             QStringLiteral("Export failed: %1").arg(error));
-        return;
-    }
-    rememberDir(QStringLiteral("export"), path);
-    showHint(QStringLiteral("Exported to %1").arg(QFileInfo(path).fileName()));
+    // 3. Walk the graph and write at full resolution OFF the UI thread: a full-res
+    //    libvips encode is slow, and with an active heal mask result() runs the
+    //    inpaint inline (HealNode::apply is eager) — either would freeze the app.
+    //    The busy badge shows progress; re-entry is blocked above. The finished
+    //    handler reports success/failure.
+    const bool healActive =
+        m_heal && m_heal->isEnabled() && !m_heal->healMask().isEmpty();
+    // For the non-heal case the pipeline is lazy, so snapshot it on the UI thread
+    // (race-free) and only materialise on the worker; with heal active, build it
+    // on the worker so the eager inpaint never blocks the UI.
+    const Image snapshot = healActive ? Image() : m_graph.result();
+    auto *badge = static_cast<BusyBadge *>(m_healBusy);
+    badge->setLabel(QStringLiteral("Exporting…"));
+    badge->start();
+    layoutOverlays();
+    m_exportWatcher.setFuture(QtConcurrent::run(
+        [this, path, quality, bits, healActive, snapshot]() -> ExportResult {
+            ExportResult r;
+            r.path = path;
+            const Image result = healActive ? m_graph.result() : snapshot;
+            if (result.isNull()) {
+                r.error = QStringLiteral("nothing to export");
+                return r;
+            }
+            r.ok = result.saveToFile(path, quality, bits, &r.error);
+            return r;
+        }));
 }
 
 void MainWindow::toggleFullScreen()
@@ -2355,21 +2407,42 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 
 void MainWindow::updateHistogram()
 {
-    if (!m_histogram || !m_histogram->isVisible())
+    if (!m_histogram || !m_histogram->isVisible() || m_graph.source().isNull())
         return;
-    // The full-res composite is the source of truth (preview == export), but
-    // pulling its pixels is slow, so compute the histogram off the UI thread. The
-    // result() Image is a self-contained, ref-counted lazy pipeline — safe to
-    // materialise on a worker while the UI thread carries on.
-    const Image result = m_graph.result();
-    if (result.isNull())
+    // Don't overlap an in-flight bake — building result() would be a second
+    // concurrent full-res inpaint. Defer; the bake's finished handler retriggers.
+    if (m_healWatcher.isRunning() || m_decodeWatcher.isRunning())
         return;
+
     const quint64 gen = ++m_histGen;
-    m_histWatcher.setFuture(QtConcurrent::run([this, gen, result]() -> HistogramData {
-        if (gen != m_histGen)
-            return HistogramData{}; // superseded
-        return computeHistogram(result);
-    }));
+    const bool healActive =
+        m_heal && m_heal->isEnabled() && !m_heal->healMask().isEmpty();
+    if (healActive) {
+        // result() is EAGER when a heal mask is active — HealNode::apply runs the
+        // inpaint inline (see HealNode.cpp), so it must NEVER be built on the UI
+        // thread (that froze the app when toggling the histogram mid-heal). Build
+        // and materialise it on a worker. No bake is in flight (guarded above), so
+        // the graph is quiescent for the snapshot.
+        m_histWatcher.setFuture(QtConcurrent::run([this, gen]() -> HistogramData {
+            if (gen != m_histGen)
+                return HistogramData{};
+            const Image result = m_graph.result();
+            if (result.isNull() || gen != m_histGen)
+                return HistogramData{};
+            return computeHistogram(result);
+        }));
+    } else {
+        // No eager node: the pipeline is lazy, so build the snapshot on the UI
+        // thread (cheap, race-free) and only materialise it on the worker.
+        const Image result = m_graph.result();
+        if (result.isNull())
+            return;
+        m_histWatcher.setFuture(QtConcurrent::run([this, gen, result]() -> HistogramData {
+            if (gen != m_histGen)
+                return HistogramData{}; // superseded
+            return computeHistogram(result);
+        }));
+    }
 }
 
 void MainWindow::rebuildPreviewFromGraph()
