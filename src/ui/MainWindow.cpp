@@ -67,6 +67,15 @@
 
 namespace {
 
+// Snapshot a TuneNode's tonal state for seeding the Tone panel. Centralised so
+// the (positional) ToneValues aggregate has one definition to keep in sync.
+ToneValues toneValuesOf(const TuneNode *t)
+{
+    return {t->exposure(),   t->contrast(), t->highlights(), t->shadows(),
+            t->whites(),      t->blacks(),   t->saturation(), t->vibrance(),
+            t->kelvin(),      t->tint()};
+}
+
 // --- File-dialog directory memory -----------------------------------------
 // The file dialogs remember where you last were, per kind (open image, open /
 // save project, export, look LUT), persisted via QSettings. Returns the stored
@@ -378,6 +387,10 @@ MainWindow::MainWindow(QWidget *parent)
         if (auto *t = activeTune()) { // route to the active layer
             t->setExposure(v.exposure);
             t->setContrast(v.contrast);
+            t->setHighlights(v.highlights);
+            t->setShadows(v.shadows);
+            t->setWhites(v.whites);
+            t->setBlacks(v.blacks);
             t->setSaturation(v.saturation);
             t->setVibrance(v.vibrance);
             t->setKelvin(v.kelvin);
@@ -391,8 +404,7 @@ MainWindow::MainWindow(QWidget *parent)
             t->setKelvin(t->asShotKelvin());
             t->setTint(0.0f);
             updatePreview();
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(), t->vibrance(),
-                                 t->kelvin(), t->tint()});
+            m_tonePanel->reveal(toneValuesOf(t));
         }
     });
     connect(m_tonePanel, &TonePanel::whiteBalancePickRequested, this, [this] {
@@ -1847,8 +1859,7 @@ void MainWindow::reseedOpenPanels()
     // Guarded: a layer may not carry every node type (e.g. a selective layer).
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(), t->vibrance(),
-                                 t->kelvin(), t->tint()});
+            m_tonePanel->reveal(toneValuesOf(t));
     }
     if (m_curvesPanel->isVisible()) {
         if (auto *c = activeCurves())
@@ -1903,8 +1914,7 @@ void MainWindow::selectLayer(int index)
     // (guarded — a layer may not carry every node type, e.g. a selective layer).
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(), t->vibrance(),
-                                 t->kelvin(), t->tint()});
+            m_tonePanel->reveal(toneValuesOf(t));
     }
     if (m_curvesPanel->isVisible()) {
         if (auto *c = activeCurves())
@@ -2021,9 +2031,7 @@ void MainWindow::openToneTool()
     m_tonePanel->adjustSize();
     const int margin = 18;
     m_tonePanel->move(width() - m_tonePanel->width() - margin, margin);
-    m_tonePanel->reveal({activeTune()->exposure(), activeTune()->contrast(),
-                         activeTune()->saturation(), activeTune()->vibrance(),
-                         activeTune()->kelvin(), activeTune()->tint()});
+    m_tonePanel->reveal(toneValuesOf(activeTune()));
 }
 
 void MainWindow::closeToneTool()
@@ -3106,8 +3114,7 @@ void MainWindow::onColorPicked(const QPointF &norm)
                            static_cast<float>(c.blueF()));
             updatePreview();
             if (m_tonePanel->isVisible())
-                m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(), t->vibrance(),
-                                     t->kelvin(), t->tint()});
+                m_tonePanel->reveal(toneValuesOf(t));
             m_graph.commit();
         }
         return;
@@ -3200,8 +3207,7 @@ void MainWindow::afterHistoryChange()
     // a layer may not carry every node type, e.g. a selective layer has tune only).
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
-            m_tonePanel->reveal({t->exposure(), t->contrast(), t->saturation(), t->vibrance(),
-                                 t->kelvin(), t->tint()});
+            m_tonePanel->reveal(toneValuesOf(t));
     }
     if (m_curvesPanel->isVisible()) {
         if (auto *c = activeCurves())

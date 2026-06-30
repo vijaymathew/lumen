@@ -69,16 +69,39 @@ layout(std140, binding = 0) uniform buf {
     float monoShadowB;
     float grainAmount;  // film grain intensity/100 (0 = off)
     float grainSize;    // grain cell size in px
+    float highlights;   // tonal-region amounts in [-1,1] (0 = neutral)
+    float shadows;
+    float whites;
+    float blacks;
 } ubuf;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
 
-vec3 applyTone(vec3 c, float exposure, float contrast, float saturation, float vibrance)
+// Tonal-region (highlights/shadows/whites/blacks) brightness shift for luma L in
+// [0,1]. MUST match TuneNode::toneRegionDelta (weights, 0.25/0.75 hump centres +
+// 0.25 width, and the 0.4 amplitude).
+float toneRegionDelta(float L, float hi, float sh, float wh, float bl)
+{
+    float Lc = clamp(L, 0.0, 1.0);
+    float wBlacks = (1.0 - Lc) * (1.0 - Lc) * (1.0 - Lc);
+    float wWhites = Lc * Lc * Lc;
+    float sLo = (Lc - 0.25) / 0.25, sHi = (Lc - 0.75) / 0.25;
+    float wShadows = exp(-sLo * sLo);
+    float wHighlights = exp(-sHi * sHi);
+    const float kToneRegionAmp = 0.4;
+    return kToneRegionAmp * (hi * wHighlights + sh * wShadows + wh * wWhites + bl * wBlacks);
+}
+
+vec3 applyTone(vec3 c, float exposure, float contrast, float saturation, float vibrance,
+               float highlights, float shadows, float whites, float blacks)
 {
     c *= exp2(exposure / 2.2);
     c = (c - 0.5) * contrast + 0.5;
     float l = dot(c, kLuma);
     c = mix(vec3(l), c, saturation);
+    // Tonal regions: luma-derived shift added to all channels (chroma preserved).
+    if (highlights != 0.0 || shadows != 0.0 || whites != 0.0 || blacks != 0.0)
+        c += toneRegionDelta(dot(c, kLuma), highlights, shadows, whites, blacks);
     // Vibrance: push low-saturation pixels more, ease off already-saturated ones.
     // Matches TuneNode::applyVibrance.
     if (vibrance != 0.0) {
@@ -163,7 +186,8 @@ void main()
     vec3 wbLin = pow(max(col, 0.0), vec3(2.2));
     wbLin = wbM * wbLin;
     col = pow(max(wbLin, 0.0), vec3(1.0 / 2.2));
-    col = applyTone(col, ubuf.exposure, ubuf.contrast, ubuf.saturation, ubuf.vibrance);
+    col = applyTone(col, ubuf.exposure, ubuf.contrast, ubuf.saturation, ubuf.vibrance,
+                    ubuf.highlights, ubuf.shadows, ubuf.whites, ubuf.blacks);
     // 2. Tone curves: each channel maps through its own LUT column (R->.r,
     //    G->.g, B->.b). Identity when no curve.
     col = vec3(texture(lut, vec2(col.r, 0.5)).r,
@@ -218,7 +242,8 @@ void main()
         if (ubuf.selInvert > 0.5)
             mask = 1.0 - mask;
         if (ubuf.selEnabled > 0.5) {
-            vec3 adj = applyTone(col, ubuf.selExposure, ubuf.selContrast, ubuf.selSaturation, 0.0);
+            vec3 adj = applyTone(col, ubuf.selExposure, ubuf.selContrast, ubuf.selSaturation,
+                                 0.0, 0.0, 0.0, 0.0, 0.0);
             col = mix(col, adj, mask);
         }
         if (ubuf.selMaskView > 0.5) {

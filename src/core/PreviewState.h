@@ -82,6 +82,14 @@ struct PreviewState {
     // (0 = off); size = grain cell in px. Keyed to gl_FragCoord in texture.frag.
     float grainAmount = 0.0f;
     float grainSize = 2.0f;
+    // TuneNode — tonal-region controls (highlights/shadows/whites/blacks),
+    // additive amounts in [-1,1], 0 = neutral. Appended last so existing field
+    // offsets (and the std140 uniform layout) are undisturbed. The shader applies
+    // the region weights (texture.frag applyTone); matches TuneNode::apply().
+    float highlights = 0.0f;
+    float shadows = 0.0f;
+    float whites = 0.0f;
+    float blacks = 0.0f;
 
     friend bool operator==(const PreviewState &, const PreviewState &) = default;
 };

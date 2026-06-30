@@ -17,6 +17,23 @@ constexpr double kLumaR = 0.2126;
 constexpr double kLumaG = 0.7152;
 constexpr double kLumaB = 0.0722;
 
+// Tonal-region (highlights/shadows/whites/blacks) brightness shift. `L` is the
+// pixel's luma in [0,1]; the four amounts are slider/100 in [-1,1]. Returns the
+// delta to add to every channel. MUST match texture.frag's toneRegionDelta — the
+// weight curves, the 0.25/0.75 hump centres + 0.25 width, and kToneRegionAmp.
+constexpr double kToneRegionAmp = 0.4; // max shift in [0,1] space (tuning value)
+double toneRegionDelta(double L, double hi, double sh, double wh, double bl)
+{
+    const double Lc = std::clamp(L, 0.0, 1.0);
+    const double wBlacks = (1.0 - Lc) * (1.0 - Lc) * (1.0 - Lc);
+    const double wWhites = Lc * Lc * Lc;
+    const double sLo = (Lc - 0.25) / 0.25, sHi = (Lc - 0.75) / 0.25;
+    const double wShadows = std::exp(-sLo * sLo);
+    const double wHighlights = std::exp(-sHi * sHi);
+    return kToneRegionAmp
+        * (hi * wHighlights + sh * wShadows + wh * wWhites + bl * wBlacks);
+}
+
 QJsonArray matToJson(const double m[9])
 {
     QJsonArray a;
@@ -74,6 +91,42 @@ void TuneNode::setVibrance(float amount)
     amount = std::clamp(amount, kMinAmount, kMaxAmount);
     if (amount != m_vibrance) {
         m_vibrance = amount;
+        invalidate();
+    }
+}
+
+void TuneNode::setHighlights(float amount)
+{
+    amount = std::clamp(amount, kMinAmount, kMaxAmount);
+    if (amount != m_highlights) {
+        m_highlights = amount;
+        invalidate();
+    }
+}
+
+void TuneNode::setShadows(float amount)
+{
+    amount = std::clamp(amount, kMinAmount, kMaxAmount);
+    if (amount != m_shadows) {
+        m_shadows = amount;
+        invalidate();
+    }
+}
+
+void TuneNode::setWhites(float amount)
+{
+    amount = std::clamp(amount, kMinAmount, kMaxAmount);
+    if (amount != m_whites) {
+        m_whites = amount;
+        invalidate();
+    }
+}
+
+void TuneNode::setBlacks(float amount)
+{
+    amount = std::clamp(amount, kMinAmount, kMaxAmount);
+    if (amount != m_blacks) {
+        m_blacks = amount;
         invalidate();
     }
 }
@@ -137,7 +190,8 @@ bool TuneNode::wbIsIdentity() const
 bool TuneNode::isNeutral() const
 {
     return m_exposure == 0.0f && m_contrast == 0.0f && m_saturation == 0.0f
-        && m_vibrance == 0.0f && wbIsIdentity();
+        && m_vibrance == 0.0f && m_highlights == 0.0f && m_shadows == 0.0f
+        && m_whites == 0.0f && m_blacks == 0.0f && wbIsIdentity();
 }
 
 void TuneNode::contributeToPreview(PreviewState &state) const
@@ -147,6 +201,11 @@ void TuneNode::contributeToPreview(PreviewState &state) const
     state.contrast *= 1.0f + m_contrast / 100.0f;
     state.saturation *= 1.0f + m_saturation / 100.0f;
     state.vibrance += m_vibrance / 100.0f; // additive amount; shader applies the curve
+    // Tonal regions: additive amounts in [-1,1]; the shader applies the weights.
+    state.highlights += m_highlights / 100.0f;
+    state.shadows += m_shadows / 100.0f;
+    state.whites += m_whites / 100.0f;
+    state.blacks += m_blacks / 100.0f;
 
     // Accumulate the WB matrix: new = W_node · running (graph order, left-multiply).
     if (!wbIsIdentity()) {
@@ -247,6 +306,43 @@ Image TuneNode::applyVibrance(const Image &input, double vib) const
     return result.isNull() ? input : result;
 }
 
+// Highlights/shadows/whites/blacks: a luma-derived brightness shift added to all
+// colour channels (chroma preserved). Identical math to texture.frag's
+// toneRegionDelta. Per-pixel, encoded value space (0..255 → /255 → [0,1]).
+Image TuneNode::applyToneRegions(const Image &input, double hi, double sh,
+                                 double wh, double bl) const
+{
+    VipsImage *f = nullptr;
+    if (vips_cast(input.handle(), &f, VIPS_FORMAT_FLOAT, nullptr))
+        return input;
+    void *buf = vips_image_write_to_memory(f, nullptr);
+    const int w = f->Xsize;
+    const int h = f->Ysize;
+    const int bands = f->Bands;
+    g_object_unref(f);
+    if (!buf)
+        return input;
+
+    const int colorBands = std::min(bands, 3);
+    auto *px = static_cast<float *>(buf);
+    const long long n = static_cast<long long>(w) * h;
+    for (long long i = 0; i < n; ++i) {
+        float *p = px + i * bands;
+        double L;
+        if (colorBands >= 3)
+            L = (kLumaR * p[0] + kLumaG * p[1] + kLumaB * p[2]) / 255.0;
+        else
+            L = p[0] / 255.0;
+        const double delta = toneRegionDelta(L, hi, sh, wh, bl) * 255.0;
+        for (int c = 0; c < colorBands; ++c)
+            p[c] = static_cast<float>(p[c] + delta);
+    }
+
+    Image result = Image::fromInterleavedFloat(px, w, h, bands);
+    g_free(buf);
+    return result.isNull() ? input : result;
+}
+
 QJsonObject TuneNode::saveState() const
 {
     QJsonObject state = EditNode::saveState();
@@ -254,6 +350,10 @@ QJsonObject TuneNode::saveState() const
     state[QStringLiteral("contrast")] = m_contrast;
     state[QStringLiteral("saturation")] = m_saturation;
     state[QStringLiteral("vibrance")] = m_vibrance;
+    state[QStringLiteral("highlights")] = m_highlights;
+    state[QStringLiteral("shadows")] = m_shadows;
+    state[QStringLiteral("whites")] = m_whites;
+    state[QStringLiteral("blacks")] = m_blacks;
     state[QStringLiteral("kelvin")] = m_kelvin;
     state[QStringLiteral("tint")] = m_tint;
     state[QStringLiteral("asShotKelvin")] = m_asShotKelvin;
@@ -271,6 +371,10 @@ void TuneNode::restoreState(const QJsonObject &state)
     setContrast(static_cast<float>(state.value(QStringLiteral("contrast")).toDouble()));
     setSaturation(static_cast<float>(state.value(QStringLiteral("saturation")).toDouble()));
     setVibrance(static_cast<float>(state.value(QStringLiteral("vibrance")).toDouble()));
+    setHighlights(static_cast<float>(state.value(QStringLiteral("highlights")).toDouble()));
+    setShadows(static_cast<float>(state.value(QStringLiteral("shadows")).toDouble()));
+    setWhites(static_cast<float>(state.value(QStringLiteral("whites")).toDouble()));
+    setBlacks(static_cast<float>(state.value(QStringLiteral("blacks")).toDouble()));
 
     // Camera profile (RAW projects); leave the sRGB defaults otherwise.
     if (state.contains(QStringLiteral("camToRgb"))) {
@@ -367,6 +471,17 @@ Image TuneNode::apply(const Image &input) const
     // Keep the result in the float working format (vips_linear/recomb already
     // promoted to float); the pipeline quantises only at display/export.
     Image toned = Image::adopt(cur);
+
+    // 2.5 Tonal regions (highlights/shadows/whites/blacks): after saturation (which
+    //     preserves luma, so the position is equivalent to applying it earlier) and
+    //     before vibrance — matching the shader's applyTone order.
+    if (m_highlights != 0.0f || m_shadows != 0.0f || m_whites != 0.0f
+        || m_blacks != 0.0f) {
+        toned = applyToneRegions(toned, static_cast<double>(m_highlights) / 100.0,
+                                 static_cast<double>(m_shadows) / 100.0,
+                                 static_cast<double>(m_whites) / 100.0,
+                                 static_cast<double>(m_blacks) / 100.0);
+    }
 
     // 3. Vibrance: saturation-aware, per pixel, after saturation (matches the
     //    shader order). Done last among the pointwise tone ops.

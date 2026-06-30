@@ -10,6 +10,10 @@ class QSlider;
 struct ToneValues {
     float exposure = 0.0f;   // EV stops
     float contrast = 0.0f;   // -100..100
+    float highlights = 0.0f; // -100..100 (bright-end region)
+    float shadows = 0.0f;    // -100..100 (dark-end region)
+    float whites = 0.0f;     // -100..100 (white point)
+    float blacks = 0.0f;     // -100..100 (black point)
     float saturation = 0.0f; // -100..100
     float vibrance = 0.0f;   // -100..100 (saturation-aware)
     float kelvin = 6500.0f;  // white-balance colour temperature, Kelvin
@@ -51,6 +55,10 @@ private:
 
     QSlider *m_exposure = nullptr;
     QSlider *m_contrast = nullptr;
+    QSlider *m_highlights = nullptr;
+    QSlider *m_shadows = nullptr;
+    QSlider *m_whites = nullptr;
+    QSlider *m_blacks = nullptr;
     QSlider *m_saturation = nullptr;
     QSlider *m_vibrance = nullptr;
     QSlider *m_kelvin = nullptr;
@@ -59,6 +67,10 @@ private:
     QPushButton *m_wbPicker = nullptr;
     QLabel *m_exposureValue = nullptr;
     QLabel *m_contrastValue = nullptr;
+    QLabel *m_highlightsValue = nullptr;
+    QLabel *m_shadowsValue = nullptr;
+    QLabel *m_whitesValue = nullptr;
+    QLabel *m_blacksValue = nullptr;
     QLabel *m_saturationValue = nullptr;
     QLabel *m_vibranceValue = nullptr;
     QLabel *m_kelvinValue = nullptr;

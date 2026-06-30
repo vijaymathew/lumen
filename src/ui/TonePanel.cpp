@@ -43,6 +43,18 @@ TonePanel::TonePanel(QWidget *parent)
     m_contrast = addRow(QStringLiteral("Contrast"),
                         static_cast<int>(TuneNode::kMinAmount),
                         static_cast<int>(TuneNode::kMaxAmount), &m_contrastValue);
+    m_highlights = addRow(QStringLiteral("Highlights"),
+                          static_cast<int>(TuneNode::kMinAmount),
+                          static_cast<int>(TuneNode::kMaxAmount), &m_highlightsValue);
+    m_shadows = addRow(QStringLiteral("Shadows"),
+                       static_cast<int>(TuneNode::kMinAmount),
+                       static_cast<int>(TuneNode::kMaxAmount), &m_shadowsValue);
+    m_whites = addRow(QStringLiteral("Whites"),
+                      static_cast<int>(TuneNode::kMinAmount),
+                      static_cast<int>(TuneNode::kMaxAmount), &m_whitesValue);
+    m_blacks = addRow(QStringLiteral("Blacks"),
+                      static_cast<int>(TuneNode::kMinAmount),
+                      static_cast<int>(TuneNode::kMaxAmount), &m_blacksValue);
     m_saturation = addRow(QStringLiteral("Saturation"),
                           static_cast<int>(TuneNode::kMinAmount),
                           static_cast<int>(TuneNode::kMaxAmount), &m_saturationValue);
@@ -126,6 +138,10 @@ ToneValues TonePanel::currentValues() const
     ToneValues v;
     v.exposure = static_cast<float>(m_exposure->value()) / kExposureScale;
     v.contrast = static_cast<float>(m_contrast->value());
+    v.highlights = static_cast<float>(m_highlights->value());
+    v.shadows = static_cast<float>(m_shadows->value());
+    v.whites = static_cast<float>(m_whites->value());
+    v.blacks = static_cast<float>(m_blacks->value());
     v.saturation = static_cast<float>(m_saturation->value());
     v.vibrance = static_cast<float>(m_vibrance->value());
     v.kelvin = static_cast<float>(m_kelvin->value());
@@ -144,6 +160,10 @@ void TonePanel::refreshLabels()
             .arg(static_cast<int>(a));
     };
     m_contrastValue->setText(signedInt(v.contrast));
+    m_highlightsValue->setText(signedInt(v.highlights));
+    m_shadowsValue->setText(signedInt(v.shadows));
+    m_whitesValue->setText(signedInt(v.whites));
+    m_blacksValue->setText(signedInt(v.blacks));
     m_saturationValue->setText(signedInt(v.saturation));
     m_vibranceValue->setText(signedInt(v.vibrance));
     m_kelvinValue->setText(QStringLiteral("%1 K").arg(static_cast<int>(v.kelvin)));
@@ -158,8 +178,16 @@ void TonePanel::reveal(const ToneValues &values)
     const QSignalBlocker b4(m_kelvin);
     const QSignalBlocker b5(m_tint);
     const QSignalBlocker b6(m_vibrance);
+    const QSignalBlocker b7(m_highlights);
+    const QSignalBlocker b8(m_shadows);
+    const QSignalBlocker b9(m_whites);
+    const QSignalBlocker b10(m_blacks);
     m_exposure->setValue(static_cast<int>(std::lround(values.exposure * kExposureScale)));
     m_contrast->setValue(static_cast<int>(std::lround(values.contrast)));
+    m_highlights->setValue(static_cast<int>(std::lround(values.highlights)));
+    m_shadows->setValue(static_cast<int>(std::lround(values.shadows)));
+    m_whites->setValue(static_cast<int>(std::lround(values.whites)));
+    m_blacks->setValue(static_cast<int>(std::lround(values.blacks)));
     m_saturation->setValue(static_cast<int>(std::lround(values.saturation)));
     m_vibrance->setValue(static_cast<int>(std::lround(values.vibrance)));
     m_kelvin->setValue(static_cast<int>(std::lround(values.kelvin)));
@@ -214,7 +242,9 @@ bool TonePanel::eventFilter(QObject *watched, QEvent *event)
 {
     if (event->type() == QEvent::KeyPress
         && (watched == m_exposure || watched == m_contrast || watched == m_saturation
-            || watched == m_vibrance || watched == m_kelvin || watched == m_tint)) {
+            || watched == m_vibrance || watched == m_kelvin || watched == m_tint
+            || watched == m_highlights || watched == m_shadows || watched == m_whites
+            || watched == m_blacks)) {
         auto *ke = static_cast<QKeyEvent *>(event);
         switch (ke->key()) {
         case Qt::Key_Escape:

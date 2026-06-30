@@ -3,7 +3,12 @@
 #include "core/EditNode.h"
 
 // TuneNode applies basic global tone: exposure (EV stops), contrast, saturation,
-// and white balance. Highlights/shadows are future work.
+// the tonal-region controls (highlights/shadows/whites/blacks) and white balance.
+//
+// Highlights/shadows/whites/blacks add a luma-derived brightness shift to all
+// channels (so chroma is preserved). Each is a slider amount in [-100,100]; the
+// region weight picks the tonal band. The identical math runs in apply() (libvips)
+// and the GPU shader's applyTone, so preview predicts export. See texture.frag.
 //
 // Exposure is a linear-light multiply of 2^ev. With a power-law gamma that is
 // equivalent to multiplying the encoded (sRGB-ish) values by 2^(ev/2.2), which
@@ -44,6 +49,18 @@ public:
     float vibrance() const { return m_vibrance; }
     void setVibrance(float amount);
 
+    // Tonal-region controls, slider units in [-100, 100], 0 = neutral. Positive
+    // brightens that region, negative darkens (highlights/whites = bright end;
+    // shadows/blacks = dark end).
+    float highlights() const { return m_highlights; }
+    void setHighlights(float amount);
+    float shadows() const { return m_shadows; }
+    void setShadows(float amount);
+    float whites() const { return m_whites; }
+    void setWhites(float amount);
+    float blacks() const { return m_blacks; }
+    void setBlacks(float amount);
+
     // White balance: absolute colour temperature in Kelvin + green(−)/magenta(+)
     // tint. The neutral point is the as-shot temperature (asShotKelvin), at which
     // the WB matrix is the identity (image unchanged).
@@ -79,11 +96,18 @@ private:
     bool wbIsIdentity() const;
     Image applyWhiteBalance(const Image &input, const double W[9]) const;
     Image applyVibrance(const Image &input, double vib) const;
+    // hi/sh/wh/bl are slider/100 amounts in [-1,1]. Per-pixel; matches the shader.
+    Image applyToneRegions(const Image &input, double hi, double sh, double wh,
+                           double bl) const;
 
     float m_exposure = 0.0f;
     float m_contrast = 0.0f;
     float m_saturation = 0.0f;
     float m_vibrance = 0.0f;
+    float m_highlights = 0.0f;
+    float m_shadows = 0.0f;
+    float m_whites = 0.0f;
+    float m_blacks = 0.0f;
 
     // White balance.
     float m_kelvin = kDefaultKelvin;
