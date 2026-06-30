@@ -37,6 +37,8 @@ QJsonObject CropState::toJson() const
     o[QStringLiteral("y")] = rect.y();
     o[QStringLiteral("w")] = rect.width();
     o[QStringLiteral("h")] = rect.height();
+    if (!enabled)
+        o[QStringLiteral("enabled")] = false; // omit the common (true) case
     return o;
 }
 
@@ -50,13 +52,14 @@ CropState CropState::fromJson(const QJsonObject &o)
                     o.value(QStringLiteral("y")).toDouble(0.0),
                     o.value(QStringLiteral("w")).toDouble(1.0),
                     o.value(QStringLiteral("h")).toDouble(1.0));
+    c.enabled = o.value(QStringLiteral("enabled")).toBool(true); // back-compat: true
     c.sanitize();
     return c;
 }
 
 Image applyCrop(const Image &img, const CropState &cropIn)
 {
-    if (img.isNull() || cropIn.isIdentity())
+    if (img.isNull() || !cropIn.enabled || cropIn.isIdentity())
         return img;
     CropState crop = cropIn;
     crop.sanitize();

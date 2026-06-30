@@ -27,6 +27,7 @@
 #include "core/TuneNode.h"
 #include "input/InputController.h"
 
+#include <functional>
 #include <vector>
 
 class CanvasWidget;
@@ -38,6 +39,7 @@ class RawSettingsPanel;
 class HealPanel;
 class HistogramWidget;
 class LayersPanel;
+class AdjustmentsPanel;
 class ColorGradePanel;
 class LensPanel;
 class MaskGizmo;
@@ -190,6 +192,33 @@ private:
     // QImage) from the original; cheap no-op when no correction is active. Called
     // when the lens parameters or the source image change — NOT per heal dab.
     void refreshWorkingSource();
+    // Rebuilds every preview stage from the current graph state (working source →
+    // base bake → selective mask → crop view → preview uniforms). The canonical
+    // "reflect the whole graph" path, used after a load and after Adjustments-panel
+    // toggles/deletes/peeks.
+    void rebuildPreviewFromGraph();
+    // Before/After: toggle showing the un-edited original vs the edited image.
+    void setCompareOriginal(bool on);
+    const QImage &originalImage(); // lazily decoded source for Before/After
+
+    // --- Adjustments panel -------------------------------------------------
+    // One applied edit, exposed to the Adjustments panel. `order` is its position
+    // in the global pipeline (used by the "show up to here" peek).
+    struct Adjustment {
+        QString name;
+        int order = 0;
+        std::function<bool()> isEnabled;
+        std::function<void(bool)> setEnabled;
+        std::function<void()> reset; // delete: remove this edit's effect
+    };
+    void openAdjustmentsTool();  // toggles the Adjustments panel
+    void closeAdjustmentsTool();
+    void rebuildAdjustments();   // re-scan active edits and repaint the panel
+    bool nodeIsActive(const EditNode *node) const; // params differ from neutral
+    void onAdjustmentToggle(int index, bool on);
+    void onAdjustmentDelete(int index);
+    void peekUpTo(int index);    // show the image up to the index-th adjustment
+    void exitPeek();             // leave the peek view, restore the real graph
     void recomputeSelectiveMask(); // uploads the active layer's mask as the overlay
     // The baked passes (heal/denoise/defringe/sharpen) all re-run together, so the
     // busy badge labels by which op the user actually triggered. A handler sets
@@ -280,6 +309,8 @@ private:
     QString m_exportExt = QStringLiteral("jpg"); // remembered export format
     int m_exportQuality = 90;                    // remembered export quality
     QImage m_sourceQImage;               // for colour sampling + preview mask
+    QImage m_originalQImage;             // decoded source, no edits (Before/After); lazy
+    bool m_compareOriginal = false;      // Before/After: show the un-edited original
     QByteArray m_sourceBytes;            // original encoded source, for embedding in .lumen
     QString m_sourceName;                // original source file name
     QString m_projectPath;               // current .lumen path (empty until saved/opened)
@@ -289,6 +320,15 @@ private:
     // Autosave & crash recovery. While m_projectPath is empty, autosave writes
     // m_recoveryPath in ~/.lumen/projects; once saved/opened it targets the user
     // file. The two doc snapshots drive dirty detection without per-edit hooks.
+    // Adjustments panel state. m_adjustments is rebuilt each refresh and is
+    // parallel to the panel's rows (signals carry the row index). Peek is a
+    // transient, non-committed "show up to here" view backed by a graph snapshot.
+    AdjustmentsPanel *m_adjustmentsPanel = nullptr;
+    std::vector<Adjustment> m_adjustments;
+    bool m_peeking = false;
+    QJsonObject m_peekSnapshot;
+    int m_viewCeiling = -1; // index of the peeked-to adjustment, or -1 for full
+
     QTimer *m_autosaveTimer = nullptr;
     QString m_recoveryPath;              // this session's recovery file (lazy; empty = none)
     QByteArray m_openDoc;                // doc as opened/loaded (pristine baseline)

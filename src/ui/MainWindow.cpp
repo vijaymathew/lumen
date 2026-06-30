@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 
 #include "core/Autosave.h"
+#include "core/NodeFactory.h"
 #include "core/HealNode.h"
 #include "core/Image.h"
 #include "core/LayerPreview.h"
@@ -17,6 +18,7 @@
 #include "ui/HealPanel.h"
 #include "ui/HistogramWidget.h"
 #include "ui/LayersPanel.h"
+#include "ui/AdjustmentsPanel.h"
 #include "ui/LensPanel.h"
 #include "ui/MaskGizmo.h"
 #include "ui/ZoneGizmo.h"
@@ -679,6 +681,16 @@ MainWindow::MainWindow(QWidget *parent)
         updatePreview();
     });
 
+    m_adjustmentsPanel = new AdjustmentsPanel(this);
+    connect(m_adjustmentsPanel, &AdjustmentsPanel::compareToggled, this,
+            [this](bool on) { setCompareOriginal(on); });
+    connect(m_adjustmentsPanel, &AdjustmentsPanel::toggleRequested, this,
+            &MainWindow::onAdjustmentToggle);
+    connect(m_adjustmentsPanel, &AdjustmentsPanel::deleteRequested, this,
+            &MainWindow::onAdjustmentDelete);
+    connect(m_adjustmentsPanel, &AdjustmentsPanel::viewUpToRequested, this,
+            &MainWindow::peekUpTo);
+
     m_layersPanel = new LayersPanel(this);
     connect(m_layersPanel, &LayersPanel::addRequested, this, &MainWindow::addAdjustmentLayer);
     connect(m_layersPanel, &LayersPanel::deleteRequested, this, &MainWindow::deleteActiveLayer);
@@ -948,6 +960,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
         {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)")},
         {QStringLiteral("layers"), QStringLiteral("Layers")},
+        {QStringLiteral("adjustments"), QStringLiteral("Adjustments (history)")},
         {QStringLiteral("quit"), QStringLiteral("Quit Lumen")},
     });
 }
@@ -1000,6 +1013,8 @@ void MainWindow::runCommand(const QString &id)
         openHealTool();
     } else if (id == QLatin1String("layers")) {
         openLayersTool();
+    } else if (id == QLatin1String("adjustments")) {
+        openAdjustmentsTool();
     } else if (id == QLatin1String("undo")) {
         doUndo();
     } else if (id == QLatin1String("redo")) {
@@ -1209,7 +1224,9 @@ void MainWindow::deleteRecoveryFile()
 
 void MainWindow::performAutosave()
 {
-    if (m_graph.source().isNull() || m_autosaveInFlight)
+    // Never persist a transient "show up to here" view — its disabled flags aren't
+    // part of the real document.
+    if (m_graph.source().isNull() || m_autosaveInFlight || m_peeking)
         return;
     const QByteArray doc = currentDocBytes();
     if (doc == m_lastAutosaveDoc)
@@ -1268,6 +1285,7 @@ bool MainWindow::flushAutosaveSync()
 
 bool MainWindow::maybeSaveBeforeDiscard()
 {
+    exitPeek(); // restore the real document before any save / serialise / discard
     if (m_graph.source().isNull())
         return true;
     if (!m_projectPath.isEmpty()) {
@@ -1528,6 +1546,16 @@ void MainWindow::toggleFullScreen()
 
 void MainWindow::updatePreview()
 {
+    // Before/After: neutralise every shader stage so the original base shows
+    // through unedited (the base texture is set to the original in refreshBaseImage).
+    if (m_compareOriginal) {
+        m_canvas->setPreviewState(PreviewState{});
+        m_canvas->setCurveLuts(identityChannelLuts());
+        m_canvas->setLut3D(Lut3D{});
+        m_canvas->setVignette(VignetteParams{});
+        return;
+    }
+
     // While actively painting a Brush-mask stroke, force the red overlay on so
     // the strokes you paint to *define* the region are visible even before a tone
     // is dialled in. Once the stroke ends this falls back to the explicit "Show
@@ -2098,9 +2126,10 @@ void MainWindow::updateCropView()
         // Full-frame rule: gizmo/pick tools (mask/zone/heal/eyedropper) operate in
         // the un-oriented full frame so their coordinate mapping stays exact.
         mode = CanvasWidget::CropNone;
-    } else if (!m_graph.crop().isIdentity()) {
+    } else if (!m_graph.crop().isIdentity() && m_graph.crop().enabled) {
         mode = CanvasWidget::CropApplied;
     } else {
+        // No crop, or the crop is toggled off in the Adjustments panel → full frame.
         mode = CanvasWidget::CropNone;
     }
     m_canvas->setCropState(m_graph.crop(), mode);
@@ -2200,6 +2229,217 @@ void MainWindow::updateHistogram()
     }));
 }
 
+void MainWindow::rebuildPreviewFromGraph()
+{
+    refreshWorkingSource();  // re-apply lens (honours its toggle)
+    refreshBaseImage(true);  // re-bake heal/denoise/defringe/sharpen, keep the view
+    recomputeSelectiveMask();
+    updateCropView();        // reflect crop on/off
+    updatePreview();         // pointwise/look/vignette uniforms
+}
+
+const QImage &MainWindow::originalImage()
+{
+    // The decoded source with no edits at all (not even lens), cached. Invalidated
+    // in refreshWorkingSource whenever the source/lens changes.
+    if (m_originalQImage.isNull() && !m_graph.source().isNull())
+        m_originalQImage = m_graph.source().toQImage();
+    return m_originalQImage;
+}
+
+void MainWindow::setCompareOriginal(bool on)
+{
+    if (m_compareOriginal == on || m_graph.source().isNull())
+        return;
+    if (on && m_peeking)
+        exitPeek(); // compare against the real edited image, not a peeked view
+    m_compareOriginal = on;
+    refreshBaseImage(true); // swap the base texture (original ↔ edited)
+    updatePreview();        // swap the shader stage (identity ↔ edits)
+    if (m_adjustmentsPanel->isVisible())
+        rebuildAdjustments(); // keep the panel's Before/After toggle in sync (e.g. '\')
+    showHint(on ? QStringLiteral("Before (original)") : QStringLiteral("After (edited)"));
+}
+
+// --- Adjustments panel -----------------------------------------------------
+
+bool MainWindow::nodeIsActive(const EditNode *node) const
+{
+    if (!node)
+        return false;
+    std::unique_ptr<EditNode> def = createNode(node->typeName());
+    if (!def)
+        return false;
+    // "Active" = parameters differ from a neutral node of the same type. Ignore the
+    // pipeline-enable flag so a toggled-off (but configured) edit still lists.
+    QJsonObject a = node->saveState();
+    QJsonObject b = def->saveState();
+    a.remove(QStringLiteral("enabled"));
+    b.remove(QStringLiteral("enabled"));
+    return a != b;
+}
+
+void MainWindow::rebuildAdjustments()
+{
+    m_adjustments.clear();
+
+    auto addNodeAdj = [this](const QString &name, int order, EditNode *n) {
+        m_adjustments.push_back(
+            {name, order, [n] { return n->isEnabled(); },
+             [n](bool on) { n->setEnabled(on); },
+             [this, n] { n->restoreState(createNode(n->typeName())->saveState()); }});
+    };
+
+    if (!m_graph.source().isNull()) {
+        // Base pipeline, in processing order. Heal and the LAB neighbourhood ops use
+        // an effect predicate (so a configured-but-zero op doesn't list); the rest
+        // use the generic params-differ test.
+        if (nodeIsActive(m_lens))
+            addNodeAdj(QStringLiteral("Lens"), 0, m_lens);
+        if (m_heal && !m_heal->healMask().isEmpty())
+            addNodeAdj(QStringLiteral("Heal"), 1, m_heal);
+        if (const auto v = m_denoise ? m_denoise->values() : DenoiseNode::Values{};
+            v.enabled && (v.luma > 0.0f || v.chroma > 0.0f))
+            addNodeAdj(QStringLiteral("Noise Reduction"), 2, m_denoise);
+        if (const auto v = m_defringe ? m_defringe->values() : DefringeNode::Values{};
+            v.enabled && (v.purple > 0.0f || v.green > 0.0f))
+            addNodeAdj(QStringLiteral("Defringe"), 3, m_defringe);
+        if (const auto v = m_sharpen ? m_sharpen->values() : SharpenNode::Values{};
+            v.enabled && v.amount > 0.0f)
+            addNodeAdj(QStringLiteral("Sharpen"), 4, m_sharpen);
+        if (nodeIsActive(m_tune))
+            addNodeAdj(QStringLiteral("Tone"), 5, m_tune);
+        if (nodeIsActive(m_curves))
+            addNodeAdj(QStringLiteral("Curves"), 6, m_curves);
+        if (nodeIsActive(m_colorGrade))
+            addNodeAdj(QStringLiteral("Color Grade"), 7, m_colorGrade);
+        if (nodeIsActive(m_lutNode))
+            addNodeAdj(QStringLiteral("Look"), 8, m_lutNode);
+        if (nodeIsActive(m_mono))
+            addNodeAdj(QStringLiteral("B&W"), 9, m_mono);
+        if (nodeIsActive(m_grain))
+            addNodeAdj(QStringLiteral("Grain"), 10, m_grain);
+
+        // Selective layers (non-Base), then the final geometric/finishing stages.
+        for (int i = 1; i < m_graph.layerCount(); ++i) {
+            const QString name = m_graph.layer(i).name();
+            m_adjustments.push_back(
+                {name.isEmpty() ? QStringLiteral("Adjustment layer") : name, 100 + i,
+                 [this, i] { return m_graph.layer(i).enabled(); },
+                 [this, i](bool on) { m_graph.layer(i).setEnabled(on); },
+                 [this, i] { m_graph.removeLayer(i); }});
+        }
+        if (!m_graph.crop().isIdentity()) {
+            m_adjustments.push_back(
+                {QStringLiteral("Crop"), 200, [this] { return m_graph.crop().enabled; },
+                 [this](bool on) { CropState c = m_graph.crop(); c.enabled = on; m_graph.setCrop(c); },
+                 [this] { m_graph.setCrop(CropState{}); }});
+        }
+        if (std::abs(m_graph.vignette().amount) > 0.0f) {
+            m_adjustments.push_back(
+                {QStringLiteral("Vignette"), 210, [this] { return m_graph.vignette().enabled; },
+                 [this](bool on) { VignetteParams v = m_graph.vignette(); v.enabled = on; m_graph.setVignette(v); },
+                 [this] { m_graph.setVignette(VignetteParams{}); }});
+        }
+    }
+
+    QVector<AdjustmentsPanel::Item> items;
+    items.reserve(static_cast<int>(m_adjustments.size()));
+    for (const Adjustment &a : m_adjustments)
+        items.push_back({a.name, a.isEnabled()});
+    m_adjustmentsPanel->setItems(items, m_viewCeiling, m_compareOriginal);
+    layoutOverlays(); // size may have changed
+}
+
+void MainWindow::onAdjustmentToggle(int index, bool on)
+{
+    if (m_peeking)
+        exitPeek(); // editing resolves the transient peek
+    if (index < 0 || index >= static_cast<int>(m_adjustments.size()))
+        return;
+    m_adjustments[index].setEnabled(on);
+    m_graph.commit();
+    rebuildPreviewFromGraph();
+    rebuildAdjustments();
+}
+
+void MainWindow::onAdjustmentDelete(int index)
+{
+    if (m_peeking)
+        exitPeek();
+    if (index < 0 || index >= static_cast<int>(m_adjustments.size()))
+        return;
+    m_adjustments[index].reset();
+    m_graph.commit();
+    rebuildPreviewFromGraph();
+    if (m_layersPanel->isVisible())
+        refreshLayersPanel(); // a layer may have been removed
+    reseedOpenPanels();       // an open tool now shows the reset (neutral) values
+    rebuildAdjustments();
+}
+
+void MainWindow::peekUpTo(int index)
+{
+    if (index < 0 || index >= static_cast<int>(m_adjustments.size()))
+        return;
+    if (m_peeking && index == m_viewCeiling) { // clicking the selected row exits
+        exitPeek();
+        return;
+    }
+    if (m_compareOriginal)
+        setCompareOriginal(false); // Before/After and peek are mutually exclusive
+    if (!m_peeking) {
+        m_peekSnapshot = m_graph.saveState(); // the real state to restore on exit
+        m_peeking = true;
+    } else {
+        m_graph.restoreState(m_peekSnapshot); // reset before applying a new ceiling
+    }
+    m_viewCeiling = index;
+    const int ceilingOrder = m_adjustments[index].order;
+    // Hide every adjustment that comes after the selected one in the pipeline.
+    for (const Adjustment &a : m_adjustments)
+        if (a.order > ceilingOrder)
+            a.setEnabled(false);
+    rebuildPreviewFromGraph();
+    rebuildAdjustments(); // repaint with the ceiling row highlighted
+    showHint(QStringLiteral("Showing up to “%1”").arg(m_adjustments[index].name));
+}
+
+void MainWindow::exitPeek()
+{
+    if (!m_peeking)
+        return;
+    m_graph.restoreState(m_peekSnapshot); // back to the real, committed state
+    m_peeking = false;
+    m_viewCeiling = -1;
+    m_peekSnapshot = QJsonObject{};
+    rebuildPreviewFromGraph();
+    if (m_adjustmentsPanel->isVisible())
+        rebuildAdjustments();
+}
+
+void MainWindow::openAdjustmentsTool()
+{
+    if (m_adjustmentsPanel->isVisible()) {
+        closeAdjustmentsTool();
+        return;
+    }
+    const int margin = 18;
+    m_adjustmentsPanel->move(margin, margin); // top-left corner
+    m_adjustmentsPanel->reveal();
+    rebuildAdjustments();
+    layoutOverlays();
+}
+
+void MainWindow::closeAdjustmentsTool()
+{
+    if (m_compareOriginal)
+        setCompareOriginal(false);
+    exitPeek();
+    m_adjustmentsPanel->hide();
+    layoutOverlays();
+}
+
 void MainWindow::refreshWorkingSource()
 {
     const Image &src = m_graph.source();
@@ -2209,10 +2449,12 @@ void MainWindow::refreshWorkingSource()
     }
     // The lens node is a pure function of the source; apply it once and cache so
     // heal dabs (which call refreshBaseImage repeatedly) don't re-warp full res.
-    m_workingSource = m_lens ? m_lens->apply(src) : src;
+    // Honour the pipeline toggle so the Adjustments panel can disable lens.
+    m_workingSource = (m_lens && m_lens->isEnabled()) ? m_lens->apply(src) : src;
     if (m_workingSource.isNull())
         m_workingSource = src; // defensive: never lose the image
     m_sourceQImage = m_workingSource.toQImage(); // display + colour sampling
+    m_originalQImage = QImage(); // Before/After cache: recompute on next compare
 }
 
 void MainWindow::loadLookFile()
@@ -2322,20 +2564,35 @@ void MainWindow::refreshBaseImage(bool keepView)
     const BakeOp triggeredBy = m_bakeOp;
     m_bakeOp = BakeOp::Auto;
 
+    // Before/After: show the un-edited original (no baked ops) within the current
+    // crop framing. updatePreview neutralises the pointwise/look/vignette stage.
+    if (m_compareOriginal) {
+        const QImage &orig = originalImage();
+        if (!orig.isNull())
+            m_canvas->setImage(orig, keepView);
+        return;
+    }
+
     // The GPU preview base = the lens-corrected source with the other "baked"
     // neighbourhood ops applied (heal -> denoise -> defringe -> sharpen); the
     // shader then applies the pointwise/LUT ops on top. With no baked op active,
     // the corrected source (m_sourceQImage) is already the base.
-    const bool healActive = m_heal && !m_heal->healMask().isEmpty();
+    // Each baked op also respects its pipeline toggle (Adjustments panel), so a
+    // disabled node bakes nothing — matching the pointwise/preview-LUT path.
+    const bool healActive =
+        m_heal && m_heal->isEnabled() && !m_heal->healMask().isEmpty();
     const DenoiseNode::Values dv =
         m_denoise ? m_denoise->values() : DenoiseNode::Values{};
-    const bool denoiseActive = dv.enabled && (dv.luma > 0.0f || dv.chroma > 0.0f);
+    const bool denoiseActive = m_denoise && m_denoise->isEnabled() && dv.enabled
+                               && (dv.luma > 0.0f || dv.chroma > 0.0f);
     const DefringeNode::Values fv =
         m_defringe ? m_defringe->values() : DefringeNode::Values{};
-    const bool defringeActive = fv.enabled && (fv.purple > 0.0f || fv.green > 0.0f);
+    const bool defringeActive = m_defringe && m_defringe->isEnabled() && fv.enabled
+                                && (fv.purple > 0.0f || fv.green > 0.0f);
     const SharpenNode::Values sv =
         m_sharpen ? m_sharpen->values() : SharpenNode::Values{};
-    const bool sharpenActive = sv.enabled && sv.amount > 0.0f;
+    const bool sharpenActive =
+        m_sharpen && m_sharpen->isEnabled() && sv.enabled && sv.amount > 0.0f;
     if (m_graph.source().isNull()
         || (!healActive && !denoiseActive && !defringeActive && !sharpenActive)) {
         if (!m_sourceQImage.isNull())
@@ -2691,6 +2948,8 @@ void MainWindow::closeActiveTool()
 
 void MainWindow::doUndo()
 {
+    if (m_peeking)
+        exitPeek(); // history nav resolves the transient peek first
     // While brush-painting, Ctrl+Z is a per-stroke session undo.
     if (m_brushTarget != BrushTarget::None && brushSessionUndo())
         return;
@@ -2700,6 +2959,8 @@ void MainWindow::doUndo()
 
 void MainWindow::doRedo()
 {
+    if (m_peeking)
+        exitPeek();
     if (m_graph.redo())
         afterHistoryChange();
 }
@@ -2767,6 +3028,8 @@ void MainWindow::afterHistoryChange()
         m_brushUndo.clear();
         recomputeSelectiveMask();
     }
+    if (m_adjustmentsPanel->isVisible())
+        rebuildAdjustments(); // history nav changes the active-edit set
 }
 
 void MainWindow::showHint(const QString &text)
@@ -2863,7 +3126,8 @@ void MainWindow::layoutOverlays()
                                static_cast<QWidget *>(m_defringePanel),
                                static_cast<QWidget *>(m_rawPanel),
                                static_cast<QWidget *>(m_healPanel),
-                               static_cast<QWidget *>(m_layersPanel)}) {
+                               static_cast<QWidget *>(m_layersPanel),
+                               static_cast<QWidget *>(m_adjustmentsPanel)}) {
             if (panel && panel->isVisible())
                 panel->raise();
         }
@@ -2904,6 +3168,13 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         return;
     }
 
+    // Before/After: '\' flips between the edited image and the original.
+    if (e->key() == Qt::Key_Backslash && !e->isAutoRepeat()
+        && !m_graph.source().isNull()) {
+        setCompareOriginal(!m_compareOriginal);
+        return;
+    }
+
     // H toggles the overlay geometry while a selective layer is being edited.
     // (Reached only when no brush is active — the brush guard above returns first,
     // so this never clashes with the brush-hardness H binding.)
@@ -2934,7 +3205,15 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
             openCommandPalette();
             return;
         }
-        // Esc dismisses the persistent Layers panel (and its mask editing).
+        // Esc leaves a peek view, then dismisses the persistent panels.
+        if (e->key() == Qt::Key_Escape && m_peeking) {
+            exitPeek();
+            return;
+        }
+        if (e->key() == Qt::Key_Escape && m_adjustmentsPanel->isVisible()) {
+            closeAdjustmentsTool();
+            return;
+        }
         if (e->key() == Qt::Key_Escape && m_layersPanel->isVisible()) {
             hideLayersPanel();
             return;

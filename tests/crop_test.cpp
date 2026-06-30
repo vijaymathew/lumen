@@ -123,6 +123,25 @@ int main(int /*argc*/, char **argv)
         CHECK(back == c);
     }
 
+    // 7. The `enabled` flag: a disabled crop renders as identity but keeps its
+    //    geometry (so it still reports non-identity and round-trips).
+    {
+        CropState c;
+        c.rect = QRectF(0.0, 0.0, 0.5, 0.5);
+        c.enabled = false;
+        CHECK(!c.isIdentity());            // geometry is still present
+        Image out = applyCrop(src, c);     // but disabled → passthrough
+        CHECK(out.width() == W && out.height() == H);
+
+        CropState back = CropState::fromJson(c.toJson());
+        CHECK(back.enabled == false && back == c);
+
+        // Back-compat: a project saved before the flag existed defaults to enabled.
+        QJsonObject legacy = c.toJson();
+        legacy.remove(QStringLiteral("enabled"));
+        CHECK(CropState::fromJson(legacy).enabled == true);
+    }
+
     std::printf("crop_test OK\n");
     return 0;
 }
