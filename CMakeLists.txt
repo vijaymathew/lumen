@@ -93,6 +93,8 @@ add_library(lumen_core STATIC
     src/core/NodeFactory.cpp
     src/core/Project.h
     src/core/Project.cpp
+    src/core/Autosave.h
+    src/core/Autosave.cpp
     src/core/RawLoader.h
     src/core/RawLoader.cpp
     src/core/GuidedFilter.h
@@ -338,6 +340,11 @@ if(BUILD_TESTING)
     target_link_libraries(rawoptions_test PRIVATE lumen_core)
     target_compile_options(rawoptions_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME rawoptions_test COMMAND rawoptions_test)
+
+    add_executable(autosave_test tests/autosave_test.cpp)
+    target_link_libraries(autosave_test PRIVATE lumen_core)
+    target_compile_options(autosave_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME autosave_test COMMAND autosave_test)
 
     add_executable(sharpen_test tests/sharpen_test.cpp)
     target_link_libraries(sharpen_test PRIVATE lumen_core)

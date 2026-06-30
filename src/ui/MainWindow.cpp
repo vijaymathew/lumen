@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 
+#include "core/Autosave.h"
 #include "core/HealNode.h"
 #include "core/Image.h"
 #include "core/LayerPreview.h"
@@ -37,17 +38,21 @@
 #include <cstdio>
 
 #include <QBuffer>
+#include <QCloseEvent>
 #include <QColor>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QJsonDocument>
 #include <QKeyEvent>
 #include <QPainter>
 
 #include <cmath>
 #include <QLabel>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QSettings>
 #include <QShortcut>
 #include <QStandardPaths>
@@ -862,6 +867,26 @@ MainWindow::MainWindow(QWidget *parent)
     new QShortcut(QKeySequence::Undo, this, [this] { doUndo(); });
     new QShortcut(QKeySequence::Redo, this, [this] { doRedo(); });
 
+    // Autosave: a periodic write of the working document so a crash doesn't lose
+    // it. The interval (seconds) is a hidden QSettings knob; the timer only does
+    // real work once a document is open and has changed (performAutosave).
+    const int intervalSec =
+        std::max(1, QSettings().value(QStringLiteral("autosave/intervalSec"), 30).toInt());
+    m_autosaveTimer = new QTimer(this);
+    m_autosaveTimer->setInterval(intervalSec * 1000);
+    connect(m_autosaveTimer, &QTimer::timeout, this, &MainWindow::performAutosave);
+    connect(&m_autosaveWatcher, &QFutureWatcher<bool>::finished, this, [this] {
+        m_autosaveInFlight = false;
+        if (m_autosaveWatcher.result())
+            m_lastAutosaveDoc = m_pendingAutosaveDoc; // committed; skip identical writes
+        else
+            showHint(QStringLiteral("Autosave failed — your work is not yet saved"));
+        m_pendingAutosaveDoc.clear();
+    });
+
+    // Sweep stale crash-recovery files from past sessions on every launch.
+    autosave::purgeOlderThan(autosave::projectsDir(), 7, QDateTime::currentDateTime());
+
     resize(1280, 800);
 }
 
@@ -879,6 +904,8 @@ MainWindow::~MainWindow()
         m_histWatcher.waitForFinished();
     if (m_decodeWatcher.isRunning())
         m_decodeWatcher.waitForFinished();
+    if (m_autosaveWatcher.isRunning())
+        m_autosaveWatcher.waitForFinished();
 }
 
 void MainWindow::buildCommands()
@@ -980,6 +1007,8 @@ void MainWindow::runCommand(const QString &id)
 
 bool MainWindow::openPath(const QString &path)
 {
+    if (!maybeSaveBeforeDiscard()) // guard unsaved work on the current document
+        return false;
     if (path.endsWith(QStringLiteral(".lumen"), Qt::CaseInsensitive))
         return loadProjectFile(path); // a project, not a raw image
 
@@ -1035,6 +1064,11 @@ bool MainWindow::openPath(const QString &path)
     updatePreview();        // apply any existing edits
     m_graph.resetHistory(); // fresh undo timeline for this image
     m_sourcePath = path;
+    // New unsaved document: clear any prior recovery file, baseline the pristine
+    // state (so an unedited open won't autosave), and arm the autosave timer.
+    m_recoveryPath.clear();
+    resetAutosaveBaseline();
+    startAutosave();
     if (m_layersPanel->isVisible())
         refreshLayersPanel();   // the reset dropped any selective layers
     reseedOpenPanels();         // re-sync open tools with the neutral defaults
@@ -1088,31 +1122,181 @@ void MainWindow::saveProject()
     if (!path.endsWith(QStringLiteral(".lumen"), Qt::CaseInsensitive))
         path += QStringLiteral(".lumen");
 
-    // Embed the original bytes; fall back to a PNG of the source if unavailable.
-    QByteArray bytes = m_sourceBytes;
-    QString name = m_sourceName;
-    if (bytes.isEmpty() && !m_sourceQImage.isNull()) {
-        QBuffer buf(&bytes);
-        buf.open(QIODevice::WriteOnly);
-        m_sourceQImage.save(&buf, "PNG");
-        name = QStringLiteral("source.png");
-    }
-
-    // Carry the per-project RAW decode options alongside the edit graph (the
-    // graph stays decode-agnostic; loadProjectFile reads this key back).
-    QJsonObject graph = m_graph.saveState();
-    graph[QStringLiteral("rawOptions")] = m_rawOptions.toJson();
+    QString name;
+    const QByteArray bytes = sourceForSave(&name);
 
     QString error;
-    if (!project::save(path, graph, bytes, name, &error)) {
+    if (!autosave::writeProjectAtomic(path, buildDocGraph(), bytes, name, &error)) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Could not save project: %1").arg(error));
         return;
     }
     m_projectPath = path;
     rememberDir(QStringLiteral("saveProject"), path);
+    // The work now lives in the user's file; autosave targets it from here on and
+    // the transient recovery file is no longer needed.
+    deleteRecoveryFile();
+    resetAutosaveBaseline();
+    startAutosave();
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
     showHint(QStringLiteral("Saved %1").arg(QFileInfo(path).fileName()));
+}
+
+// --- Autosave & crash recovery ---------------------------------------------
+
+QJsonObject MainWindow::buildDocGraph() const
+{
+    // The edit graph plus the per-project RAW decode options — the exact document
+    // a project file persists. (The graph stays decode-agnostic; loadProjectFile
+    // reads the rawOptions key back.)
+    QJsonObject graph = m_graph.saveState();
+    graph[QStringLiteral("rawOptions")] = m_rawOptions.toJson();
+    return graph;
+}
+
+QByteArray MainWindow::currentDocBytes() const
+{
+    return QJsonDocument(buildDocGraph()).toJson(QJsonDocument::Compact);
+}
+
+QByteArray MainWindow::sourceForSave(QString *name) const
+{
+    // Embed the original encoded bytes; fall back to a PNG of the source if they
+    // aren't available (e.g. a source we only hold as a decoded QImage).
+    QByteArray bytes = m_sourceBytes;
+    QString outName = m_sourceName;
+    if (bytes.isEmpty() && !m_sourceQImage.isNull()) {
+        QBuffer buf(&bytes);
+        buf.open(QIODevice::WriteOnly);
+        m_sourceQImage.save(&buf, "PNG");
+        outName = QStringLiteral("source.png");
+    }
+    if (name)
+        *name = outName;
+    return bytes;
+}
+
+void MainWindow::resetAutosaveBaseline()
+{
+    m_openDoc = m_lastAutosaveDoc = currentDocBytes();
+}
+
+void MainWindow::startAutosave()
+{
+    if (!m_graph.source().isNull())
+        m_autosaveTimer->start();
+}
+
+void MainWindow::deleteRecoveryFile()
+{
+    if (m_recoveryPath.isEmpty())
+        return;
+    QFile::remove(m_recoveryPath);
+    QFile::remove(m_recoveryPath + QStringLiteral(".tmp"));
+    m_recoveryPath.clear();
+}
+
+void MainWindow::performAutosave()
+{
+    if (m_graph.source().isNull() || m_autosaveInFlight)
+        return;
+    const QByteArray doc = currentDocBytes();
+    if (doc == m_lastAutosaveDoc)
+        return; // nothing changed since the last write
+    if (m_projectPath.isEmpty() && doc == m_openDoc)
+        return; // opened but never edited — don't spawn a recovery file
+
+    QString target = m_projectPath;
+    if (target.isEmpty()) {
+        if (m_recoveryPath.isEmpty())
+            m_recoveryPath = autosave::newRecoveryPath(
+                autosave::projectsDir(), m_sourceName, QDateTime::currentDateTime());
+        target = m_recoveryPath;
+    }
+    if (target.isEmpty())
+        return; // no writable location (projectsDir failed)
+
+    QString name;
+    const QByteArray bytes = sourceForSave(&name);
+    const QJsonObject graph = buildDocGraph();
+    m_pendingAutosaveDoc = doc;
+    m_autosaveInFlight = true;
+    // Write off the UI thread: embedding the full source can be tens of MB. The
+    // snapshot args are value copies, so the worker touches nothing the UI mutates.
+    m_autosaveWatcher.setFuture(QtConcurrent::run([target, graph, bytes, name] {
+        return autosave::writeProjectAtomic(target, graph, bytes, name);
+    }));
+}
+
+bool MainWindow::flushAutosaveSync()
+{
+    if (m_graph.source().isNull())
+        return true;
+    // Don't race a background write to the same target.
+    if (m_autosaveWatcher.isRunning())
+        m_autosaveWatcher.waitForFinished();
+    m_autosaveInFlight = false;
+
+    const QByteArray doc = currentDocBytes();
+    if (doc == m_lastAutosaveDoc)
+        return true; // already persisted
+    QString target = m_projectPath.isEmpty() ? m_recoveryPath : m_projectPath;
+    if (target.isEmpty()) // unsaved & no recovery file yet → nothing to flush to
+        return true;
+    QString name;
+    const QByteArray bytes = sourceForSave(&name);
+    QString error;
+    if (!autosave::writeProjectAtomic(target, buildDocGraph(), bytes, name, &error)) {
+        QMessageBox::warning(this, QStringLiteral("Lumen"),
+                             QStringLiteral("Could not save your work: %1").arg(error));
+        return false;
+    }
+    m_lastAutosaveDoc = doc;
+    return true;
+}
+
+bool MainWindow::maybeSaveBeforeDiscard()
+{
+    if (m_graph.source().isNull())
+        return true;
+    if (!m_projectPath.isEmpty()) {
+        // A saved document is continuously autosaved to the user's file: flush the
+        // latest edits and discard silently (no prompt). On a write failure, fall
+        // through to the prompt so the user can choose another location.
+        if (flushAutosaveSync())
+            return true;
+    } else if (currentDocBytes() == m_openDoc) {
+        return true; // opened but never edited — nothing to lose
+    }
+
+    const QMessageBox::StandardButton choice = QMessageBox::question(
+        this, QStringLiteral("Lumen"), QStringLiteral("Do you want to save your work?"),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+    if (choice == QMessageBox::Cancel)
+        return false;
+    if (choice == QMessageBox::Discard) {
+        deleteRecoveryFile();
+        return true;
+    }
+    // Save: route through the dialog. The user can still cancel that (or the
+    // write can fail), so confirm the document is actually persisted before we
+    // allow the discard — m_lastAutosaveDoc only advances on a successful write.
+    saveProject();
+    return currentDocBytes() == m_lastAutosaveDoc;
+}
+
+void MainWindow::closeEvent(QCloseEvent *e)
+{
+    if (!maybeSaveBeforeDiscard()) {
+        e->ignore();
+        return;
+    }
+    // Clean exit: drop this session's recovery file so the next launch doesn't
+    // mistake it for a crash.
+    if (m_autosaveTimer)
+        m_autosaveTimer->stop();
+    deleteRecoveryFile();
+    e->accept();
 }
 
 void MainWindow::openProject()
@@ -1123,10 +1307,12 @@ void MainWindow::openProject()
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Open project"), dir,
         QStringLiteral("Lumen project (*.lumen)"));
-    if (!path.isEmpty()) {
-        rememberDir(QStringLiteral("openProject"), path);
-        loadProjectFile(path);
-    }
+    if (path.isEmpty())
+        return;
+    if (!maybeSaveBeforeDiscard()) // don't lose unsaved work on the current doc
+        return;
+    rememberDir(QStringLiteral("openProject"), path);
+    loadProjectFile(path);
 }
 
 bool MainWindow::loadProjectFile(const QString &path)
@@ -1175,11 +1361,78 @@ bool MainWindow::loadProjectFile(const QString &path)
 
     m_projectPath = path;
     m_sourcePath = path; // export defaults to "<project>-edited.<ext>"
+    // A fresh document session: autosave now targets this user file (no recovery
+    // file), and the baseline is the just-loaded state.
+    m_recoveryPath.clear();
+    resetAutosaveBaseline();
+    startAutosave();
     if (m_layersPanel->isVisible())
         refreshLayersPanel();
     reseedOpenPanels(); // re-sync any open adjustment tool with the restored layers
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
     showHint(QStringLiteral("Opened %1").arg(QFileInfo(path).fileName()));
+    return true;
+}
+
+bool MainWindow::restoreRecovery(const QString &path)
+{
+    if (!loadProjectFile(path))
+        return false;
+    // Loaded as a document, but a recovery file is NOT the user's file: keep it as
+    // unsaved work that continues autosaving to this same file and prompts on
+    // close (until the user explicitly Saves to a chosen path).
+    m_projectPath.clear();
+    m_recoveryPath = path;
+    m_sourcePath = m_sourceName; // export naming from the original, not the temp file
+    m_openDoc = QByteArray();    // sentinel: recovered work is treated as unsaved
+    setWindowTitle(
+        QStringLiteral("Lumen — %1 (recovered)").arg(QFileInfo(m_sourceName).fileName()));
+    showHint(QStringLiteral("Restored unsaved work — save it to keep a copy"));
+    return true;
+}
+
+bool MainWindow::offerCrashRecovery()
+{
+    const QStringList files = autosave::findRecoveryFiles(autosave::projectsDir());
+    if (files.isEmpty())
+        return false;
+    const QString newest = files.first();
+
+    // Peek the original source name for a friendlier prompt.
+    QString sourceLabel;
+    project::Project peek;
+    if (project::load(newest, &peek))
+        sourceLabel = peek.sourceName;
+    const QString what = sourceLabel.isEmpty()
+                             ? QStringLiteral("your unsaved work")
+                             : QStringLiteral("your unsaved work on “%1”").arg(sourceLabel);
+
+    QMessageBox box(this);
+    box.setWindowTitle(QStringLiteral("Lumen"));
+    box.setIcon(QMessageBox::Question);
+    box.setText(QStringLiteral("Lumen didn't shut down cleanly last time."));
+    box.setInformativeText(QStringLiteral("Restore %1?").arg(what));
+    QPushButton *restore = box.addButton(QStringLiteral("Restore"), QMessageBox::AcceptRole);
+    box.addButton(QStringLiteral("Discard"), QMessageBox::DestructiveRole);
+    box.setDefaultButton(restore);
+    box.exec();
+
+    if (box.clickedButton() != restore) {
+        for (const QString &f : files) { // discard every leftover recovery file
+            QFile::remove(f);
+            QFile::remove(f + QStringLiteral(".tmp"));
+        }
+        return false;
+    }
+
+    if (!restoreRecovery(newest))
+        return false;
+    for (const QString &f : files) { // the newest is now live; drop the older ones
+        if (f != newest) {
+            QFile::remove(f);
+            QFile::remove(f + QStringLiteral(".tmp"));
+        }
+    }
     return true;
 }
 

@@ -67,8 +67,17 @@ public:
     // Loads an image at startup (e.g. a path passed on the command line).
     bool openPath(const QString &path);
 
+    // Startup crash recovery: if ~/.lumen/projects holds an autosaved document
+    // from a session that didn't shut down cleanly, offer to restore the newest.
+    // Returns true if work was restored. Skipped when an image is opened from the
+    // command line (explicit intent wins). See main().
+    bool offerCrashRecovery();
+
 protected:
     void resizeEvent(QResizeEvent *e) override;
+    // Guards unsaved work: prompts (or silently flushes a saved document) before
+    // the window closes.
+    void closeEvent(QCloseEvent *e) override;
     // Central key handling: catches keys via propagation no matter which child
     // widget has focus, so the active tool can always be closed.
     void keyPressEvent(QKeyEvent *e) override;
@@ -81,6 +90,28 @@ private:
     void saveProject();   // write the current work to a .lumen file
     void openProject();   // pick a .lumen file via dialog, then load it
     bool loadProjectFile(const QString &path); // load a .lumen (source + layers)
+
+    // --- Autosave & crash recovery -----------------------------------------
+    // The current document serialised the way a project is saved: the edit graph
+    // plus the per-project RAW decode options. Used for both writing and for
+    // dirty detection (compare against the open/last-saved baselines).
+    QJsonObject buildDocGraph() const;
+    QByteArray currentDocBytes() const;
+    // The source bytes to embed (original encoded file, or a PNG of the source as
+    // a fallback); *name receives the matching file name.
+    QByteArray sourceForSave(QString *name) const;
+    void startAutosave();        // (re)start the autosave timer for a document
+    void performAutosave();      // timer slot: write if the document changed
+    bool flushAutosaveSync();    // synchronous write to the current target (on close)
+    void deleteRecoveryFile();   // remove this session's recovery file, if any
+    // Returns false only if the user cancels; otherwise the current document may
+    // be safely discarded (saved, flushed, or the user chose to discard).
+    bool maybeSaveBeforeDiscard();
+    // Loads a recovery file as unsaved work (keeps autosaving to it, prompts on
+    // close). Unlike loadProjectFile, it does not adopt the path as the user file.
+    bool restoreRecovery(const QString &path);
+    // Resets the dirty baselines to the current document (called after open/save).
+    void resetAutosaveBaseline();
     void toggleFullScreen();
     void showHint(const QString &text);
     void layoutOverlays();
@@ -244,6 +275,17 @@ private:
     QString m_sourceName;                // original source file name
     QString m_projectPath;               // current .lumen path (empty until saved/opened)
     int m_maskView = 0;                  // selective mask overlay (preview-only)
+
+    // Autosave & crash recovery. While m_projectPath is empty, autosave writes
+    // m_recoveryPath in ~/.lumen/projects; once saved/opened it targets the user
+    // file. The two doc snapshots drive dirty detection without per-edit hooks.
+    QTimer *m_autosaveTimer = nullptr;
+    QString m_recoveryPath;              // this session's recovery file (lazy; empty = none)
+    QByteArray m_openDoc;                // doc as opened/loaded (pristine baseline)
+    QByteArray m_lastAutosaveDoc;        // doc as last persisted (skip redundant writes)
+    QFutureWatcher<bool> m_autosaveWatcher; // off-thread write completion
+    bool m_autosaveInFlight = false;     // single-flight guard
+    QByteArray m_pendingAutosaveDoc;     // doc snapshot the in-flight write carries
 
     // Automatic-RAW configuration. m_rawOptions are decode-time (baked, stored
     // per-project in the .lumen); m_rawLensDefaults seed the lens node on open.
