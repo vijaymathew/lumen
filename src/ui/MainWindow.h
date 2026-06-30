@@ -27,6 +27,7 @@
 #include "core/TuneNode.h"
 #include "input/InputController.h"
 
+#include <functional>
 #include <vector>
 
 class CanvasWidget;
@@ -38,6 +39,7 @@ class RawSettingsPanel;
 class HealPanel;
 class HistogramWidget;
 class LayersPanel;
+class AdjustmentsPanel;
 class ColorGradePanel;
 class LensPanel;
 class MaskGizmo;
@@ -67,8 +69,17 @@ public:
     // Loads an image at startup (e.g. a path passed on the command line).
     bool openPath(const QString &path);
 
+    // Startup crash recovery: if ~/.lumen/projects holds an autosaved document
+    // from a session that didn't shut down cleanly, offer to restore the newest.
+    // Returns true if work was restored. Skipped when an image is opened from the
+    // command line (explicit intent wins). See main().
+    bool offerCrashRecovery();
+
 protected:
     void resizeEvent(QResizeEvent *e) override;
+    // Guards unsaved work: prompts (or silently flushes a saved document) before
+    // the window closes.
+    void closeEvent(QCloseEvent *e) override;
     // Central key handling: catches keys via propagation no matter which child
     // widget has focus, so the active tool can always be closed.
     void keyPressEvent(QKeyEvent *e) override;
@@ -81,6 +92,28 @@ private:
     void saveProject();   // write the current work to a .lumen file
     void openProject();   // pick a .lumen file via dialog, then load it
     bool loadProjectFile(const QString &path); // load a .lumen (source + layers)
+
+    // --- Autosave & crash recovery -----------------------------------------
+    // The current document serialised the way a project is saved: the edit graph
+    // plus the per-project RAW decode options. Used for both writing and for
+    // dirty detection (compare against the open/last-saved baselines).
+    QJsonObject buildDocGraph() const;
+    QByteArray currentDocBytes() const;
+    // The source bytes to embed (original encoded file, or a PNG of the source as
+    // a fallback); *name receives the matching file name.
+    QByteArray sourceForSave(QString *name) const;
+    void startAutosave();        // (re)start the autosave timer for a document
+    void performAutosave();      // timer slot: write if the document changed
+    bool flushAutosaveSync();    // synchronous write to the current target (on close)
+    void deleteRecoveryFile();   // remove this session's recovery file, if any
+    // Returns false only if the user cancels; otherwise the current document may
+    // be safely discarded (saved, flushed, or the user chose to discard).
+    bool maybeSaveBeforeDiscard();
+    // Loads a recovery file as unsaved work (keeps autosaving to it, prompts on
+    // close). Unlike loadProjectFile, it does not adopt the path as the user file.
+    bool restoreRecovery(const QString &path);
+    // Resets the dirty baselines to the current document (called after open/save).
+    void resetAutosaveBaseline();
     void toggleFullScreen();
     void showHint(const QString &text);
     void layoutOverlays();
@@ -101,6 +134,9 @@ private:
     void onLayerMaskEdited(const MaskSpec &spec, bool commit);
     void syncMaskGizmo();      // reflect the active layer's mask into the gizmo
     void syncZoneGizmo();      // reflect the active layer's zone shapes into the gizmo
+    // Show/hide the on-canvas overlay geometry (zone shapes + mask gizmo); a
+    // transient view preference. Hidden is view-only (the mask still renders).
+    void setOverlayGeometryVisible(bool visible);
     void updateMaskEditing();  // enable/disable the canvas brush for a Brush mask
     void endMaskBrushSession(); // commit in-progress mask-brush strokes
     // Installs the RAW camera colour profile on every layer's TuneNode so white
@@ -156,7 +192,40 @@ private:
     // QImage) from the original; cheap no-op when no correction is active. Called
     // when the lens parameters or the source image change — NOT per heal dab.
     void refreshWorkingSource();
+    // Rebuilds every preview stage from the current graph state (working source →
+    // base bake → selective mask → crop view → preview uniforms). The canonical
+    // "reflect the whole graph" path, used after a load and after Adjustments-panel
+    // toggles/deletes/peeks.
+    void rebuildPreviewFromGraph();
+    // Before/After: toggle showing the un-edited original vs the edited image.
+    void setCompareOriginal(bool on);
+    const QImage &originalImage(); // lazily decoded source for Before/After
+
+    // --- Adjustments panel -------------------------------------------------
+    // One applied edit, exposed to the Adjustments panel. `order` is its position
+    // in the global pipeline (used by the "show up to here" peek).
+    struct Adjustment {
+        QString name;
+        int order = 0;
+        std::function<bool()> isEnabled;
+        std::function<void(bool)> setEnabled;
+        std::function<void()> reset; // delete: remove this edit's effect
+    };
+    void openAdjustmentsTool();  // toggles the Adjustments panel
+    void closeAdjustmentsTool();
+    void rebuildAdjustments();   // re-scan active edits and repaint the panel
+    bool nodeIsActive(const EditNode *node) const; // params differ from neutral
+    void onAdjustmentToggle(int index, bool on);
+    void onAdjustmentDelete(int index);
+    void peekUpTo(int index);    // show the image up to the index-th adjustment
+    void exitPeek();             // leave the peek view, restore the real graph
     void recomputeSelectiveMask(); // uploads the active layer's mask as the overlay
+    // The baked passes (heal/denoise/defringe/sharpen) all re-run together, so the
+    // busy badge labels by which op the user actually triggered. A handler sets
+    // m_bakeOp before kicking the bake; refreshBaseImage consumes it for the
+    // label and falls back to precedence when it's Auto (e.g. a load/lens refresh).
+    enum class BakeOp { Auto, Heal, Denoise, Defringe, Sharpen };
+    BakeOp m_bakeOp = BakeOp::Auto;
     // Canvas colour-pick has two purposes: choosing a colour-mask target, or the
     // white-balance eyedropper. `m_pickPurpose` routes the picked point.
     enum class PickPurpose { MaskColour, WhiteBalance };
@@ -192,7 +261,6 @@ private:
     QWidget *m_scrim = nullptr;     // dims the image behind the command palette
     QWidget *m_brushRing = nullptr; // on-canvas brush size/hardness cursor
     QWidget *m_healBusy = nullptr;  // animated badge during async base re-bake (heal/denoise/sharpen)
-    QWidget *m_busyDim = nullptr;   // lighter dim shown while a slow effect applies
     CommandPalette *m_palette = nullptr;
     TonePanel *m_tonePanel = nullptr;
     CurvesPanel *m_curvesPanel = nullptr;
@@ -240,10 +308,33 @@ private:
     QString m_exportExt = QStringLiteral("jpg"); // remembered export format
     int m_exportQuality = 90;                    // remembered export quality
     QImage m_sourceQImage;               // for colour sampling + preview mask
+    QImage m_originalQImage;             // decoded source, no edits (Before/After); lazy
+    bool m_compareOriginal = false;      // Before/After: show the un-edited original
     QByteArray m_sourceBytes;            // original encoded source, for embedding in .lumen
     QString m_sourceName;                // original source file name
     QString m_projectPath;               // current .lumen path (empty until saved/opened)
     int m_maskView = 0;                  // selective mask overlay (preview-only)
+    bool m_overlaysHidden = false;       // user hid the on-canvas gizmo geometry
+
+    // Autosave & crash recovery. While m_projectPath is empty, autosave writes
+    // m_recoveryPath in ~/.lumen/projects; once saved/opened it targets the user
+    // file. The two doc snapshots drive dirty detection without per-edit hooks.
+    // Adjustments panel state. m_adjustments is rebuilt each refresh and is
+    // parallel to the panel's rows (signals carry the row index). Peek is a
+    // transient, non-committed "show up to here" view backed by a graph snapshot.
+    AdjustmentsPanel *m_adjustmentsPanel = nullptr;
+    std::vector<Adjustment> m_adjustments;
+    bool m_peeking = false;
+    QJsonObject m_peekSnapshot;
+    int m_viewCeiling = -1; // index of the peeked-to adjustment, or -1 for full
+
+    QTimer *m_autosaveTimer = nullptr;
+    QString m_recoveryPath;              // this session's recovery file (lazy; empty = none)
+    QByteArray m_openDoc;                // doc as opened/loaded (pristine baseline)
+    QByteArray m_lastAutosaveDoc;        // doc as last persisted (skip redundant writes)
+    QFutureWatcher<bool> m_autosaveWatcher; // off-thread write completion
+    bool m_autosaveInFlight = false;     // single-flight guard
+    QByteArray m_pendingAutosaveDoc;     // doc snapshot the in-flight write carries
 
     // Automatic-RAW configuration. m_rawOptions are decode-time (baked, stored
     // per-project in the .lumen); m_rawLensDefaults seed the lens node on open.

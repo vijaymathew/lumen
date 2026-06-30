@@ -43,6 +43,9 @@ public:
 signals:
     void changed(const std::vector<MaskZoneShape> &shapes);      // live drag
     void editFinished(const std::vector<MaskZoneShape> &shapes); // on commit
+    // Emitted when a finished draw auto-returns the tool to Select, so the host
+    // can re-check the panel's Select button.
+    void toolReset();
 
 protected:
     void paintEvent(QPaintEvent *) override;

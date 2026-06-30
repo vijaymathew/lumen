@@ -38,9 +38,14 @@ int main(int argc, char *argv[])
         MainWindow window;
         window.show();
 
+        // An image named on the command line is an explicit choice and wins over
+        // crash recovery; otherwise offer to restore work from a session that
+        // didn't shut down cleanly.
         const QStringList args = parser.positionalArguments();
         if (!args.isEmpty())
             window.openPath(args.first());
+        else
+            window.offerCrashRecovery();
 
         rc = app.exec();
     }

@@ -40,6 +40,7 @@ public:
     void setBrushParams(int size, int hardness);  // reflect s/h + wheel changes
     void setZoneCount(int n); // update only the zone shape-count label
     void resetZoneTool();     // check the Select tool button (no signal emitted)
+    void setOverlayVisible(bool visible); // sync the Show toggle (no signal emitted)
 
 signals:
     void addRequested();
@@ -64,6 +65,8 @@ signals:
     void zoneModeChanged(bool subtract);
     void zoneFeatherChanged(int percent);
     void zoneClearRequested();
+    // Show/hide the on-canvas overlay geometry (zone shapes + mask gizmo).
+    void overlayVisibilityChanged(bool visible);
 
 protected:
     void mousePressEvent(QMouseEvent *event) override;
@@ -119,6 +122,7 @@ private:
     // Exclusive-zone sub-section.
     QWidget *m_zoneSection = nullptr;
     QVector<QPushButton *> m_zoneToolButtons; // Select/Rect/Oval/Circle/Freehand
+    QPushButton *m_overlayShowButton = nullptr; // toggles overlay-geometry visibility
     QPushButton *m_zoneAddButton = nullptr;
     QPushButton *m_zoneSubButton = nullptr;
     QSlider *m_zoneFeather = nullptr;

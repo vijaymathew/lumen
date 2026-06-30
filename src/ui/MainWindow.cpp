@@ -1,5 +1,7 @@
 #include "ui/MainWindow.h"
 
+#include "core/Autosave.h"
+#include "core/NodeFactory.h"
 #include "core/HealNode.h"
 #include "core/Image.h"
 #include "core/LayerPreview.h"
@@ -16,6 +18,7 @@
 #include "ui/HealPanel.h"
 #include "ui/HistogramWidget.h"
 #include "ui/LayersPanel.h"
+#include "ui/AdjustmentsPanel.h"
 #include "ui/LensPanel.h"
 #include "ui/MaskGizmo.h"
 #include "ui/ZoneGizmo.h"
@@ -37,17 +40,21 @@
 #include <cstdio>
 
 #include <QBuffer>
+#include <QCloseEvent>
 #include <QColor>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QJsonDocument>
 #include <QKeyEvent>
 #include <QPainter>
 
 #include <cmath>
 #include <QLabel>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QSettings>
 #include <QShortcut>
 #include <QStandardPaths>
@@ -136,18 +143,13 @@ private:
     int m_alpha;
 };
 
-// Lighter dim shown while a slow effect is being applied: enough to signal
-// "busy" without hiding the image the user is judging.
-constexpr int kBusyScrimAlpha = 70;
-
 // How long after the last slider tick we wait before kicking the expensive
 // sharpen/denoise base re-bake — long enough to read as "stopped sliding".
 constexpr int kHeavyBakeSettleMs = 800;
 
 // A small badge with an animated spinner, shown while a background base re-bake
-// (heal / denoise / sharpen) is running. The label names the running op. An
-// optional companion dim widget is shown/hidden in lockstep so the image dims
-// only while a slow pass is actually applying. Mouse-transparent.
+// (heal / denoise / sharpen) is running. The label names the running op. The
+// image underneath is left undimmed so it stays judgeable. Mouse-transparent.
 class BusyBadge : public QWidget {
 public:
     explicit BusyBadge(QWidget *parent) : QWidget(parent)
@@ -166,20 +168,12 @@ public:
         m_delay.setSingleShot(true);
         m_delay.setInterval(150);
         connect(&m_delay, &QTimer::timeout, this, [this] {
-            if (m_dim) {
-                m_dim->show();
-                m_dim->raise();
-            }
             show();
             raise();
             m_spin.start();
         });
         hide();
     }
-
-    // The dim is dimmed in lockstep with the badge (shown after the same delay,
-    // hidden on stop()).
-    void setDim(QWidget *dim) { m_dim = dim; }
 
     void setLabel(const QString &label)
     {
@@ -201,8 +195,6 @@ public:
         m_delay.stop(); // cancel a pending show if the op finished in time
         m_spin.stop();
         hide();
-        if (m_dim)
-            m_dim->hide();
     }
 
 protected:
@@ -248,7 +240,6 @@ private:
     int m_angle = 0;
     int m_sweep = 0; // 0..99 progress-strip position
     QString m_label = QStringLiteral("Healing…");
-    QWidget *m_dim = nullptr; // companion dim, shown/hidden with the badge
 };
 
 // A transparent overlay that draws the brush cursor: an outer ring (size) and a
@@ -357,14 +348,9 @@ MainWindow::MainWindow(QWidget *parent)
                 brushRing->setRing(inWindow, outer, inner, visible);
             });
 
-    // Lighter dim shown while a slow effect applies; behind the badge, above
-    // the canvas. Created before the badge so the badge stacks above it.
-    m_busyDim = new Scrim(this, kBusyScrimAlpha);
-    m_busyDim->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_busyDim->hide();
-
+    // Progress badge for slow background passes. The image is intentionally NOT
+    // dimmed while it runs, so the user can keep judging the picture.
     auto *busyBadge = new BusyBadge(this);
-    busyBadge->setDim(m_busyDim);
     m_healBusy = busyBadge;
 
     // Created before the palette so the palette stacks above it.
@@ -467,6 +453,7 @@ MainWindow::MainWindow(QWidget *parent)
                 m_sharpen->setValues(v);
                 // Sharpen bakes into the base; coalesce drags so we don't kick a
                 // full-res pass per tick.
+                m_bakeOp = BakeOp::Sharpen;
                 m_bakeTimer->start();
             });
     connect(m_sharpenPanel, &SharpenPanel::closed, this, &MainWindow::closeSharpenTool);
@@ -534,6 +521,7 @@ MainWindow::MainWindow(QWidget *parent)
                 m_denoise->setValues(v);
                 // Denoise bakes into the base; coalesce drags (it's a full-res
                 // LAB pass) just like sharpen.
+                m_bakeOp = BakeOp::Denoise;
                 m_bakeTimer->start();
             });
     connect(m_denoisePanel, &DenoisePanel::closed, this, &MainWindow::closeDenoiseTool);
@@ -546,6 +534,7 @@ MainWindow::MainWindow(QWidget *parent)
                 m_defringe->setValues(v);
                 // Defringe bakes into the base (a full-res LAB pass); coalesce
                 // drags like denoise/sharpen.
+                m_bakeOp = BakeOp::Defringe;
                 m_bakeTimer->start();
             });
     connect(m_defringePanel, &DefringePanel::closed, this, &MainWindow::closeDefringeTool);
@@ -671,6 +660,16 @@ MainWindow::MainWindow(QWidget *parent)
         updatePreview();
     });
 
+    m_adjustmentsPanel = new AdjustmentsPanel(this);
+    connect(m_adjustmentsPanel, &AdjustmentsPanel::compareToggled, this,
+            [this](bool on) { setCompareOriginal(on); });
+    connect(m_adjustmentsPanel, &AdjustmentsPanel::toggleRequested, this,
+            &MainWindow::onAdjustmentToggle);
+    connect(m_adjustmentsPanel, &AdjustmentsPanel::deleteRequested, this,
+            &MainWindow::onAdjustmentDelete);
+    connect(m_adjustmentsPanel, &AdjustmentsPanel::viewUpToRequested, this,
+            &MainWindow::peekUpTo);
+
     m_layersPanel = new LayersPanel(this);
     connect(m_layersPanel, &LayersPanel::addRequested, this, &MainWindow::addAdjustmentLayer);
     connect(m_layersPanel, &LayersPanel::deleteRequested, this, &MainWindow::deleteActiveLayer);
@@ -789,6 +788,9 @@ MainWindow::MainWindow(QWidget *parent)
             [applyZones](const std::vector<MaskZoneShape> &s) { applyZones(s, false); });
     connect(m_zoneGizmo, &ZoneGizmo::editFinished, this,
             [applyZones](const std::vector<MaskZoneShape> &s) { applyZones(s, true); });
+    // After a shape is drawn the gizmo returns to Select; reflect that on the panel.
+    connect(m_zoneGizmo, &ZoneGizmo::toolReset, this,
+            [this] { m_layersPanel->resetZoneTool(); });
     connect(m_canvas, &CanvasWidget::viewChanged, m_zoneGizmo, &ZoneGizmo::refresh);
 
     // On-canvas crop rectangle editor (only visible while the Crop tool is open).
@@ -809,9 +811,14 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_canvas, &CanvasWidget::viewChanged, m_cropGizmo, [this] { m_cropGizmo->update(); });
 
     connect(m_layersPanel, &LayersPanel::zoneToolChanged, this, [this](int tool) {
+        // Engaging a tool implies you want to see the overlay: un-hide first.
+        if (m_overlaysHidden)
+            setOverlayGeometryVisible(true);
         m_zoneGizmo->setTool(static_cast<ZoneGizmo::Tool>(tool));
         syncZoneGizmo(); // ensure it is shown while a tool is engaged
     });
+    connect(m_layersPanel, &LayersPanel::overlayVisibilityChanged, this,
+            [this](bool visible) { setOverlayGeometryVisible(visible); });
     connect(m_layersPanel, &LayersPanel::zoneModeChanged, this,
             [this](bool subtract) { m_zoneGizmo->setSubtract(subtract); });
     connect(m_layersPanel, &LayersPanel::zoneFeatherChanged, this, [this](int percent) {
@@ -862,6 +869,26 @@ MainWindow::MainWindow(QWidget *parent)
     new QShortcut(QKeySequence::Undo, this, [this] { doUndo(); });
     new QShortcut(QKeySequence::Redo, this, [this] { doRedo(); });
 
+    // Autosave: a periodic write of the working document so a crash doesn't lose
+    // it. The interval (seconds) is a hidden QSettings knob; the timer only does
+    // real work once a document is open and has changed (performAutosave).
+    const int intervalSec =
+        std::max(1, QSettings().value(QStringLiteral("autosave/intervalSec"), 30).toInt());
+    m_autosaveTimer = new QTimer(this);
+    m_autosaveTimer->setInterval(intervalSec * 1000);
+    connect(m_autosaveTimer, &QTimer::timeout, this, &MainWindow::performAutosave);
+    connect(&m_autosaveWatcher, &QFutureWatcher<bool>::finished, this, [this] {
+        m_autosaveInFlight = false;
+        if (m_autosaveWatcher.result())
+            m_lastAutosaveDoc = m_pendingAutosaveDoc; // committed; skip identical writes
+        else
+            showHint(QStringLiteral("Autosave failed — your work is not yet saved"));
+        m_pendingAutosaveDoc.clear();
+    });
+
+    // Sweep stale crash-recovery files from past sessions on every launch.
+    autosave::purgeOlderThan(autosave::projectsDir(), 7, QDateTime::currentDateTime());
+
     resize(1280, 800);
 }
 
@@ -879,6 +906,8 @@ MainWindow::~MainWindow()
         m_histWatcher.waitForFinished();
     if (m_decodeWatcher.isRunning())
         m_decodeWatcher.waitForFinished();
+    if (m_autosaveWatcher.isRunning())
+        m_autosaveWatcher.waitForFinished();
 }
 
 void MainWindow::buildCommands()
@@ -910,6 +939,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("heal"), QStringLiteral("Healing brush")},
         {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)")},
         {QStringLiteral("layers"), QStringLiteral("Layers")},
+        {QStringLiteral("adjustments"), QStringLiteral("Adjustments (history)")},
         {QStringLiteral("quit"), QStringLiteral("Quit Lumen")},
     });
 }
@@ -962,6 +992,8 @@ void MainWindow::runCommand(const QString &id)
         openHealTool();
     } else if (id == QLatin1String("layers")) {
         openLayersTool();
+    } else if (id == QLatin1String("adjustments")) {
+        openAdjustmentsTool();
     } else if (id == QLatin1String("undo")) {
         doUndo();
     } else if (id == QLatin1String("redo")) {
@@ -980,6 +1012,8 @@ void MainWindow::runCommand(const QString &id)
 
 bool MainWindow::openPath(const QString &path)
 {
+    if (!maybeSaveBeforeDiscard()) // guard unsaved work on the current document
+        return false;
     if (path.endsWith(QStringLiteral(".lumen"), Qt::CaseInsensitive))
         return loadProjectFile(path); // a project, not a raw image
 
@@ -1035,6 +1069,11 @@ bool MainWindow::openPath(const QString &path)
     updatePreview();        // apply any existing edits
     m_graph.resetHistory(); // fresh undo timeline for this image
     m_sourcePath = path;
+    // New unsaved document: clear any prior recovery file, baseline the pristine
+    // state (so an unedited open won't autosave), and arm the autosave timer.
+    m_recoveryPath.clear();
+    resetAutosaveBaseline();
+    startAutosave();
     if (m_layersPanel->isVisible())
         refreshLayersPanel();   // the reset dropped any selective layers
     reseedOpenPanels();         // re-sync open tools with the neutral defaults
@@ -1088,31 +1127,184 @@ void MainWindow::saveProject()
     if (!path.endsWith(QStringLiteral(".lumen"), Qt::CaseInsensitive))
         path += QStringLiteral(".lumen");
 
-    // Embed the original bytes; fall back to a PNG of the source if unavailable.
-    QByteArray bytes = m_sourceBytes;
-    QString name = m_sourceName;
-    if (bytes.isEmpty() && !m_sourceQImage.isNull()) {
-        QBuffer buf(&bytes);
-        buf.open(QIODevice::WriteOnly);
-        m_sourceQImage.save(&buf, "PNG");
-        name = QStringLiteral("source.png");
-    }
-
-    // Carry the per-project RAW decode options alongside the edit graph (the
-    // graph stays decode-agnostic; loadProjectFile reads this key back).
-    QJsonObject graph = m_graph.saveState();
-    graph[QStringLiteral("rawOptions")] = m_rawOptions.toJson();
+    QString name;
+    const QByteArray bytes = sourceForSave(&name);
 
     QString error;
-    if (!project::save(path, graph, bytes, name, &error)) {
+    if (!autosave::writeProjectAtomic(path, buildDocGraph(), bytes, name, &error)) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Could not save project: %1").arg(error));
         return;
     }
     m_projectPath = path;
     rememberDir(QStringLiteral("saveProject"), path);
+    // The work now lives in the user's file; autosave targets it from here on and
+    // the transient recovery file is no longer needed.
+    deleteRecoveryFile();
+    resetAutosaveBaseline();
+    startAutosave();
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
     showHint(QStringLiteral("Saved %1").arg(QFileInfo(path).fileName()));
+}
+
+// --- Autosave & crash recovery ---------------------------------------------
+
+QJsonObject MainWindow::buildDocGraph() const
+{
+    // The edit graph plus the per-project RAW decode options — the exact document
+    // a project file persists. (The graph stays decode-agnostic; loadProjectFile
+    // reads the rawOptions key back.)
+    QJsonObject graph = m_graph.saveState();
+    graph[QStringLiteral("rawOptions")] = m_rawOptions.toJson();
+    return graph;
+}
+
+QByteArray MainWindow::currentDocBytes() const
+{
+    return QJsonDocument(buildDocGraph()).toJson(QJsonDocument::Compact);
+}
+
+QByteArray MainWindow::sourceForSave(QString *name) const
+{
+    // Embed the original encoded bytes; fall back to a PNG of the source if they
+    // aren't available (e.g. a source we only hold as a decoded QImage).
+    QByteArray bytes = m_sourceBytes;
+    QString outName = m_sourceName;
+    if (bytes.isEmpty() && !m_sourceQImage.isNull()) {
+        QBuffer buf(&bytes);
+        buf.open(QIODevice::WriteOnly);
+        m_sourceQImage.save(&buf, "PNG");
+        outName = QStringLiteral("source.png");
+    }
+    if (name)
+        *name = outName;
+    return bytes;
+}
+
+void MainWindow::resetAutosaveBaseline()
+{
+    m_openDoc = m_lastAutosaveDoc = currentDocBytes();
+}
+
+void MainWindow::startAutosave()
+{
+    if (!m_graph.source().isNull())
+        m_autosaveTimer->start();
+}
+
+void MainWindow::deleteRecoveryFile()
+{
+    if (m_recoveryPath.isEmpty())
+        return;
+    QFile::remove(m_recoveryPath);
+    QFile::remove(m_recoveryPath + QStringLiteral(".tmp"));
+    m_recoveryPath.clear();
+}
+
+void MainWindow::performAutosave()
+{
+    // Never persist a transient "show up to here" view — its disabled flags aren't
+    // part of the real document.
+    if (m_graph.source().isNull() || m_autosaveInFlight || m_peeking)
+        return;
+    const QByteArray doc = currentDocBytes();
+    if (doc == m_lastAutosaveDoc)
+        return; // nothing changed since the last write
+    if (m_projectPath.isEmpty() && doc == m_openDoc)
+        return; // opened but never edited — don't spawn a recovery file
+
+    QString target = m_projectPath;
+    if (target.isEmpty()) {
+        if (m_recoveryPath.isEmpty())
+            m_recoveryPath = autosave::newRecoveryPath(
+                autosave::projectsDir(), m_sourceName, QDateTime::currentDateTime());
+        target = m_recoveryPath;
+    }
+    if (target.isEmpty())
+        return; // no writable location (projectsDir failed)
+
+    QString name;
+    const QByteArray bytes = sourceForSave(&name);
+    const QJsonObject graph = buildDocGraph();
+    m_pendingAutosaveDoc = doc;
+    m_autosaveInFlight = true;
+    // Write off the UI thread: embedding the full source can be tens of MB. The
+    // snapshot args are value copies, so the worker touches nothing the UI mutates.
+    m_autosaveWatcher.setFuture(QtConcurrent::run([target, graph, bytes, name] {
+        return autosave::writeProjectAtomic(target, graph, bytes, name);
+    }));
+}
+
+bool MainWindow::flushAutosaveSync()
+{
+    if (m_graph.source().isNull())
+        return true;
+    // Don't race a background write to the same target.
+    if (m_autosaveWatcher.isRunning())
+        m_autosaveWatcher.waitForFinished();
+    m_autosaveInFlight = false;
+
+    const QByteArray doc = currentDocBytes();
+    if (doc == m_lastAutosaveDoc)
+        return true; // already persisted
+    QString target = m_projectPath.isEmpty() ? m_recoveryPath : m_projectPath;
+    if (target.isEmpty()) // unsaved & no recovery file yet → nothing to flush to
+        return true;
+    QString name;
+    const QByteArray bytes = sourceForSave(&name);
+    QString error;
+    if (!autosave::writeProjectAtomic(target, buildDocGraph(), bytes, name, &error)) {
+        QMessageBox::warning(this, QStringLiteral("Lumen"),
+                             QStringLiteral("Could not save your work: %1").arg(error));
+        return false;
+    }
+    m_lastAutosaveDoc = doc;
+    return true;
+}
+
+bool MainWindow::maybeSaveBeforeDiscard()
+{
+    exitPeek(); // restore the real document before any save / serialise / discard
+    if (m_graph.source().isNull())
+        return true;
+    if (!m_projectPath.isEmpty()) {
+        // A saved document is continuously autosaved to the user's file: flush the
+        // latest edits and discard silently (no prompt). On a write failure, fall
+        // through to the prompt so the user can choose another location.
+        if (flushAutosaveSync())
+            return true;
+    } else if (currentDocBytes() == m_openDoc) {
+        return true; // opened but never edited — nothing to lose
+    }
+
+    const QMessageBox::StandardButton choice = QMessageBox::question(
+        this, QStringLiteral("Lumen"), QStringLiteral("Do you want to save your work?"),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+    if (choice == QMessageBox::Cancel)
+        return false;
+    if (choice == QMessageBox::Discard) {
+        deleteRecoveryFile();
+        return true;
+    }
+    // Save: route through the dialog. The user can still cancel that (or the
+    // write can fail), so confirm the document is actually persisted before we
+    // allow the discard — m_lastAutosaveDoc only advances on a successful write.
+    saveProject();
+    return currentDocBytes() == m_lastAutosaveDoc;
+}
+
+void MainWindow::closeEvent(QCloseEvent *e)
+{
+    if (!maybeSaveBeforeDiscard()) {
+        e->ignore();
+        return;
+    }
+    // Clean exit: drop this session's recovery file so the next launch doesn't
+    // mistake it for a crash.
+    if (m_autosaveTimer)
+        m_autosaveTimer->stop();
+    deleteRecoveryFile();
+    e->accept();
 }
 
 void MainWindow::openProject()
@@ -1123,10 +1315,12 @@ void MainWindow::openProject()
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Open project"), dir,
         QStringLiteral("Lumen project (*.lumen)"));
-    if (!path.isEmpty()) {
-        rememberDir(QStringLiteral("openProject"), path);
-        loadProjectFile(path);
-    }
+    if (path.isEmpty())
+        return;
+    if (!maybeSaveBeforeDiscard()) // don't lose unsaved work on the current doc
+        return;
+    rememberDir(QStringLiteral("openProject"), path);
+    loadProjectFile(path);
 }
 
 bool MainWindow::loadProjectFile(const QString &path)
@@ -1175,11 +1369,78 @@ bool MainWindow::loadProjectFile(const QString &path)
 
     m_projectPath = path;
     m_sourcePath = path; // export defaults to "<project>-edited.<ext>"
+    // A fresh document session: autosave now targets this user file (no recovery
+    // file), and the baseline is the just-loaded state.
+    m_recoveryPath.clear();
+    resetAutosaveBaseline();
+    startAutosave();
     if (m_layersPanel->isVisible())
         refreshLayersPanel();
     reseedOpenPanels(); // re-sync any open adjustment tool with the restored layers
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
     showHint(QStringLiteral("Opened %1").arg(QFileInfo(path).fileName()));
+    return true;
+}
+
+bool MainWindow::restoreRecovery(const QString &path)
+{
+    if (!loadProjectFile(path))
+        return false;
+    // Loaded as a document, but a recovery file is NOT the user's file: keep it as
+    // unsaved work that continues autosaving to this same file and prompts on
+    // close (until the user explicitly Saves to a chosen path).
+    m_projectPath.clear();
+    m_recoveryPath = path;
+    m_sourcePath = m_sourceName; // export naming from the original, not the temp file
+    m_openDoc = QByteArray();    // sentinel: recovered work is treated as unsaved
+    setWindowTitle(
+        QStringLiteral("Lumen — %1 (recovered)").arg(QFileInfo(m_sourceName).fileName()));
+    showHint(QStringLiteral("Restored unsaved work — save it to keep a copy"));
+    return true;
+}
+
+bool MainWindow::offerCrashRecovery()
+{
+    const QStringList files = autosave::findRecoveryFiles(autosave::projectsDir());
+    if (files.isEmpty())
+        return false;
+    const QString newest = files.first();
+
+    // Peek the original source name for a friendlier prompt.
+    QString sourceLabel;
+    project::Project peek;
+    if (project::load(newest, &peek))
+        sourceLabel = peek.sourceName;
+    const QString what = sourceLabel.isEmpty()
+                             ? QStringLiteral("your unsaved work")
+                             : QStringLiteral("your unsaved work on “%1”").arg(sourceLabel);
+
+    QMessageBox box(this);
+    box.setWindowTitle(QStringLiteral("Lumen"));
+    box.setIcon(QMessageBox::Question);
+    box.setText(QStringLiteral("Lumen didn't shut down cleanly last time."));
+    box.setInformativeText(QStringLiteral("Restore %1?").arg(what));
+    QPushButton *restore = box.addButton(QStringLiteral("Restore"), QMessageBox::AcceptRole);
+    box.addButton(QStringLiteral("Discard"), QMessageBox::DestructiveRole);
+    box.setDefaultButton(restore);
+    box.exec();
+
+    if (box.clickedButton() != restore) {
+        for (const QString &f : files) { // discard every leftover recovery file
+            QFile::remove(f);
+            QFile::remove(f + QStringLiteral(".tmp"));
+        }
+        return false;
+    }
+
+    if (!restoreRecovery(newest))
+        return false;
+    for (const QString &f : files) { // the newest is now live; drop the older ones
+        if (f != newest) {
+            QFile::remove(f);
+            QFile::remove(f + QStringLiteral(".tmp"));
+        }
+    }
     return true;
 }
 
@@ -1264,6 +1525,16 @@ void MainWindow::toggleFullScreen()
 
 void MainWindow::updatePreview()
 {
+    // Before/After: neutralise every shader stage so the original base shows
+    // through unedited (the base texture is set to the original in refreshBaseImage).
+    if (m_compareOriginal) {
+        m_canvas->setPreviewState(PreviewState{});
+        m_canvas->setCurveLuts(identityChannelLuts());
+        m_canvas->setLut3D(Lut3D{});
+        m_canvas->setVignette(VignetteParams{});
+        return;
+    }
+
     // While actively painting a Brush-mask stroke, force the red overlay on so
     // the strokes you paint to *define* the region are visible even before a tone
     // is dialled in. Once the stroke ends this falls back to the explicit "Show
@@ -1576,8 +1847,9 @@ void MainWindow::onLayerMaskEdited(const MaskSpec &spec, bool commit)
 
 void MainWindow::syncMaskGizmo()
 {
-    // The gizmo shows itself only for gradient/radial masks on a non-Base layer.
-    if (m_graph.activeLayerIndex() == 0)
+    // The gizmo shows itself only for gradient/radial masks on a non-Base layer —
+    // and never while the user has hidden the overlay geometry.
+    if (m_overlaysHidden || m_graph.activeLayerIndex() == 0)
         m_maskGizmo->setSpec(MaskSpec{}); // None → hides
     else
         m_maskGizmo->setSpec(m_graph.activeLayer().mask());
@@ -1587,8 +1859,9 @@ void MainWindow::syncMaskGizmo()
 void MainWindow::syncZoneGizmo()
 {
     // Zones are edited only on a non-Base layer while the Layers panel (which
-    // hosts the zone controls) is open. Otherwise the editor stays hidden.
-    const bool active = m_graph.activeLayerIndex() != 0 && m_layersPanel->isVisible();
+    // hosts the zone controls) is open, and never while overlays are hidden.
+    const bool active = !m_overlaysHidden && m_graph.activeLayerIndex() != 0
+                        && m_layersPanel->isVisible();
     if (!active) {
         m_zoneGizmo->setVisible(false);
         layoutOverlays();
@@ -1597,6 +1870,16 @@ void MainWindow::syncZoneGizmo()
     m_zoneGizmo->setShapes(m_graph.activeLayer().mask().zones);
     m_zoneGizmo->setVisible(true);
     layoutOverlays();
+}
+
+void MainWindow::setOverlayGeometryVisible(bool visible)
+{
+    m_overlaysHidden = !visible;
+    m_layersPanel->setOverlayVisible(visible); // keep the panel toggle in sync
+    syncMaskGizmo();
+    syncZoneGizmo();
+    showHint(visible ? QStringLiteral("Overlay shapes shown")
+                     : QStringLiteral("Overlay shapes hidden"));
 }
 
 void MainWindow::openToneTool()
@@ -1822,9 +2105,10 @@ void MainWindow::updateCropView()
         // Full-frame rule: gizmo/pick tools (mask/zone/heal/eyedropper) operate in
         // the un-oriented full frame so their coordinate mapping stays exact.
         mode = CanvasWidget::CropNone;
-    } else if (!m_graph.crop().isIdentity()) {
+    } else if (!m_graph.crop().isIdentity() && m_graph.crop().enabled) {
         mode = CanvasWidget::CropApplied;
     } else {
+        // No crop, or the crop is toggled off in the Adjustments panel → full frame.
         mode = CanvasWidget::CropNone;
     }
     m_canvas->setCropState(m_graph.crop(), mode);
@@ -1924,6 +2208,217 @@ void MainWindow::updateHistogram()
     }));
 }
 
+void MainWindow::rebuildPreviewFromGraph()
+{
+    refreshWorkingSource();  // re-apply lens (honours its toggle)
+    refreshBaseImage(true);  // re-bake heal/denoise/defringe/sharpen, keep the view
+    recomputeSelectiveMask();
+    updateCropView();        // reflect crop on/off
+    updatePreview();         // pointwise/look/vignette uniforms
+}
+
+const QImage &MainWindow::originalImage()
+{
+    // The decoded source with no edits at all (not even lens), cached. Invalidated
+    // in refreshWorkingSource whenever the source/lens changes.
+    if (m_originalQImage.isNull() && !m_graph.source().isNull())
+        m_originalQImage = m_graph.source().toQImage();
+    return m_originalQImage;
+}
+
+void MainWindow::setCompareOriginal(bool on)
+{
+    if (m_compareOriginal == on || m_graph.source().isNull())
+        return;
+    if (on && m_peeking)
+        exitPeek(); // compare against the real edited image, not a peeked view
+    m_compareOriginal = on;
+    refreshBaseImage(true); // swap the base texture (original ↔ edited)
+    updatePreview();        // swap the shader stage (identity ↔ edits)
+    if (m_adjustmentsPanel->isVisible())
+        rebuildAdjustments(); // keep the panel's Before/After toggle in sync (e.g. '\')
+    showHint(on ? QStringLiteral("Before (original)") : QStringLiteral("After (edited)"));
+}
+
+// --- Adjustments panel -----------------------------------------------------
+
+bool MainWindow::nodeIsActive(const EditNode *node) const
+{
+    if (!node)
+        return false;
+    std::unique_ptr<EditNode> def = createNode(node->typeName());
+    if (!def)
+        return false;
+    // "Active" = parameters differ from a neutral node of the same type. Ignore the
+    // pipeline-enable flag so a toggled-off (but configured) edit still lists.
+    QJsonObject a = node->saveState();
+    QJsonObject b = def->saveState();
+    a.remove(QStringLiteral("enabled"));
+    b.remove(QStringLiteral("enabled"));
+    return a != b;
+}
+
+void MainWindow::rebuildAdjustments()
+{
+    m_adjustments.clear();
+
+    auto addNodeAdj = [this](const QString &name, int order, EditNode *n) {
+        m_adjustments.push_back(
+            {name, order, [n] { return n->isEnabled(); },
+             [n](bool on) { n->setEnabled(on); },
+             [this, n] { n->restoreState(createNode(n->typeName())->saveState()); }});
+    };
+
+    if (!m_graph.source().isNull()) {
+        // Base pipeline, in processing order. Heal and the LAB neighbourhood ops use
+        // an effect predicate (so a configured-but-zero op doesn't list); the rest
+        // use the generic params-differ test.
+        if (nodeIsActive(m_lens))
+            addNodeAdj(QStringLiteral("Lens"), 0, m_lens);
+        if (m_heal && !m_heal->healMask().isEmpty())
+            addNodeAdj(QStringLiteral("Heal"), 1, m_heal);
+        if (const auto v = m_denoise ? m_denoise->values() : DenoiseNode::Values{};
+            v.enabled && (v.luma > 0.0f || v.chroma > 0.0f))
+            addNodeAdj(QStringLiteral("Noise Reduction"), 2, m_denoise);
+        if (const auto v = m_defringe ? m_defringe->values() : DefringeNode::Values{};
+            v.enabled && (v.purple > 0.0f || v.green > 0.0f))
+            addNodeAdj(QStringLiteral("Defringe"), 3, m_defringe);
+        if (const auto v = m_sharpen ? m_sharpen->values() : SharpenNode::Values{};
+            v.enabled && v.amount > 0.0f)
+            addNodeAdj(QStringLiteral("Sharpen"), 4, m_sharpen);
+        if (nodeIsActive(m_tune))
+            addNodeAdj(QStringLiteral("Tone"), 5, m_tune);
+        if (nodeIsActive(m_curves))
+            addNodeAdj(QStringLiteral("Curves"), 6, m_curves);
+        if (nodeIsActive(m_colorGrade))
+            addNodeAdj(QStringLiteral("Color Grade"), 7, m_colorGrade);
+        if (nodeIsActive(m_lutNode))
+            addNodeAdj(QStringLiteral("Look"), 8, m_lutNode);
+        if (nodeIsActive(m_mono))
+            addNodeAdj(QStringLiteral("B&W"), 9, m_mono);
+        if (nodeIsActive(m_grain))
+            addNodeAdj(QStringLiteral("Grain"), 10, m_grain);
+
+        // Selective layers (non-Base), then the final geometric/finishing stages.
+        for (int i = 1; i < m_graph.layerCount(); ++i) {
+            const QString name = m_graph.layer(i).name();
+            m_adjustments.push_back(
+                {name.isEmpty() ? QStringLiteral("Adjustment layer") : name, 100 + i,
+                 [this, i] { return m_graph.layer(i).enabled(); },
+                 [this, i](bool on) { m_graph.layer(i).setEnabled(on); },
+                 [this, i] { m_graph.removeLayer(i); }});
+        }
+        if (!m_graph.crop().isIdentity()) {
+            m_adjustments.push_back(
+                {QStringLiteral("Crop"), 200, [this] { return m_graph.crop().enabled; },
+                 [this](bool on) { CropState c = m_graph.crop(); c.enabled = on; m_graph.setCrop(c); },
+                 [this] { m_graph.setCrop(CropState{}); }});
+        }
+        if (std::abs(m_graph.vignette().amount) > 0.0f) {
+            m_adjustments.push_back(
+                {QStringLiteral("Vignette"), 210, [this] { return m_graph.vignette().enabled; },
+                 [this](bool on) { VignetteParams v = m_graph.vignette(); v.enabled = on; m_graph.setVignette(v); },
+                 [this] { m_graph.setVignette(VignetteParams{}); }});
+        }
+    }
+
+    QVector<AdjustmentsPanel::Item> items;
+    items.reserve(static_cast<int>(m_adjustments.size()));
+    for (const Adjustment &a : m_adjustments)
+        items.push_back({a.name, a.isEnabled()});
+    m_adjustmentsPanel->setItems(items, m_viewCeiling, m_compareOriginal);
+    layoutOverlays(); // size may have changed
+}
+
+void MainWindow::onAdjustmentToggle(int index, bool on)
+{
+    if (m_peeking)
+        exitPeek(); // editing resolves the transient peek
+    if (index < 0 || index >= static_cast<int>(m_adjustments.size()))
+        return;
+    m_adjustments[index].setEnabled(on);
+    m_graph.commit();
+    rebuildPreviewFromGraph();
+    rebuildAdjustments();
+}
+
+void MainWindow::onAdjustmentDelete(int index)
+{
+    if (m_peeking)
+        exitPeek();
+    if (index < 0 || index >= static_cast<int>(m_adjustments.size()))
+        return;
+    m_adjustments[index].reset();
+    m_graph.commit();
+    rebuildPreviewFromGraph();
+    if (m_layersPanel->isVisible())
+        refreshLayersPanel(); // a layer may have been removed
+    reseedOpenPanels();       // an open tool now shows the reset (neutral) values
+    rebuildAdjustments();
+}
+
+void MainWindow::peekUpTo(int index)
+{
+    if (index < 0 || index >= static_cast<int>(m_adjustments.size()))
+        return;
+    if (m_peeking && index == m_viewCeiling) { // clicking the selected row exits
+        exitPeek();
+        return;
+    }
+    if (m_compareOriginal)
+        setCompareOriginal(false); // Before/After and peek are mutually exclusive
+    if (!m_peeking) {
+        m_peekSnapshot = m_graph.saveState(); // the real state to restore on exit
+        m_peeking = true;
+    } else {
+        m_graph.restoreState(m_peekSnapshot); // reset before applying a new ceiling
+    }
+    m_viewCeiling = index;
+    const int ceilingOrder = m_adjustments[index].order;
+    // Hide every adjustment that comes after the selected one in the pipeline.
+    for (const Adjustment &a : m_adjustments)
+        if (a.order > ceilingOrder)
+            a.setEnabled(false);
+    rebuildPreviewFromGraph();
+    rebuildAdjustments(); // repaint with the ceiling row highlighted
+    showHint(QStringLiteral("Showing up to “%1”").arg(m_adjustments[index].name));
+}
+
+void MainWindow::exitPeek()
+{
+    if (!m_peeking)
+        return;
+    m_graph.restoreState(m_peekSnapshot); // back to the real, committed state
+    m_peeking = false;
+    m_viewCeiling = -1;
+    m_peekSnapshot = QJsonObject{};
+    rebuildPreviewFromGraph();
+    if (m_adjustmentsPanel->isVisible())
+        rebuildAdjustments();
+}
+
+void MainWindow::openAdjustmentsTool()
+{
+    if (m_adjustmentsPanel->isVisible()) {
+        closeAdjustmentsTool();
+        return;
+    }
+    const int margin = 18;
+    m_adjustmentsPanel->move(margin, margin); // top-left corner
+    m_adjustmentsPanel->reveal();
+    rebuildAdjustments();
+    layoutOverlays();
+}
+
+void MainWindow::closeAdjustmentsTool()
+{
+    if (m_compareOriginal)
+        setCompareOriginal(false);
+    exitPeek();
+    m_adjustmentsPanel->hide();
+    layoutOverlays();
+}
+
 void MainWindow::refreshWorkingSource()
 {
     const Image &src = m_graph.source();
@@ -1933,10 +2428,12 @@ void MainWindow::refreshWorkingSource()
     }
     // The lens node is a pure function of the source; apply it once and cache so
     // heal dabs (which call refreshBaseImage repeatedly) don't re-warp full res.
-    m_workingSource = m_lens ? m_lens->apply(src) : src;
+    // Honour the pipeline toggle so the Adjustments panel can disable lens.
+    m_workingSource = (m_lens && m_lens->isEnabled()) ? m_lens->apply(src) : src;
     if (m_workingSource.isNull())
         m_workingSource = src; // defensive: never lose the image
     m_sourceQImage = m_workingSource.toQImage(); // display + colour sampling
+    m_originalQImage = QImage(); // Before/After cache: recompute on next compare
 }
 
 void MainWindow::loadLookFile()
@@ -2040,20 +2537,41 @@ void MainWindow::closeHealTool()
 
 void MainWindow::refreshBaseImage(bool keepView)
 {
+    // Consume the triggering-op hint (set by the panel that kicked this bake) so
+    // the badge labels the user's actual action, not whichever active pass ranks
+    // highest. Reset regardless of the path taken below.
+    const BakeOp triggeredBy = m_bakeOp;
+    m_bakeOp = BakeOp::Auto;
+
+    // Before/After: show the un-edited original (no baked ops) within the current
+    // crop framing. updatePreview neutralises the pointwise/look/vignette stage.
+    if (m_compareOriginal) {
+        const QImage &orig = originalImage();
+        if (!orig.isNull())
+            m_canvas->setImage(orig, keepView);
+        return;
+    }
+
     // The GPU preview base = the lens-corrected source with the other "baked"
     // neighbourhood ops applied (heal -> denoise -> defringe -> sharpen); the
     // shader then applies the pointwise/LUT ops on top. With no baked op active,
     // the corrected source (m_sourceQImage) is already the base.
-    const bool healActive = m_heal && !m_heal->healMask().isEmpty();
+    // Each baked op also respects its pipeline toggle (Adjustments panel), so a
+    // disabled node bakes nothing — matching the pointwise/preview-LUT path.
+    const bool healActive =
+        m_heal && m_heal->isEnabled() && !m_heal->healMask().isEmpty();
     const DenoiseNode::Values dv =
         m_denoise ? m_denoise->values() : DenoiseNode::Values{};
-    const bool denoiseActive = dv.enabled && (dv.luma > 0.0f || dv.chroma > 0.0f);
+    const bool denoiseActive = m_denoise && m_denoise->isEnabled() && dv.enabled
+                               && (dv.luma > 0.0f || dv.chroma > 0.0f);
     const DefringeNode::Values fv =
         m_defringe ? m_defringe->values() : DefringeNode::Values{};
-    const bool defringeActive = fv.enabled && (fv.purple > 0.0f || fv.green > 0.0f);
+    const bool defringeActive = m_defringe && m_defringe->isEnabled() && fv.enabled
+                                && (fv.purple > 0.0f || fv.green > 0.0f);
     const SharpenNode::Values sv =
         m_sharpen ? m_sharpen->values() : SharpenNode::Values{};
-    const bool sharpenActive = sv.enabled && sv.amount > 0.0f;
+    const bool sharpenActive =
+        m_sharpen && m_sharpen->isEnabled() && sv.enabled && sv.amount > 0.0f;
     if (m_graph.source().isNull()
         || (!healActive && !denoiseActive && !defringeActive && !sharpenActive)) {
         if (!m_sourceQImage.isNull())
@@ -2071,11 +2589,22 @@ void MainWindow::refreshBaseImage(bool keepView)
     const MaskBuffer mask = healActive ? m_heal->healMask() : MaskBuffer();
     const bool hq = m_heal && m_heal->highQuality();
     if (healActive || denoiseActive || defringeActive || sharpenActive) {
-        // Label by op; heal takes precedence when several are combined.
-        const QString label = healActive ? QStringLiteral("Healing…")
-                            : denoiseActive ? QStringLiteral("Denoising…")
-                            : defringeActive ? QStringLiteral("Defringing…")
-                                            : QStringLiteral("Sharpening…");
+        // Label by the op the user triggered (if it's actually active); otherwise
+        // fall back to precedence (heal first) for unattributed refreshes.
+        QString label;
+        if (triggeredBy == BakeOp::Sharpen && sharpenActive)
+            label = QStringLiteral("Sharpening…");
+        else if (triggeredBy == BakeOp::Defringe && defringeActive)
+            label = QStringLiteral("Defringing…");
+        else if (triggeredBy == BakeOp::Denoise && denoiseActive)
+            label = QStringLiteral("Denoising…");
+        else if (triggeredBy == BakeOp::Heal && healActive)
+            label = QStringLiteral("Healing…");
+        if (label.isEmpty())
+            label = healActive ? QStringLiteral("Healing…")
+                  : denoiseActive ? QStringLiteral("Denoising…")
+                  : defringeActive ? QStringLiteral("Defringing…")
+                                  : QStringLiteral("Sharpening…");
         auto *badge = static_cast<BusyBadge *>(m_healBusy);
         badge->setLabel(label);
         badge->start();
@@ -2398,6 +2927,8 @@ void MainWindow::closeActiveTool()
 
 void MainWindow::doUndo()
 {
+    if (m_peeking)
+        exitPeek(); // history nav resolves the transient peek first
     // While brush-painting, Ctrl+Z is a per-stroke session undo.
     if (m_brushTarget != BrushTarget::None && brushSessionUndo())
         return;
@@ -2407,6 +2938,8 @@ void MainWindow::doUndo()
 
 void MainWindow::doRedo()
 {
+    if (m_peeking)
+        exitPeek();
     if (m_graph.redo())
         afterHistoryChange();
 }
@@ -2474,6 +3007,8 @@ void MainWindow::afterHistoryChange()
         m_brushUndo.clear();
         recomputeSelectiveMask();
     }
+    if (m_adjustmentsPanel->isVisible())
+        rebuildAdjustments(); // history nav changes the active-edit set
 }
 
 void MainWindow::showHint(const QString &text)
@@ -2487,12 +3022,9 @@ void MainWindow::layoutOverlays()
 {
     // Scrim covers the whole window, behind the palette.
     m_scrim->setGeometry(rect());
-    m_busyDim->setGeometry(rect());
     m_brushRing->setGeometry(rect());
 
-    // Busy badge: top-centre of the canvas (above its dim).
-    if (m_busyDim->isVisible())
-        m_busyDim->raise();
+    // Busy badge: top-centre of the canvas.
     m_healBusy->move((width() - m_healBusy->width()) / 2, 16);
     if (m_healBusy->isVisible())
         m_healBusy->raise();
@@ -2570,13 +3102,12 @@ void MainWindow::layoutOverlays()
                                static_cast<QWidget *>(m_defringePanel),
                                static_cast<QWidget *>(m_rawPanel),
                                static_cast<QWidget *>(m_healPanel),
-                               static_cast<QWidget *>(m_layersPanel)}) {
+                               static_cast<QWidget *>(m_layersPanel),
+                               static_cast<QWidget *>(m_adjustmentsPanel)}) {
             if (panel && panel->isVisible())
                 panel->raise();
         }
         m_brushRing->raise(); // brush cursor stays on top of the gizmo
-        if (m_busyDim->isVisible())
-            m_busyDim->raise();
         m_healBusy->raise();
     }
 
@@ -2611,6 +3142,22 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         return;
     }
 
+    // Before/After: '\' flips between the edited image and the original.
+    if (e->key() == Qt::Key_Backslash && !e->isAutoRepeat()
+        && !m_graph.source().isNull()) {
+        setCompareOriginal(!m_compareOriginal);
+        return;
+    }
+
+    // H toggles the overlay geometry while a selective layer is being edited.
+    // (Reached only when no brush is active — the brush guard above returns first,
+    // so this never clashes with the brush-hardness H binding.)
+    if (e->key() == Qt::Key_H && !e->isAutoRepeat() && m_layersPanel->isVisible()
+        && m_graph.activeLayerIndex() != 0) {
+        setOverlayGeometryVisible(m_overlaysHidden);
+        return;
+    }
+
     // Zone editing: Delete removes the selected shape; Esc disarms a draw tool
     // before falling through to the panel-dismiss behaviour below.
     if (m_zoneGizmo && m_zoneGizmo->isVisible()) {
@@ -2632,7 +3179,15 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
             openCommandPalette();
             return;
         }
-        // Esc dismisses the persistent Layers panel (and its mask editing).
+        // Esc leaves a peek view, then dismisses the persistent panels.
+        if (e->key() == Qt::Key_Escape && m_peeking) {
+            exitPeek();
+            return;
+        }
+        if (e->key() == Qt::Key_Escape && m_adjustmentsPanel->isVisible()) {
+            closeAdjustmentsTool();
+            return;
+        }
         if (e->key() == Qt::Key_Escape && m_layersPanel->isVisible()) {
             hideLayersPanel();
             return;

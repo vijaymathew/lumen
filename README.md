@@ -64,6 +64,29 @@ cmake --build build --parallel
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) builds both Linux and
 macOS on every push.
 
+### Tests
+
+The build also produces the unit-test executables; run them with CTest from the
+repo root:
+
+```bash
+cmake --build build --parallel   # rebuild first — ctest runs the existing binaries
+ctest --test-dir build           # run the whole suite
+```
+
+Handy variants:
+
+```bash
+ctest --test-dir build --output-on-failure   # show output for failing tests
+ctest --test-dir build -R crop               # only tests matching a name
+./build/crop_test                            # run one test binary directly
+```
+
+The tests cover the **UI-free core** (`lumen_core`) — image pipeline, edit graph,
+crop/vignette, serialization, autosave helpers — and are registered under the
+`# --- Tests ---` section of [CMakeLists.txt](CMakeLists.txt). The interactive UI
+isn't exercised by CTest; verify that by running the app.
+
 ## Layout
 
 ```

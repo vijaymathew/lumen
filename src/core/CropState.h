@@ -14,8 +14,11 @@ struct CropState {
     bool flipH = false;      // mirror left/right
     bool flipV = false;      // mirror top/bottom
     QRectF rect{0.0, 0.0, 1.0, 1.0}; // crop, normalized within the ORIENTED frame
+    bool enabled = true;     // toggled off → applyCrop is a no-op (geometry kept)
 
-    // True when this is a no-op (full frame, no rotation/flip).
+    // True when the geometry is a no-op (full frame, no rotation/flip). Independent
+    // of `enabled`, so a disabled-but-cropped state still reports as non-identity
+    // (it remains an "adjustment" you can re-enable).
     bool isIdentity() const;
 
     // Normalises rotation to {0,90,180,270} and clamps rect into [0,1] with a
