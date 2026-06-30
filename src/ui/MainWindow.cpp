@@ -143,18 +143,13 @@ private:
     int m_alpha;
 };
 
-// Lighter dim shown while a slow effect is being applied: enough to signal
-// "busy" without hiding the image the user is judging.
-constexpr int kBusyScrimAlpha = 70;
-
 // How long after the last slider tick we wait before kicking the expensive
 // sharpen/denoise base re-bake — long enough to read as "stopped sliding".
 constexpr int kHeavyBakeSettleMs = 800;
 
 // A small badge with an animated spinner, shown while a background base re-bake
-// (heal / denoise / sharpen) is running. The label names the running op. An
-// optional companion dim widget is shown/hidden in lockstep so the image dims
-// only while a slow pass is actually applying. Mouse-transparent.
+// (heal / denoise / sharpen) is running. The label names the running op. The
+// image underneath is left undimmed so it stays judgeable. Mouse-transparent.
 class BusyBadge : public QWidget {
 public:
     explicit BusyBadge(QWidget *parent) : QWidget(parent)
@@ -173,20 +168,12 @@ public:
         m_delay.setSingleShot(true);
         m_delay.setInterval(150);
         connect(&m_delay, &QTimer::timeout, this, [this] {
-            if (m_dim) {
-                m_dim->show();
-                m_dim->raise();
-            }
             show();
             raise();
             m_spin.start();
         });
         hide();
     }
-
-    // The dim is dimmed in lockstep with the badge (shown after the same delay,
-    // hidden on stop()).
-    void setDim(QWidget *dim) { m_dim = dim; }
 
     void setLabel(const QString &label)
     {
@@ -208,8 +195,6 @@ public:
         m_delay.stop(); // cancel a pending show if the op finished in time
         m_spin.stop();
         hide();
-        if (m_dim)
-            m_dim->hide();
     }
 
 protected:
@@ -255,7 +240,6 @@ private:
     int m_angle = 0;
     int m_sweep = 0; // 0..99 progress-strip position
     QString m_label = QStringLiteral("Healing…");
-    QWidget *m_dim = nullptr; // companion dim, shown/hidden with the badge
 };
 
 // A transparent overlay that draws the brush cursor: an outer ring (size) and a
@@ -364,14 +348,9 @@ MainWindow::MainWindow(QWidget *parent)
                 brushRing->setRing(inWindow, outer, inner, visible);
             });
 
-    // Lighter dim shown while a slow effect applies; behind the badge, above
-    // the canvas. Created before the badge so the badge stacks above it.
-    m_busyDim = new Scrim(this, kBusyScrimAlpha);
-    m_busyDim->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_busyDim->hide();
-
+    // Progress badge for slow background passes. The image is intentionally NOT
+    // dimmed while it runs, so the user can keep judging the picture.
     auto *busyBadge = new BusyBadge(this);
-    busyBadge->setDim(m_busyDim);
     m_healBusy = busyBadge;
 
     // Created before the palette so the palette stacks above it.
@@ -3043,12 +3022,9 @@ void MainWindow::layoutOverlays()
 {
     // Scrim covers the whole window, behind the palette.
     m_scrim->setGeometry(rect());
-    m_busyDim->setGeometry(rect());
     m_brushRing->setGeometry(rect());
 
-    // Busy badge: top-centre of the canvas (above its dim).
-    if (m_busyDim->isVisible())
-        m_busyDim->raise();
+    // Busy badge: top-centre of the canvas.
     m_healBusy->move((width() - m_healBusy->width()) / 2, 16);
     if (m_healBusy->isVisible())
         m_healBusy->raise();
@@ -3132,8 +3108,6 @@ void MainWindow::layoutOverlays()
                 panel->raise();
         }
         m_brushRing->raise(); // brush cursor stays on top of the gizmo
-        if (m_busyDim->isVisible())
-            m_busyDim->raise();
         m_healBusy->raise();
     }
 
