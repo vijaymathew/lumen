@@ -101,6 +101,16 @@ private:
     void openProject();   // pick a .lumen file via dialog, then load it
     bool loadProjectFile(const QString &path); // load a .lumen (source + layers)
 
+    // Reusable edit presets / copy-paste settings. copy/paste move the current
+    // look through an in-memory clipboard; save/apply persist it as a .lumenpreset
+    // file. All four share applyPreset(), which overwrites the creative edit and
+    // refreshes the UI (see Preset.h for what a preset does and does not carry).
+    void copySettings();
+    void pasteSettings();
+    void savePreset();
+    void applyPresetFile();
+    void applyPreset(const QJsonObject &presetObj, const QString &doneHint);
+
     // --- Autosave & crash recovery -----------------------------------------
     // The current document serialised the way a project is saved: the edit graph
     // plus the per-project RAW decode options. Used for both writing and for
@@ -357,6 +367,7 @@ private:
     QByteArray m_sourceBytes;            // original encoded source, for embedding in .lumen
     QString m_sourceName;                // original source file name
     QString m_projectPath;               // current .lumen path (empty until saved/opened)
+    QJsonObject m_copiedSettings;        // in-memory clipboard for Copy/Paste Settings
     int m_maskView = 0;                  // selective mask overlay (preview-only)
     bool m_showClipping = false;         // on-canvas clipping warnings (preview-only)
     bool m_overlaysHidden = false;       // user hid the on-canvas gizmo geometry

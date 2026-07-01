@@ -6,6 +6,7 @@
 #include "core/Image.h"
 #include "core/LayerPreview.h"
 #include "core/MaskSpec.h"
+#include "core/Preset.h"
 #include "core/Project.h"
 #include "core/RawLoader.h"
 #include "core/SelectiveMask.h"
@@ -985,6 +986,8 @@ MainWindow::MainWindow(QWidget *parent)
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+O")), this, [this] { openImageDialog(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+S")), this, [this] { saveProject(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")), this, [this] { openProject(); });
+    new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+C")), this, [this] { copySettings(); });
+    new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+V")), this, [this] { pasteSettings(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Q")), this, [this] { close(); });
     new QShortcut(QKeySequence(Qt::Key_F11), this, [this] { toggleFullScreen(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+0")), this, [this] { m_canvas->resetView(); });
@@ -1045,6 +1048,7 @@ void MainWindow::buildCommands()
     const QString cropLens = QStringLiteral("Crop & Lens");
     const QString effects = QStringLiteral("Effects");
     const QString selective = QStringLiteral("Selective");
+    const QString presets = QStringLiteral("Presets");
     const QString edit = QStringLiteral("Edit");
     const QString view = QStringLiteral("View");
     const QString app = QStringLiteral("App");
@@ -1070,6 +1074,10 @@ void MainWindow::buildCommands()
         {QStringLiteral("vignette"), QStringLiteral("Vignette"), effects},
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment"), selective},
         {QStringLiteral("layers"), QStringLiteral("Layers"), selective},
+        {QStringLiteral("copy-settings"), QStringLiteral("Copy edit settings"), presets},
+        {QStringLiteral("paste-settings"), QStringLiteral("Paste edit settings"), presets},
+        {QStringLiteral("save-preset"), QStringLiteral("Save preset…"), presets},
+        {QStringLiteral("apply-preset"), QStringLiteral("Apply preset…"), presets},
         {QStringLiteral("undo"), QStringLiteral("Undo"), edit},
         {QStringLiteral("redo"), QStringLiteral("Redo"), edit},
         {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)"), view},
@@ -1133,6 +1141,14 @@ void MainWindow::runCommand(const QString &id)
         openHealTool();
     } else if (id == QLatin1String("layers")) {
         openLayersTool();
+    } else if (id == QLatin1String("copy-settings")) {
+        copySettings();
+    } else if (id == QLatin1String("paste-settings")) {
+        pasteSettings();
+    } else if (id == QLatin1String("save-preset")) {
+        savePreset();
+    } else if (id == QLatin1String("apply-preset")) {
+        applyPresetFile();
     } else if (id == QLatin1String("adjustments")) {
         openAdjustmentsTool();
     } else if (id == QLatin1String("undo")) {
@@ -1521,6 +1537,94 @@ bool MainWindow::loadProjectFile(const QString &path)
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
     showHint(QStringLiteral("Opened %1").arg(QFileInfo(path).fileName()));
     return true;
+}
+
+// --- Reusable presets / copy-paste settings --------------------------------
+
+void MainWindow::copySettings()
+{
+    if (m_graph.source().isNull()) {
+        showHint(QStringLiteral("Open an image before copying settings"));
+        return;
+    }
+    m_copiedSettings = preset::fromGraph(m_graph);
+    showHint(QStringLiteral("Copied edit settings"));
+}
+
+void MainWindow::pasteSettings()
+{
+    if (m_copiedSettings.isEmpty()) {
+        showHint(QStringLiteral("Nothing to paste — copy settings from a photo first"));
+        return;
+    }
+    applyPreset(m_copiedSettings, QStringLiteral("Pasted edit settings"));
+}
+
+void MainWindow::savePreset()
+{
+    if (m_graph.source().isNull()) {
+        showHint(QStringLiteral("Open an image before saving a preset"));
+        return;
+    }
+    const QFileInfo src(m_sourcePath);
+    const QString dir = lastDir(QStringLiteral("preset"), src.dir().path());
+    const QString suggested =
+        QDir(dir).filePath(src.completeBaseName() + QStringLiteral(".lumenpreset"));
+    QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Save preset"), suggested,
+        QStringLiteral("Lumen preset (*.lumenpreset)"));
+    if (path.isEmpty())
+        return;
+    if (!path.endsWith(QStringLiteral(".lumenpreset"), Qt::CaseInsensitive))
+        path += QStringLiteral(".lumenpreset");
+
+    const QString name = QFileInfo(path).completeBaseName();
+    QString error;
+    if (!preset::save(path, preset::fromGraph(m_graph, name), &error)) {
+        QMessageBox::warning(this, QStringLiteral("Lumen"),
+                             QStringLiteral("Could not save preset: %1").arg(error));
+        return;
+    }
+    rememberDir(QStringLiteral("preset"), path);
+    showHint(QStringLiteral("Saved preset “%1”").arg(name));
+}
+
+void MainWindow::applyPresetFile()
+{
+    if (m_graph.source().isNull()) {
+        showHint(QStringLiteral("Open an image before applying a preset"));
+        return;
+    }
+    const QString dir = lastDir(
+        QStringLiteral("preset"),
+        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("Apply preset"), dir,
+        QStringLiteral("Lumen preset (*.lumenpreset)"));
+    if (path.isEmpty())
+        return;
+    rememberDir(QStringLiteral("preset"), path);
+
+    QJsonObject obj;
+    QString error;
+    if (!preset::load(path, &obj, &error)) {
+        QMessageBox::warning(this, QStringLiteral("Lumen"), error);
+        return;
+    }
+    applyPreset(obj, QStringLiteral("Applied “%1”").arg(QFileInfo(path).completeBaseName()));
+}
+
+void MainWindow::applyPreset(const QJsonObject &presetObj, const QString &doneHint)
+{
+    if (!preset::applyToGraph(presetObj, m_graph)) {
+        showHint(QStringLiteral("That isn't a valid preset"));
+        return;
+    }
+    // One undoable step, then refresh the preview and reseed any open tools — the
+    // same path undo/redo uses to reflect a graph change in the UI.
+    m_graph.commit();
+    afterHistoryChange();
+    showHint(doneHint);
 }
 
 bool MainWindow::restoreRecovery(const QString &path)

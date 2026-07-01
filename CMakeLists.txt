@@ -106,6 +106,8 @@ add_library(lumen_core STATIC
     src/core/NodeFactory.cpp
     src/core/Project.h
     src/core/Project.cpp
+    src/core/Preset.h
+    src/core/Preset.cpp
     src/core/Autosave.h
     src/core/Autosave.cpp
     src/core/RawLoader.h
@@ -331,6 +333,11 @@ if(BUILD_TESTING)
     target_link_libraries(project_test PRIVATE lumen_core)
     target_compile_options(project_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME project_test COMMAND project_test)
+
+    add_executable(preset_test tests/preset_test.cpp)
+    target_link_libraries(preset_test PRIVATE lumen_core)
+    target_compile_options(preset_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME preset_test COMMAND preset_test)
 
     add_executable(raw_test tests/raw_test.cpp)
     target_link_libraries(raw_test PRIVATE lumen_core)
