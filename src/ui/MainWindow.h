@@ -97,9 +97,16 @@ private:
     void buildCommands();
     void runCommand(const QString &id);
     void openImageDialog();
-    void saveProject();   // write the current work to a .lumen file
+    void saveProject();   // async write of the current work to a .lumen file
     void openProject();   // pick a .lumen file via dialog, then load it
-    bool loadProjectFile(const QString &path); // load a .lumen (source + layers)
+    void loadProjectFile(const QString &path); // load a .lumen async (source + layers)
+
+    // Save helpers. promptSaveProjectPath() runs the Save dialog; saveProjectSync()
+    // is the blocking save the quit/discard flow needs (it must finish before the
+    // document can be discarded); applySaveSuccess() updates state after a write.
+    QString promptSaveProjectPath();
+    bool saveProjectSync();
+    void applySaveSuccess(const QString &path);
 
     // Reusable edit presets / copy-paste settings. copy/paste move the current
     // look through an in-memory clipboard; save/apply persist it as a .lumenpreset
@@ -444,4 +451,49 @@ private:
         QString path;
     };
     QFutureWatcher<ExportResult> m_exportWatcher;
+
+    // Save (serialise the document + embed the source bytes, then write) runs off
+    // the UI thread so the "Saving…" badge animates; re-entry is blocked while a
+    // write is in flight.
+    struct SaveResult {
+        bool ok = false;
+        QString error;
+        QString path;
+    };
+    QFutureWatcher<SaveResult> m_saveWatcher;
+
+    // Opening a file decodes off the UI thread behind the "Opening…" badge (a RAW
+    // demosaic is slow); a finish handler installs the result on the UI thread.
+    struct OpenImageResult {
+        Image source;
+        raw::LensMetadata meta;
+        QString error;
+        QString path;
+        QByteArray bytes; // original encoded file, kept to embed in a .lumen
+        bool isRaw = false;
+    };
+    QFutureWatcher<OpenImageResult> m_openImageWatcher;
+
+    struct OpenProjectResult {
+        bool loaded = false; // project::load() succeeded
+        QString error;
+        QString path;
+        QJsonObject graph;
+        QByteArray sourceBytes;
+        QString sourceName;
+        bool isRaw = false;
+        raw::RawDecodeOptions rawOptions;
+        Image source; // decoded embedded image
+        raw::LensMetadata meta;
+    };
+    QFutureWatcher<OpenProjectResult> m_openProjectWatcher;
+
+    // Pure decode steps (no UI state) run on the worker thread; the sync crash-
+    // recovery path reuses decodeProjectFile too.
+    static OpenImageResult decodeImageFile(const QString &path,
+                                           const raw::RawDecodeOptions &opts);
+    static OpenProjectResult decodeProjectFile(const QString &path);
+    void finishOpenImage(const OpenImageResult &r); // install after async decode
+    bool applyProjectResult(const OpenProjectResult &r); // shared project install
+    bool openBusy() const; // an open/decode is already in flight
 };

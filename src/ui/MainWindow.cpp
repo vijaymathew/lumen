@@ -51,6 +51,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QJsonDocument>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -686,6 +687,47 @@ MainWindow::MainWindow(QWidget *parent)
         showHint(QStringLiteral("Exported to %1").arg(QFileInfo(r.path).fileName()));
     });
 
+    // Background project save finished: report the outcome and adopt the file.
+    connect(&m_saveWatcher, &QFutureWatcher<SaveResult>::finished, this, [this] {
+        static_cast<BusyBadge *>(m_healBusy)->stop();
+        if (!m_saveWatcher.future().isValid())
+            return;
+        const SaveResult r = m_saveWatcher.result();
+        if (!r.ok) {
+            QMessageBox::warning(this, QStringLiteral("Lumen"),
+                                 QStringLiteral("Could not save project: %1").arg(r.error));
+            return;
+        }
+        applySaveSuccess(r.path);
+    });
+
+    // Background image open finished: install the decoded source + rebuild.
+    connect(&m_openImageWatcher, &QFutureWatcher<OpenImageResult>::finished, this, [this] {
+        static_cast<BusyBadge *>(m_healBusy)->stop();
+        if (!m_openImageWatcher.future().isValid())
+            return;
+        finishOpenImage(m_openImageWatcher.result());
+    });
+
+    // Background project open finished: install the decoded document.
+    connect(&m_openProjectWatcher, &QFutureWatcher<OpenProjectResult>::finished, this, [this] {
+        static_cast<BusyBadge *>(m_healBusy)->stop();
+        if (!m_openProjectWatcher.future().isValid())
+            return;
+        const OpenProjectResult r = m_openProjectWatcher.result();
+        if (!r.loaded) {
+            QMessageBox::warning(this, QStringLiteral("Lumen"), r.error);
+            return;
+        }
+        if (r.source.isNull()) {
+            QMessageBox::warning(
+                this, QStringLiteral("Lumen"),
+                QStringLiteral("Could not decode the embedded image: %1").arg(r.error));
+            return;
+        }
+        applyProjectResult(r);
+    });
+
     // Background RAW re-decode finished: install the new source and rebuild the
     // pipeline (the watcher only delivers the latest request's future).
     connect(&m_decodeWatcher, &QFutureWatcher<DecodeResult>::finished, this, [this] {
@@ -1034,8 +1076,20 @@ MainWindow::~MainWindow()
         m_decodeWatcher.waitForFinished();
     if (m_exportWatcher.isRunning())
         m_exportWatcher.waitForFinished();
+    if (m_saveWatcher.isRunning())
+        m_saveWatcher.waitForFinished();
+    if (m_openImageWatcher.isRunning())
+        m_openImageWatcher.waitForFinished();
+    if (m_openProjectWatcher.isRunning())
+        m_openProjectWatcher.waitForFinished();
     if (m_autosaveWatcher.isRunning())
         m_autosaveWatcher.waitForFinished();
+}
+
+bool MainWindow::openBusy() const
+{
+    return m_openImageWatcher.isRunning() || m_openProjectWatcher.isRunning()
+        || m_decodeWatcher.isRunning();
 }
 
 void MainWindow::buildCommands()
@@ -1168,27 +1222,66 @@ void MainWindow::runCommand(const QString &id)
     }
 }
 
+MainWindow::OpenImageResult MainWindow::decodeImageFile(const QString &path,
+                                                        const raw::RawDecodeOptions &opts)
+{
+    OpenImageResult r;
+    r.path = path;
+    r.isRaw = raw::isRawPath(path);
+    // Read the original encoded bytes once (kept to embed verbatim in a .lumen),
+    // then decode from them — one disk read, and no UI-thread work.
+    QFile f(path);
+    if (f.open(QIODevice::ReadOnly))
+        r.bytes = f.readAll();
+    if (r.bytes.isEmpty()) {
+        r.error = QStringLiteral("Could not read '%1'").arg(path);
+        return r;
+    }
+    r.source =
+        r.isRaw
+            ? raw::decodeBytes(r.bytes.constData(), r.bytes.size(), &r.error, &r.meta, opts)
+            : Image::fromBytes(r.bytes.constData(), r.bytes.size(), &r.error);
+    return r;
+}
+
 bool MainWindow::openPath(const QString &path)
 {
     if (!maybeSaveBeforeDiscard()) // guard unsaved work on the current document
         return false;
-    if (path.endsWith(QStringLiteral(".lumen"), Qt::CaseInsensitive))
-        return loadProjectFile(path); // a project, not a raw image
-
-    QString error;
-    const bool isRaw = raw::isRawPath(path);
-    raw::LensMetadata meta;
-    Image source = isRaw ? raw::decodeFile(path, &error, &meta, m_rawOptions)
-                         : Image::fromFile(path, &error);
-    if (source.isNull()) {
-        QMessageBox::warning(this, QStringLiteral("Lumen"), error);
+    if (path.endsWith(QStringLiteral(".lumen"), Qt::CaseInsensitive)) {
+        loadProjectFile(path); // a project, not a raw image (async)
+        return true;
+    }
+    if (openBusy()) {
+        showHint(QStringLiteral("Already opening a file"));
         return false;
     }
 
+    // Decode off the UI thread so the app stays responsive and the "Opening…"
+    // badge animates (a RAW demosaic is slow); finishOpenImage installs it.
+    auto *badge = static_cast<BusyBadge *>(m_healBusy);
+    badge->setLabel(QStringLiteral("Opening…"));
+    badge->start();
+    layoutOverlays();
+    const raw::RawDecodeOptions opts = m_rawOptions;
+    m_openImageWatcher.setFuture(
+        QtConcurrent::run([path, opts] { return decodeImageFile(path, opts); }));
+    return true;
+}
+
+void MainWindow::finishOpenImage(const OpenImageResult &r)
+{
+    if (r.source.isNull()) {
+        QMessageBox::warning(this, QStringLiteral("Lumen"),
+                             r.error.isEmpty()
+                                 ? QStringLiteral("Could not open the image")
+                                 : r.error);
+        return;
+    }
+
     // Keep the original encoded bytes so we can embed them verbatim in a .lumen.
-    QFile srcFile(path);
-    m_sourceBytes = srcFile.open(QIODevice::ReadOnly) ? srcFile.readAll() : QByteArray();
-    m_sourceName = QFileInfo(path).fileName();
+    m_sourceBytes = r.bytes;
+    m_sourceName = QFileInfo(r.path).fileName();
     m_projectPath.clear(); // opening a raw image starts a new (unsaved) project
 
     // A freshly opened image starts from a clean slate: clear any in-progress
@@ -1200,17 +1293,17 @@ bool MainWindow::openPath(const QString &path)
     m_brushMask = MaskBuffer();
     m_graph.restoreState(m_defaultGraphState);
 
-    m_graph.setSource(source); // full-res original; the lens node corrects on top
+    m_graph.setSource(r.source); // full-res original; the lens node corrects on top
     // Seed the lens node: a RAW carries EXIF identity for automatic correction;
     // anything else starts neutral (manual perspective still available).
     LensCorrectionNode::Params lp; // defaults: corrections on, perspective neutral
-    if (isRaw) {
-        lp.cameraMaker = meta.cameraMaker;
-        lp.cameraModel = meta.cameraModel;
-        lp.lensModel = meta.lensModel;
-        lp.focalLength = meta.focalLength;
-        lp.aperture = meta.aperture;
-        lp.focusDistance = meta.focusDistance;
+    if (r.isRaw) {
+        lp.cameraMaker = r.meta.cameraMaker;
+        lp.cameraModel = r.meta.cameraModel;
+        lp.lensModel = r.meta.lensModel;
+        lp.focalLength = r.meta.focalLength;
+        lp.aperture = r.meta.aperture;
+        lp.focusDistance = r.meta.focusDistance;
         // Seed the automatic lens corrections from the user's RAW defaults.
         lp.distortion = m_rawLensDefaults.distortion;
         lp.tca = m_rawLensDefaults.tca;
@@ -1219,14 +1312,14 @@ bool MainWindow::openPath(const QString &path)
     m_lens->setParams(lp);
     // Camera-accurate white balance: install the colour profile and seed the
     // slider at the as-shot temperature (non-RAW keeps the sRGB defaults).
-    if (isRaw)
-        applyCameraProfile(meta.color, /*seedKelvin=*/true);
+    if (r.isRaw)
+        applyCameraProfile(r.meta.color, /*seedKelvin=*/true);
     refreshWorkingSource();  // build the corrected source + display QImage
     refreshBaseImage(false); // new image → fit the view
     recomputeSelectiveMask();
     updatePreview();        // apply any existing edits
     m_graph.resetHistory(); // fresh undo timeline for this image
-    m_sourcePath = path;
+    m_sourcePath = r.path;
     // New unsaved document: clear any prior recovery file, baseline the pristine
     // state (so an unedited open won't autosave), and arm the autosave timer.
     m_recoveryPath.clear();
@@ -1235,8 +1328,7 @@ bool MainWindow::openPath(const QString &path)
     if (m_layersPanel->isVisible())
         refreshLayersPanel();   // the reset dropped any selective layers
     reseedOpenPanels();         // re-sync open tools with the neutral defaults
-    setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
-    return true;
+    setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(r.path).fileName()));
 }
 
 void MainWindow::redecodeCurrent()
@@ -1264,13 +1356,8 @@ void MainWindow::redecodeCurrent()
     }));
 }
 
-void MainWindow::saveProject()
+QString MainWindow::promptSaveProjectPath()
 {
-    if (m_graph.source().isNull()) {
-        showHint(QStringLiteral("Open an image before saving a project"));
-        return;
-    }
-
     // Default name "<source>.lumen", in the last-used project folder (falling
     // back to next-to-the-source on first save).
     const QFileInfo src(m_projectPath.isEmpty() ? m_sourcePath : m_projectPath);
@@ -1281,19 +1368,14 @@ void MainWindow::saveProject()
         this, QStringLiteral("Save project"), suggested,
         QStringLiteral("Lumen project (*.lumen)"));
     if (path.isEmpty())
-        return;
+        return {};
     if (!path.endsWith(QStringLiteral(".lumen"), Qt::CaseInsensitive))
         path += QStringLiteral(".lumen");
+    return path;
+}
 
-    QString name;
-    const QByteArray bytes = sourceForSave(&name);
-
-    QString error;
-    if (!autosave::writeProjectAtomic(path, buildDocGraph(), bytes, name, &error)) {
-        QMessageBox::warning(this, QStringLiteral("Lumen"),
-                             QStringLiteral("Could not save project: %1").arg(error));
-        return;
-    }
+void MainWindow::applySaveSuccess(const QString &path)
+{
     m_projectPath = path;
     rememberDir(QStringLiteral("saveProject"), path);
     // The work now lives in the user's file; autosave targets it from here on and
@@ -1303,6 +1385,64 @@ void MainWindow::saveProject()
     startAutosave();
     setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
     showHint(QStringLiteral("Saved %1").arg(QFileInfo(path).fileName()));
+}
+
+void MainWindow::saveProject()
+{
+    if (m_graph.source().isNull()) {
+        showHint(QStringLiteral("Open an image before saving a project"));
+        return;
+    }
+    if (m_saveWatcher.isRunning()) {
+        showHint(QStringLiteral("A save is already in progress"));
+        return;
+    }
+    const QString path = promptSaveProjectPath();
+    if (path.isEmpty())
+        return;
+
+    // Snapshot the document on the UI thread (reads the graph), then write it off
+    // the UI thread behind the "Saving…" badge — the write can be slow to external
+    // or network drives.
+    QString name;
+    const QByteArray bytes = sourceForSave(&name);
+    const QJsonObject graph = buildDocGraph();
+
+    auto *badge = static_cast<BusyBadge *>(m_healBusy);
+    badge->setLabel(QStringLiteral("Saving…"));
+    badge->start();
+    layoutOverlays();
+    m_saveWatcher.setFuture(QtConcurrent::run([path, graph, bytes, name]() -> SaveResult {
+        SaveResult r;
+        r.path = path;
+        r.ok = autosave::writeProjectAtomic(path, graph, bytes, name, &r.error);
+        return r;
+    }));
+}
+
+bool MainWindow::saveProjectSync()
+{
+    // The blocking save the quit/discard flow needs: it must complete before the
+    // document can be discarded, so it can't go through the async path.
+    if (m_graph.source().isNull())
+        return true; // nothing to save
+    const QString path = promptSaveProjectPath();
+    if (path.isEmpty())
+        return false; // user cancelled the dialog → don't discard their work
+
+    QString name;
+    const QByteArray bytes = sourceForSave(&name);
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    QString error;
+    const bool ok = autosave::writeProjectAtomic(path, buildDocGraph(), bytes, name, &error);
+    QGuiApplication::restoreOverrideCursor();
+    if (!ok) {
+        QMessageBox::warning(this, QStringLiteral("Lumen"),
+                             QStringLiteral("Could not save project: %1").arg(error));
+        return false;
+    }
+    applySaveSuccess(path);
+    return true;
 }
 
 // --- Autosave & crash recovery ---------------------------------------------
@@ -1444,11 +1584,9 @@ bool MainWindow::maybeSaveBeforeDiscard()
         deleteRecoveryFile();
         return true;
     }
-    // Save: route through the dialog. The user can still cancel that (or the
-    // write can fail), so confirm the document is actually persisted before we
-    // allow the discard — m_lastAutosaveDoc only advances on a successful write.
-    saveProject();
-    return currentDocBytes() == m_lastAutosaveDoc;
+    // Save: route through the dialog synchronously — the document must actually be
+    // persisted before we allow the discard, so this can't use the async path.
+    return saveProjectSync();
 }
 
 void MainWindow::closeEvent(QCloseEvent *e)
@@ -1481,43 +1619,48 @@ void MainWindow::openProject()
     loadProjectFile(path);
 }
 
-bool MainWindow::loadProjectFile(const QString &path)
+MainWindow::OpenProjectResult MainWindow::decodeProjectFile(const QString &path)
 {
-    QString error;
+    OpenProjectResult r;
+    r.path = path;
     project::Project proj;
-    if (!project::load(path, &proj, &error)) {
-        QMessageBox::warning(this, QStringLiteral("Lumen"), error);
-        return false;
-    }
-    const bool isRaw = raw::isRawPath(proj.sourceName);
-    // Restore this project's per-project decode options (absent → today's look).
-    m_rawOptions = proj.graph.contains(QStringLiteral("rawOptions"))
+    if (!project::load(path, &proj, &r.error))
+        return r; // loaded stays false
+    r.loaded = true;
+    r.graph = proj.graph;
+    r.sourceBytes = proj.sourceBytes;
+    r.sourceName = proj.sourceName;
+    r.isRaw = raw::isRawPath(proj.sourceName);
+    // The project's per-project decode options (absent → today's defaults).
+    r.rawOptions = proj.graph.contains(QStringLiteral("rawOptions"))
                        ? raw::RawDecodeOptions::fromJson(
                              proj.graph.value(QStringLiteral("rawOptions")).toObject())
                        : raw::RawDecodeOptions{};
-    raw::LensMetadata meta;
-    Image source =
-        isRaw ? raw::decodeBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(),
-                                 &error, &meta, m_rawOptions)
-              : Image::fromBytes(proj.sourceBytes.constData(), proj.sourceBytes.size(), &error);
-    if (source.isNull()) {
-        QMessageBox::warning(this, QStringLiteral("Lumen"),
-                             QStringLiteral("Could not decode the embedded image: %1").arg(error));
+    r.source =
+        r.isRaw ? raw::decodeBytes(r.sourceBytes.constData(), r.sourceBytes.size(),
+                                   &r.error, &r.meta, r.rawOptions)
+                : Image::fromBytes(r.sourceBytes.constData(), r.sourceBytes.size(), &r.error);
+    return r;
+}
+
+bool MainWindow::applyProjectResult(const OpenProjectResult &r)
+{
+    if (!r.loaded || r.source.isNull())
         return false;
-    }
+    m_rawOptions = r.rawOptions; // adopt the project's decode options
 
     // Reset any active editing state, then load the document.
     m_brushTarget = BrushTarget::None;
     m_maskView = 0;
     m_brushUndo.clear();
-    m_sourceBytes = proj.sourceBytes;
-    m_sourceName = proj.sourceName;
-    m_graph.setSource(source);
-    m_graph.loadProjectState(proj.graph); // restores the lens node's params too
+    m_sourceBytes = r.sourceBytes;
+    m_sourceName = r.sourceName;
+    m_graph.setSource(r.source);
+    m_graph.loadProjectState(r.graph); // restores the lens node's params too
     // Refresh the camera profile from the actual decode, keeping the restored
     // WB temperature (don't reseed to as-shot).
-    if (isRaw)
-        applyCameraProfile(meta.color, /*seedKelvin=*/false);
+    if (r.isRaw)
+        applyCameraProfile(r.meta.color, /*seedKelvin=*/false);
 
     refreshWorkingSource();  // rebuild the corrected source from the restored lens
     refreshBaseImage(false); // re-applies the heal mask, fits the view
@@ -1525,8 +1668,8 @@ bool MainWindow::loadProjectFile(const QString &path)
     updatePreview();
     m_graph.resetHistory();
 
-    m_projectPath = path;
-    m_sourcePath = path; // export defaults to "<project>-edited.<ext>"
+    m_projectPath = r.path;
+    m_sourcePath = r.path; // export defaults to "<project>-edited.<ext>"
     // A fresh document session: autosave now targets this user file (no recovery
     // file), and the baseline is the just-loaded state.
     m_recoveryPath.clear();
@@ -1535,9 +1678,25 @@ bool MainWindow::loadProjectFile(const QString &path)
     if (m_layersPanel->isVisible())
         refreshLayersPanel();
     reseedOpenPanels(); // re-sync any open adjustment tool with the restored layers
-    setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
-    showHint(QStringLiteral("Opened %1").arg(QFileInfo(path).fileName()));
+    setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(r.path).fileName()));
+    showHint(QStringLiteral("Opened %1").arg(QFileInfo(r.path).fileName()));
     return true;
+}
+
+void MainWindow::loadProjectFile(const QString &path)
+{
+    if (openBusy()) {
+        showHint(QStringLiteral("Already opening a file"));
+        return;
+    }
+    // Decode the embedded source off the UI thread behind the "Opening…" badge;
+    // the finish handler installs the document.
+    auto *badge = static_cast<BusyBadge *>(m_healBusy);
+    badge->setLabel(QStringLiteral("Opening…"));
+    badge->start();
+    layoutOverlays();
+    m_openProjectWatcher.setFuture(
+        QtConcurrent::run([path] { return decodeProjectFile(path); }));
 }
 
 // --- Reusable presets / copy-paste settings --------------------------------
@@ -1630,8 +1789,17 @@ void MainWindow::applyPreset(const QJsonObject &presetObj, const QString &doneHi
 
 bool MainWindow::restoreRecovery(const QString &path)
 {
-    if (!loadProjectFile(path))
+    // Recovery runs at startup and its result gates the launch flow, so decode
+    // synchronously (with a wait cursor) rather than through the async open.
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    const OpenProjectResult r = decodeProjectFile(path);
+    const bool ok = applyProjectResult(r);
+    QGuiApplication::restoreOverrideCursor();
+    if (!ok) {
+        if (!r.loaded)
+            QMessageBox::warning(this, QStringLiteral("Lumen"), r.error);
         return false;
+    }
     // Loaded as a document, but a recovery file is NOT the user's file: keep it as
     // unsaved work that continues autosaving to this same file and prompts on
     // close (until the user explicitly Saves to a chosen path).
