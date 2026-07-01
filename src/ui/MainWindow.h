@@ -348,6 +348,9 @@ private:
     QString m_sourcePath;                // for a sensible default export name
     QString m_exportExt = QStringLiteral("jpg"); // remembered export format
     int m_exportQuality = 90;                    // remembered export quality
+    int m_exportLongEdge = 0;                    // remembered long-edge cap (0 = full)
+    Image::ColorSpace m_exportColorSpace =       // remembered output colour space
+        Image::ColorSpace::SRGB;
     QImage m_sourceQImage;               // for colour sampling + preview mask
     QImage m_originalQImage;             // decoded source, no edits (Before/After); lazy
     bool m_compareOriginal = false;      // Before/After: show the un-edited original

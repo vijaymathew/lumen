@@ -45,6 +45,17 @@ else()
     message(STATUS "Lensfun not found — lens correction is perspective-only")
 endif()
 
+# Little CMS (lcms2) drives export colour management — it synthesises the ICC
+# profiles the wide-gamut export paths transform into. It ships as a libvips
+# dependency, but the dev headers may be absent on bare CI runners, so it is
+# OPTIONAL: without it, export is limited to sRGB (see Image::ColorSpace).
+pkg_check_modules(LCMS2 IMPORTED_TARGET lcms2)
+if(LCMS2_FOUND)
+    message(STATUS "lcms2 ${LCMS2_VERSION} found — export colour management enabled")
+else()
+    message(STATUS "lcms2 not found — export limited to sRGB")
+endif()
+
 if(MSVC)
     set(LUMEN_WARNINGS /W3)
 else()
@@ -125,6 +136,10 @@ target_link_libraries(lumen_core PUBLIC Qt6::Core Qt6::Gui PkgConfig::VIPS PkgCo
 if(LENSFUN_FOUND)
     target_link_libraries(lumen_core PUBLIC PkgConfig::LENSFUN)
     target_compile_definitions(lumen_core PUBLIC LUMEN_HAVE_LENSFUN)
+endif()
+if(LCMS2_FOUND)
+    target_link_libraries(lumen_core PUBLIC PkgConfig::LCMS2)
+    target_compile_definitions(lumen_core PUBLIC LUMEN_HAVE_LCMS)
 endif()
 target_compile_options(lumen_core PRIVATE ${LUMEN_WARNINGS})
 

@@ -1622,16 +1622,19 @@ void MainWindow::exportImage()
         return;
     }
 
-    // 1. Choose format + quality.
+    // 1. Choose format + quality + size + colour space.
     ExportDialog dlg(this);
-    dlg.setSelection(m_exportExt, m_exportQuality);
+    dlg.setSelection(m_exportExt, m_exportQuality, m_exportLongEdge, m_exportColorSpace);
     if (dlg.exec() != QDialog::Accepted)
         return;
     m_exportExt = dlg.extension();
     const int quality = dlg.quality();
-    const int bits = dlg.bits();
     if (quality >= 0)
         m_exportQuality = quality;
+    m_exportLongEdge = dlg.longEdge();
+    m_exportColorSpace = dlg.colorSpace();
+    const Image::ExportOptions exportOpts{quality, dlg.bits(), m_exportLongEdge,
+                                          m_exportColorSpace};
 
     // 2. Choose the path, defaulting to "<name>-edited.<ext>" in the last-used
     //    export folder (falling back to next-to-the-source).
@@ -1664,7 +1667,7 @@ void MainWindow::exportImage()
     badge->start();
     layoutOverlays();
     m_exportWatcher.setFuture(QtConcurrent::run(
-        [this, path, quality, bits, healActive, snapshot]() -> ExportResult {
+        [this, path, exportOpts, healActive, snapshot]() -> ExportResult {
             ExportResult r;
             r.path = path;
             const Image result = healActive ? m_graph.result() : snapshot;
@@ -1672,7 +1675,7 @@ void MainWindow::exportImage()
                 r.error = QStringLiteral("nothing to export");
                 return r;
             }
-            r.ok = result.saveToFile(path, quality, bits, &r.error);
+            r.ok = result.saveToFile(path, exportOpts, &r.error);
             return r;
         }));
 }

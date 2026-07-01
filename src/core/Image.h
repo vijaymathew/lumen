@@ -17,6 +17,26 @@ struct _VipsImage;
 // treat inputs as immutable and produce new images rather than mutating them.
 class Image {
 public:
+    // Output colour space for export. The working pipeline is always sRGB; a
+    // non-sRGB choice runs an ICC transform on write and embeds the profile so
+    // wide-gamut displays / print shops interpret the file correctly. Requires
+    // colour management (lcms) — see colorManagementAvailable().
+    enum class ColorSpace { SRGB, DisplayP3, AdobeRGB };
+
+    // Bundles the tunable knobs of an export. Defaults reproduce the historical
+    // behaviour (full-resolution, 8-bit, sRGB, encoder-default quality).
+    struct ExportOptions {
+        int quality = -1;  // 0-100 for lossy formats; <0 = encoder default
+        int bits = 8;      // 8 or 16 per channel (16 only for PNG/TIFF)
+        int longEdge = 0;  // cap the longest edge to this many px; <=0 = no resize
+        ColorSpace colorSpace = ColorSpace::SRGB;
+    };
+
+    // Whether non-sRGB export colour spaces are available in this build (lcms
+    // was found at configure time). When false, ExportOptions::colorSpace is
+    // ignored and output is always sRGB.
+    static bool colorManagementAvailable();
+
     Image() = default;
 
     // Wraps `img`, taking an additional reference (the caller keeps theirs).
@@ -81,7 +101,17 @@ public:
 
     // As above, with `bits` (8 or 16) per channel. 16-bit only benefits lossless
     // formats (PNG/TIFF); JPEG/WebP are 8-bit regardless.
-    bool saveToFile(const QString &path, int quality, int bits, QString *error = nullptr) const;
+    bool saveToFile(const QString &path, int quality, int bits, QString *error = nullptr) const
+    {
+        return saveToFile(path, ExportOptions{quality, bits, 0, ColorSpace::SRGB}, error);
+    }
+
+    // Full-control export. In addition to quality/bits, `opts.longEdge` caps the
+    // exported image's longest edge (downscaling only; a larger or zero value
+    // keeps full resolution) and `opts.colorSpace` selects the output colour
+    // space, embedding the matching ICC profile for non-sRGB choices.
+    bool saveToFile(const QString &path, const ExportOptions &opts,
+                    QString *error = nullptr) const;
 
     // Raw handle for node implementations (only meaningful in vips-aware TUs).
     _VipsImage *handle() const { return m_image; }

@@ -5,11 +5,82 @@
 
 #include "core/Image.h"
 
+#ifdef LUMEN_HAVE_LCMS
+#include <lcms2.h>
+#endif
+
+#include <QDir>
 #include <QFileInfo>
+#include <QTemporaryFile>
 
 #include <algorithm>
+#include <memory>
 
 namespace {
+
+#ifdef LUMEN_HAVE_LCMS
+// Synthesises an ICC profile for `space` with lcms and returns its bytes, or an
+// empty array on failure. The primaries/transfer functions are the published
+// definitions: sRGB and Display P3 share the sRGB (IEC 61966-2-1) transfer
+// curve and differ only in primaries; Adobe RGB (1998) uses a 2.19921875 gamma.
+// All three are D65-white. Generating the profiles avoids shipping (and the
+// licensing questions around) the vendor .icc files.
+QByteArray iccProfileBytes(Image::ColorSpace space)
+{
+    cmsHPROFILE prof = nullptr;
+    if (space == Image::ColorSpace::SRGB) {
+        prof = cmsCreate_sRGBProfile();
+    } else {
+        const cmsCIExyY white = {0.3127, 0.3290, 1.0}; // D65
+        cmsCIExyYTRIPLE prim;
+        cmsToneCurve *curve = nullptr;
+        if (space == Image::ColorSpace::DisplayP3) {
+            prim = {{0.680, 0.320, 1.0}, {0.265, 0.690, 1.0}, {0.150, 0.060, 1.0}};
+            // sRGB piecewise transfer: Y = ((X+0.055)/1.055)^2.4 for X>0.04045,
+            // else X/12.92. lcms parametric curve type 4 takes {g,a,b,c,d}.
+            const cmsFloat64Number p[5] = {2.4, 1.0 / 1.055, 0.055 / 1.055,
+                                           1.0 / 12.92, 0.04045};
+            curve = cmsBuildParametricToneCurve(nullptr, 4, p);
+        } else { // AdobeRGB
+            prim = {{0.640, 0.330, 1.0}, {0.210, 0.710, 1.0}, {0.150, 0.060, 1.0}};
+            curve = cmsBuildGamma(nullptr, 563.0 / 256.0); // 2.19921875
+        }
+        if (curve) {
+            cmsToneCurve *curves[3] = {curve, curve, curve};
+            prof = cmsCreateRGBProfile(&white, &prim, curves);
+            cmsFreeToneCurve(curve); // copied into the profile
+        }
+    }
+    if (!prof)
+        return {};
+
+    cmsUInt32Number n = 0;
+    QByteArray bytes;
+    if (cmsSaveProfileToMem(prof, nullptr, &n) && n > 0) {
+        bytes.resize(int(n));
+        if (!cmsSaveProfileToMem(prof, bytes.data(), &n))
+            bytes.clear();
+    }
+    cmsCloseProfile(prof);
+    return bytes;
+}
+
+// Writes `bytes` to a freshly created temporary .icc file and returns it. The
+// caller keeps the QTemporaryFile alive until libvips has finished reading it
+// (vips_image_write_to_file evaluates lazily). Returns nullptr on failure.
+std::unique_ptr<QTemporaryFile> writeTempProfile(const QByteArray &bytes)
+{
+    if (bytes.isEmpty())
+        return nullptr;
+    auto file = std::make_unique<QTemporaryFile>(
+        QDir::temp().filePath(QStringLiteral("lumen_XXXXXX.icc")));
+    if (!file->open() || file->write(bytes) != bytes.size())
+        return nullptr;
+    file->flush();
+    return file;
+}
+#endif // LUMEN_HAVE_LCMS
+
 
 // Returns a new sRGB, `fmt`-format, 4-band (RGBA) image the caller owns, or
 // nullptr on error. Does not consume `in`. `fmt` is UCHAR for display/export or
@@ -278,13 +349,25 @@ QImage Image::toQImage() const
                   [](void *p) { g_free(p); }, buf);
 }
 
-bool Image::saveToFile(const QString &path, int quality, int bits, QString *error) const
+bool Image::colorManagementAvailable()
+{
+#ifdef LUMEN_HAVE_LCMS
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool Image::saveToFile(const QString &path, const ExportOptions &opts, QString *error) const
 {
     if (!m_image) {
         if (error)
             *error = QStringLiteral("No image to export");
         return false;
     }
+
+    const int bits = opts.bits;
+    const int quality = opts.quality;
 
     // libvips chooses the saver from the extension and parses per-format options
     // appended as filename[opt=val]. Apply quality to the lossy savers only.
@@ -313,6 +396,19 @@ bool Image::saveToFile(const QString &path, int quality, int bits, QString *erro
         return false;
     };
 
+    // Downscale so the longest edge fits opts.longEdge, done on the float image
+    // for the best resampling precision. Never upscales (scale is clamped ≤ 1).
+    if (opts.longEdge > 0) {
+        const int maxEdge = std::max(vips_image_get_width(cur), vips_image_get_height(cur));
+        if (opts.longEdge < maxEdge) {
+            VipsImage *rs = nullptr;
+            const double scale = double(opts.longEdge) / double(maxEdge);
+            if (vips_resize(cur, &rs, scale, nullptr))
+                return fail({});
+            replace(rs);
+        }
+    }
+
     // Quantise the float working image to the requested output depth. 16-bit
     // scales 0..255 → 0..65535 (×257) before the USHORT cast.
     VipsImage *q = nullptr;
@@ -336,6 +432,31 @@ bool Image::saveToFile(const QString &path, int quality, int bits, QString *erro
             return fail({});
         replace(rgb);
     }
+
+    // Convert from sRGB into the requested output space and embed its ICC
+    // profile (the savers pick that up as metadata). sRGB stays untagged — the
+    // universal default — so existing files round-trip unchanged.
+#ifdef LUMEN_HAVE_LCMS
+    std::unique_ptr<QTemporaryFile> dstProfile; // must outlive the lazy write
+    // An RGB ICC profile only applies to a 3-band image. Real exports always are
+    // (the loaders normalise to sRGB RGBA and we've just dropped alpha); a stray
+    // non-RGB image simply skips the transform and exports as-is.
+    if (opts.colorSpace != ColorSpace::SRGB && vips_image_get_bands(cur) == 3) {
+        // Input is our sRGB working space (libvips' built-in "srgb" profile);
+        // the destination profile is synthesised to a temp .icc file.
+        dstProfile = writeTempProfile(iccProfileBytes(opts.colorSpace));
+        if (!dstProfile)
+            return fail(QStringLiteral("Could not build ICC profile for export"));
+        const QByteArray out = dstProfile->fileName().toUtf8();
+        VipsImage *conv = nullptr;
+        if (vips_icc_transform(cur, &conv, out.constData(),
+                               "input_profile", "srgb",
+                               "depth", bits,
+                               "intent", VIPS_INTENT_RELATIVE, nullptr))
+            return fail({});
+        replace(conv);
+    }
+#endif
 
     const int rc = vips_image_write_to_file(cur, utf8.constData(), nullptr);
     g_object_unref(cur);

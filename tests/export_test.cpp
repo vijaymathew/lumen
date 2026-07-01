@@ -84,6 +84,63 @@ int main(int /*argc*/, char **argv)
         QFile::remove(p);
     }
 
+    // Long-edge resize caps the longest side and preserves aspect (16×12 → 8×6).
+    {
+        const QString p = QDir::temp().filePath(QStringLiteral("lumen_resize.png"));
+        QFile::remove(p);
+        Image::ExportOptions opts;
+        opts.longEdge = 8;
+        CHECK(result.saveToFile(p, opts, &error));
+        const Image rr = Image::fromFile(p, &error);
+        CHECK(!rr.isNull());
+        CHECK(rr.width() == 8 && rr.height() == 6);
+        QFile::remove(p);
+
+        // A long-edge larger than the image never upscales. (Distinct path: a
+        // libvips load is cached on filename+mtime, so reusing `p` within the
+        // same second could hand back the stale downscaled load above.)
+        const QString p2 = QDir::temp().filePath(QStringLiteral("lumen_noupscale.png"));
+        QFile::remove(p2);
+        Image::ExportOptions big;
+        big.longEdge = 100;
+        CHECK(result.saveToFile(p2, big, &error));
+        const Image rr2 = Image::fromFile(p2, &error);
+        CHECK(!rr2.isNull());
+        CHECK(rr2.width() == 16 && rr2.height() == 12);
+        QFile::remove(p2);
+    }
+
+    // Wide-gamut export: convert a real RGB image into P3 / Adobe RGB. When
+    // colour management is compiled in, the file carries an embedded ICC profile;
+    // without it the option degrades to sRGB but must still write successfully.
+    // (A 3-band RGB source mirrors the loaders' normalised working image — the
+    // synthetic 1-band `black()` above has no colour to transform.)
+    {
+        unsigned char rgb[16 * 12 * 3];
+        for (int i = 0; i < 16 * 12; ++i) {
+            rgb[i * 3 + 0] = static_cast<unsigned char>(i % 256); // R ramp
+            rgb[i * 3 + 1] = 128;                                 // G
+            rgb[i * 3 + 2] = 64;                                  // B
+        }
+        const Image colour = Image::fromInterleaved(rgb, 16, 12, 3);
+        CHECK(!colour.isNull());
+
+        for (const Image::ColorSpace cs :
+             {Image::ColorSpace::DisplayP3, Image::ColorSpace::AdobeRGB}) {
+            const QString p = QDir::temp().filePath(
+                QStringLiteral("lumen_gamut_%1.jpg").arg(static_cast<int>(cs)));
+            QFile::remove(p);
+            Image::ExportOptions opts;
+            opts.quality = 92;
+            opts.colorSpace = cs;
+            CHECK(colour.saveToFile(p, opts, &error));
+            const Image rr = Image::fromFile(p, &error);
+            CHECK(!rr.isNull());
+            CHECK(rr.width() == 16 && rr.height() == 12);
+            QFile::remove(p);
+        }
+    }
+
     ImageBuffer::shutdownLibrary();
     std::puts("export_test: OK");
     return 0;

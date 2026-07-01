@@ -1,5 +1,6 @@
 #include "ui/ExportDialog.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -7,6 +8,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSlider>
+#include <QSpinBox>
 #include <QVBoxLayout>
 
 namespace {
@@ -49,12 +51,42 @@ ExportDialog::ExportDialog(QWidget *parent)
     m_bits->addItem(QStringLiteral("8-bit"), 8);
     m_bits->addItem(QStringLiteral("16-bit"), 16);
 
+    // Resize: cap the longest edge (downscale only). Unchecked keeps full size.
+    m_resize = new QCheckBox(QStringLiteral("Limit long edge to"), this);
+    m_longEdge = new QSpinBox(this);
+    m_longEdge->setRange(16, 60000);
+    m_longEdge->setSingleStep(256);
+    m_longEdge->setValue(2048);
+    m_longEdge->setSuffix(QStringLiteral(" px"));
+
+    auto *resizeRow = new QHBoxLayout;
+    resizeRow->setContentsMargins(0, 0, 0, 0);
+    resizeRow->addWidget(m_resize);
+    resizeRow->addWidget(m_longEdge, 1);
+
+    // Output colour space. Non-sRGB choices need colour management (lcms); when
+    // unavailable the control is disabled and export stays sRGB.
+    m_colorSpace = new QComboBox(this);
+    m_colorSpace->addItem(QStringLiteral("sRGB"),
+                          static_cast<int>(Image::ColorSpace::SRGB));
+    m_colorSpace->addItem(QStringLiteral("Display P3"),
+                          static_cast<int>(Image::ColorSpace::DisplayP3));
+    m_colorSpace->addItem(QStringLiteral("Adobe RGB"),
+                          static_cast<int>(Image::ColorSpace::AdobeRGB));
+    if (!Image::colorManagementAvailable()) {
+        m_colorSpace->setEnabled(false);
+        m_colorSpace->setToolTip(
+            QStringLiteral("Colour management unavailable in this build — output is sRGB"));
+    }
+
     auto *form = new QFormLayout;
     form->addRow(QStringLiteral("Format"), m_format);
     m_qualityName = new QLabel(QStringLiteral("Quality"), this);
     form->addRow(m_qualityName, qualityRow);
     m_bitsName = new QLabel(QStringLiteral("Depth"), this);
     form->addRow(m_bitsName, m_bits);
+    form->addRow(QStringLiteral("Size"), resizeRow);
+    form->addRow(QStringLiteral("Colour"), m_colorSpace);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
                                          this);
@@ -67,6 +99,7 @@ ExportDialog::ExportDialog(QWidget *parent)
     layout->addWidget(buttons);
 
     connect(m_format, &QComboBox::currentIndexChanged, this, &ExportDialog::syncRows);
+    connect(m_resize, &QCheckBox::toggled, this, &ExportDialog::syncRows);
     connect(m_quality, &QSlider::valueChanged, this, [this](int v) {
         m_qualityValue->setText(QString::number(v));
     });
@@ -83,9 +116,11 @@ void ExportDialog::syncRows()
     m_qualityValue->setEnabled(lossy);
     m_bitsName->setEnabled(!lossy);
     m_bits->setEnabled(!lossy);
+    m_longEdge->setEnabled(m_resize->isChecked());
 }
 
-void ExportDialog::setSelection(const QString &extension, int quality)
+void ExportDialog::setSelection(const QString &extension, int quality, int longEdge,
+                                Image::ColorSpace colorSpace)
 {
     const int n = m_format->count();
     for (int i = 0; i < n; ++i) {
@@ -96,6 +131,14 @@ void ExportDialog::setSelection(const QString &extension, int quality)
     }
     if (quality >= 1 && quality <= 100)
         m_quality->setValue(quality);
+    m_resize->setChecked(longEdge > 0);
+    if (longEdge > 0)
+        m_longEdge->setValue(longEdge);
+    if (m_colorSpace->isEnabled()) {
+        const int idx = m_colorSpace->findData(static_cast<int>(colorSpace));
+        if (idx >= 0)
+            m_colorSpace->setCurrentIndex(idx);
+    }
     syncRows();
 }
 
@@ -113,4 +156,16 @@ int ExportDialog::bits() const
 {
     // 16-bit only meaningful for the lossless formats; lossy stay 8-bit.
     return kFormats[m_format->currentIndex()].lossy ? 8 : m_bits->currentData().toInt();
+}
+
+int ExportDialog::longEdge() const
+{
+    return m_resize->isChecked() ? m_longEdge->value() : 0;
+}
+
+Image::ColorSpace ExportDialog::colorSpace() const
+{
+    if (!m_colorSpace->isEnabled())
+        return Image::ColorSpace::SRGB;
+    return static_cast<Image::ColorSpace>(m_colorSpace->currentData().toInt());
 }
