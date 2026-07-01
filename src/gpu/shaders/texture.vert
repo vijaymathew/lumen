@@ -64,6 +64,10 @@ layout(std140, binding = 0) uniform buf {
     float monoShadowB;
     float grainAmount; // consumed in the fragment stage
     float grainSize;
+    float highlights;  // tonal-region amounts, consumed in the fragment stage
+    float shadows;
+    float whites;
+    float blacks;
 } ubuf;
 
 void main()
