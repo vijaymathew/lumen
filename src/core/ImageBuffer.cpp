@@ -9,7 +9,18 @@
 bool ImageBuffer::initLibrary(const char *argv0)
 {
     // VIPS_INIT returns non-zero on failure.
-    return VIPS_INIT(argv0) == 0;
+    if (VIPS_INIT(argv0) != 0)
+        return false;
+
+    // vips defaults to using every core for each operation. That makes background
+    // work — the live histogram recompute, heal/denoise bakes, export — grab all
+    // cores in a burst and starve the UI thread, which shows up as sliders
+    // dragging jankily while the histogram is open. Leave one core for the UI so
+    // dragging stays smooth; background ops are marginally slower but non-blocking.
+    const int cores = vips_concurrency_get();
+    if (cores > 1)
+        vips_concurrency_set(cores - 1);
+    return true;
 }
 
 void ImageBuffer::shutdownLibrary()

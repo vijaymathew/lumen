@@ -80,6 +80,12 @@ public:
     int width() const;
     int height() const;
 
+    // Returns a materialised copy scaled so its longest edge is at most `maxDim`
+    // (never upscales; returns *this when already small enough or on failure).
+    // The result holds real pixels, so downstream passes don't re-read the source
+    // — used to cache a small input for cheap, repeated work like the histogram.
+    Image downscaled(int maxDim) const;
+
     // Materialises to a packed RGBA8 QImage for display / GPU upload.
     QImage toQImage() const;
 

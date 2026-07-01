@@ -55,6 +55,11 @@ public:
     // None mask at full opacity this is just applyAdjustments(base).
     Image composite(Image base);
 
+    // Like composite(), but runs the node chain WITHOUT touching the per-node
+    // cache — for a one-off pass on a different-sized input (e.g. a downsampled
+    // image for the live histogram) that must not disturb the interactive caches.
+    Image compositeUncached(Image base) const;
+
     // --- GPU preview accumulation (single-pass; used for the Base layer) ----
     void contributeToPreview(PreviewState &state) const;
     void contributeToPreviewLut(ChannelLuts &luts) const;
@@ -80,6 +85,8 @@ public:
 private:
     int indexOf(const QString &id) const;
     void restoreProperties(const QJsonObject &state); // name/enabled/opacity/mask
+    Image applyAdjustmentsUncached(Image input) const; // node chain, no caching
+    Image blend(Image base, Image adjusted) const;     // mask×opacity composite
 
     QString m_name;
     bool m_enabled = true;

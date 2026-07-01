@@ -66,6 +66,13 @@ public:
     // the source if there are no edits, or a null Image if no source is set.
     Image result();
 
+    // Like result(), but composited over a cached downsampled copy of the source
+    // (longest edge ≤ maxDim) using the uncached node path. Pointwise edits are
+    // resolution-independent, so this yields an essentially identical histogram
+    // far more cheaply than materialising the full-res composite — cheap enough to
+    // run on every edit tick without stalling the UI. Not for pixel output.
+    Image resultDownsampled(int maxDim);
+
     // GPU preview parameters from the Base layer (single-pass; the multi-pass
     // chain over all layers is step 3).
     PreviewState previewState() const;
@@ -90,6 +97,8 @@ public:
 
 private:
     Image m_source;
+    Image m_sourceSmall;     // cached downsample of m_source for resultDownsampled
+    int m_sourceSmallDim = 0; // maxDim m_sourceSmall was built for (0 = none)
     std::vector<std::unique_ptr<Layer>> m_layers; // [0] = Base, always present
     int m_activeLayer = 0;
     CropState m_crop; // final crop/orientation, applied after compositing

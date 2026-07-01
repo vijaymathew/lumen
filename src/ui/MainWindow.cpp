@@ -624,7 +624,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_histogram = new HistogramWidget(this);
     m_histTimer = new QTimer(this);
     m_histTimer->setSingleShot(true);
-    m_histTimer->setInterval(160);
+    // Recompute the histogram a beat after edits settle, not on every drag tick —
+    // long enough that brief pauses mid-drag don't kick off a full recompute.
+    m_histTimer->setInterval(300);
     connect(m_histTimer, &QTimer::timeout, this, &MainWindow::updateHistogram);
     connect(&m_histWatcher, &QFutureWatcher<HistogramData>::finished, this, [this] {
         if (!m_histWatcher.future().isValid())
@@ -2750,6 +2752,10 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     return QMainWindow::eventFilter(watched, event);
 }
 
+// Longest edge the histogram is computed at — plenty for a 256-bin plot and cheap
+// to recompute live.
+static constexpr int kHistogramMaxDim = 512;
+
 void MainWindow::updateHistogram()
 {
     if (!m_histogram || !m_histogram->isVisible() || m_graph.source().isNull())
@@ -2777,15 +2783,16 @@ void MainWindow::updateHistogram()
             return computeHistogram(result);
         }));
     } else {
-        // No eager node: the pipeline is lazy, so build the snapshot on the UI
-        // thread (cheap, race-free) and only materialise it on the worker.
-        const Image result = m_graph.result();
+        // No eager node: composite over a cached downsampled source so each
+        // recompute is cheap (pointwise edits are resolution-independent). Build
+        // the snapshot on the UI thread (race-free) and materialise on the worker.
+        const Image result = m_graph.resultDownsampled(kHistogramMaxDim);
         if (result.isNull())
             return;
         m_histWatcher.setFuture(QtConcurrent::run([this, gen, result]() -> HistogramData {
             if (gen != m_histGen)
                 return HistogramData{}; // superseded
-            return computeHistogram(result);
+            return computeHistogram(result, kHistogramMaxDim);
         }));
     }
 }

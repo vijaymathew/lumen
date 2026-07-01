@@ -152,6 +152,26 @@ Image Image::black(int width, int height)
     return Image::adopt(out);
 }
 
+Image Image::downscaled(int maxDim) const
+{
+    if (!m_image || maxDim <= 0)
+        return *this;
+    const int longest = std::max(width(), height());
+    if (longest <= maxDim)
+        return *this; // already small enough — no work
+    const double scale = static_cast<double>(maxDim) / longest;
+    VipsImage *small = nullptr;
+    if (vips_resize(m_image, &small, scale, nullptr))
+        return *this; // on failure fall back to the full-res image
+    // Force evaluation into an in-memory buffer so callers reuse it without
+    // re-running the (full-resolution) resize each time.
+    VipsImage *mem = vips_image_copy_memory(small);
+    g_object_unref(small);
+    if (!mem)
+        return *this;
+    return Image::adopt(mem);
+}
+
 Image::Image(const Image &other)
     : m_image(other.m_image)
 {

@@ -124,12 +124,35 @@ Image Layer::applyAdjustments(Image input)
     return current;
 }
 
+Image Layer::applyAdjustmentsUncached(Image input) const
+{
+    Image current = std::move(input);
+    if (current.isNull())
+        return current;
+    for (const auto &node : m_nodes)
+        if (node->isEnabled())
+            current = node->apply(current);
+    return current;
+}
+
 Image Layer::composite(Image base)
 {
     if (base.isNull() || !m_enabled)
         return base;
-
     Image adjusted = applyAdjustments(base);
+    return blend(std::move(base), std::move(adjusted));
+}
+
+Image Layer::compositeUncached(Image base) const
+{
+    if (base.isNull() || !m_enabled)
+        return base;
+    Image adjusted = applyAdjustmentsUncached(base);
+    return blend(std::move(base), std::move(adjusted));
+}
+
+Image Layer::blend(Image base, Image adjusted) const
+{
     // Base-layer fast path: a None mask (with no exclusive zone) at full opacity
     // is just the adjustment.
     if (m_mask.type == MaskSpec::None && m_mask.zones.empty() && m_opacity >= 0.999f)

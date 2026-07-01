@@ -17,6 +17,8 @@ EditGraph::~EditGraph() = default;
 void EditGraph::setSource(const Image &source)
 {
     m_source = source;
+    m_sourceSmall = Image(); // invalidate the cached downsample
+    m_sourceSmallDim = 0;
     // The pipeline input changed: every layer must recompute from node 0.
     for (auto &layer : m_layers)
         layer->invalidateFrom(0);
@@ -64,6 +66,21 @@ Image EditGraph::result()
         current = layer->composite(current);
     current = applyCrop(current, m_crop); // final geometric stage
     return applyVignette(current, m_vignette); // creative vignette, post-crop
+}
+
+Image EditGraph::resultDownsampled(int maxDim)
+{
+    if (m_source.isNull())
+        return Image();
+    if (m_sourceSmall.isNull() || m_sourceSmallDim != maxDim) {
+        m_sourceSmall = m_source.downscaled(maxDim); // materialised once, then reused
+        m_sourceSmallDim = maxDim;
+    }
+    Image current = m_sourceSmall;
+    for (auto &layer : m_layers)
+        current = layer->compositeUncached(current);
+    current = applyCrop(current, m_crop);
+    return applyVignette(current, m_vignette);
 }
 
 PreviewState EditGraph::previewState() const
