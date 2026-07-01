@@ -68,6 +68,31 @@ layout(std140, binding = 0) uniform buf {
     float shadows;
     float whites;
     float blacks;
+    float colorMixEnabled; // per-color HSL, all consumed in the fragment stage
+    float mixHue0;
+    float mixHue1;
+    float mixHue2;
+    float mixHue3;
+    float mixHue4;
+    float mixHue5;
+    float mixHue6;
+    float mixHue7;
+    float mixSat0;
+    float mixSat1;
+    float mixSat2;
+    float mixSat3;
+    float mixSat4;
+    float mixSat5;
+    float mixSat6;
+    float mixSat7;
+    float mixLum0;
+    float mixLum1;
+    float mixLum2;
+    float mixLum3;
+    float mixLum4;
+    float mixLum5;
+    float mixLum6;
+    float mixLum7;
 } ubuf;
 
 void main()

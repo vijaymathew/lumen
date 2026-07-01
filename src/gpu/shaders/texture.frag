@@ -73,6 +73,31 @@ layout(std140, binding = 0) uniform buf {
     float shadows;
     float whites;
     float blacks;
+    float colorMixEnabled; // per-color HSL: 0/1 gate
+    float mixHue0;      // 8 hue bands × (hue shift / saturation / luminance), [-1,1]
+    float mixHue1;
+    float mixHue2;
+    float mixHue3;
+    float mixHue4;
+    float mixHue5;
+    float mixHue6;
+    float mixHue7;
+    float mixSat0;
+    float mixSat1;
+    float mixSat2;
+    float mixSat3;
+    float mixSat4;
+    float mixSat5;
+    float mixSat6;
+    float mixSat7;
+    float mixLum0;
+    float mixLum1;
+    float mixLum2;
+    float mixLum3;
+    float mixLum4;
+    float mixLum5;
+    float mixLum6;
+    float mixLum7;
 } ubuf;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -153,6 +178,69 @@ float monoBandShift(float hue)
     return b[0];
 }
 
+// --- Per-color HSL (colour mixer) -------------------------------------------
+// HSV→RGB, matching ColorMixerNode::hsvToRgb exactly. h in [0,360), s/v in [0,1].
+vec3 hsv2rgb(float h, float s, float v)
+{
+    float c = v * s;
+    float hp = h / 60.0;
+    float x = c * (1.0 - abs(mod(hp, 2.0) - 1.0));
+    vec3 rgb;
+    if (hp < 1.0)
+        rgb = vec3(c, x, 0.0);
+    else if (hp < 2.0)
+        rgb = vec3(x, c, 0.0);
+    else if (hp < 3.0)
+        rgb = vec3(0.0, c, x);
+    else if (hp < 4.0)
+        rgb = vec3(0.0, x, c);
+    else if (hp < 5.0)
+        rgb = vec3(x, 0.0, c);
+    else
+        rgb = vec3(c, 0.0, x);
+    return rgb + vec3(v - c);
+}
+
+// Per-color interpolated amount at `hue`: tent interpolation between the two
+// adjacent band anchors (last segment wraps 330°→360°). Matches
+// ColorMixerNode::bandInterp (same centres as the mono band block).
+float mixBandInterp(float b[8], float hue)
+{
+    float cc[8] = float[8](0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 330.0);
+    for (int i = 0; i < 8; ++i) {
+        float lo = cc[i];
+        float hi = (i < 7) ? cc[i + 1] : 360.0;
+        if (hue >= lo && hue < hi) {
+            float t = (hue - lo) / (hi - lo);
+            return b[i] * (1.0 - t) + b[(i + 1) & 7] * t;
+        }
+    }
+    return b[0];
+}
+
+// Per-color HSL. 30.0 = ColorMixerNode::kHueRangeDeg, 1.0 = kLumRange — keep in
+// sync. The whole adjustment is blended in by HSV saturation so greys stay put.
+vec3 applyColorMix(vec3 c)
+{
+    float mx = max(c.r, max(c.g, c.b));
+    float mn = min(c.r, min(c.g, c.b));
+    float s = (mx <= 1e-6) ? 0.0 : (mx - mn) / mx;
+    if (s < 1e-5)
+        return c; // neutral: nothing to mix
+    float v = mx;
+    float h = monoHue(c); // [0,360)
+    float hb[8] = float[8](ubuf.mixHue0, ubuf.mixHue1, ubuf.mixHue2, ubuf.mixHue3,
+                           ubuf.mixHue4, ubuf.mixHue5, ubuf.mixHue6, ubuf.mixHue7);
+    float sb[8] = float[8](ubuf.mixSat0, ubuf.mixSat1, ubuf.mixSat2, ubuf.mixSat3,
+                           ubuf.mixSat4, ubuf.mixSat5, ubuf.mixSat6, ubuf.mixSat7);
+    float lb[8] = float[8](ubuf.mixLum0, ubuf.mixLum1, ubuf.mixLum2, ubuf.mixLum3,
+                           ubuf.mixLum4, ubuf.mixLum5, ubuf.mixLum6, ubuf.mixLum7);
+    float h2 = mod(h + mixBandInterp(hb, h) * 30.0 + 360.0, 360.0);
+    float s2 = clamp(s * (1.0 + mixBandInterp(sb, h)), 0.0, 1.0);
+    float v2 = clamp(v * (1.0 + mixBandInterp(lb, h) * 1.0), 0.0, 1.0);
+    return mix(c, hsv2rgb(h2, s2, v2), s);
+}
+
 // Hash of an integer lattice point → [0,1]. Matches GrainNode's hash2.
 float grainHash(float x, float y)
 {
@@ -188,6 +276,11 @@ void main()
     col = pow(max(wbLin, 0.0), vec3(1.0 / 2.2));
     col = applyTone(col, ubuf.exposure, ubuf.contrast, ubuf.saturation, ubuf.vibrance,
                     ubuf.highlights, ubuf.shadows, ubuf.whites, ubuf.blacks);
+    // 1.5 Per-color HSL (colour mixer): after global tone, before the tone curves
+    //     — matches ColorMixerNode's position in the node chain (tune → colormixer
+    //     → curves).
+    if (ubuf.colorMixEnabled > 0.5)
+        col = applyColorMix(col);
     // 2. Tone curves: each channel maps through its own LUT column (R->.r,
     //    G->.g, B->.b). Identity when no curve.
     col = vec3(texture(lut, vec2(col.r, 0.5)).r,

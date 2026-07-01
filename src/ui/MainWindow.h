@@ -49,6 +49,8 @@ class CropGizmo;
 class CropPanel;
 class LooksPanel;
 class MonoPanel;
+class ColorMixerNode;
+class ColorMixerPanel;
 class GrainPanel;
 class VignettePanel;
 class SharpenPanel;
@@ -164,6 +166,7 @@ private:
     LutNode *activeLut() const;
     MonoNode *activeMono() const;
     ColorGradeNode *activeColorGrade() const;
+    ColorMixerNode *activeColorMixer() const;
     void openToneTool();
     void closeToneTool();
     void openCurvesTool();
@@ -175,6 +178,8 @@ private:
     void closeMonoTool();
     void openColorGradeTool();
     void closeColorGradeTool();
+    void openColorMixerTool();
+    void closeColorMixerTool();
     void openLensTool();  // toggles the Lens & Perspective panel
     void closeLensTool();
     void openSharpenTool();  // toggles the Sharpen panel
@@ -285,6 +290,7 @@ private:
     CurvesPanel *m_curvesPanel = nullptr;
     LooksPanel *m_looksPanel = nullptr;
     MonoPanel *m_monoPanel = nullptr;
+    ColorMixerPanel *m_colorMixerPanel = nullptr;
     ColorGradePanel *m_colorGradePanel = nullptr;
     LensPanel *m_lensPanel = nullptr;
     SharpenPanel *m_sharpenPanel = nullptr;
@@ -330,6 +336,7 @@ private:
     CurvesNode *m_curves = nullptr;      // owned by m_graph
     LutNode *m_lutNode = nullptr;        // owned by m_graph
     MonoNode *m_mono = nullptr;          // owned by m_graph
+    ColorMixerNode *m_colorMixer = nullptr; // owned by m_graph (after tune, before curves)
     ColorGradeNode *m_colorGrade = nullptr; // owned by m_graph
     HealNode *m_heal = nullptr;          // owned by m_graph (second in the chain)
     LensCorrectionNode *m_lens = nullptr; // owned by m_graph (first in the chain)

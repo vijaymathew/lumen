@@ -27,6 +27,8 @@
 #include "ui/LooksPanel.h"
 #include "ui/ColorGradePanel.h"
 #include "ui/MonoPanel.h"
+#include "core/ColorMixerNode.h"
+#include "ui/ColorMixerPanel.h"
 #include "ui/GrainPanel.h"
 #include "ui/VignettePanel.h"
 #include "ui/DefringePanel.h"
@@ -324,8 +326,9 @@ MainWindow::MainWindow(QWidget *parent)
     // group runs first in libvips and is rendered into the preview base texture:
     // lens (warps geometry) -> heal (edits pixels) -> denoise -> sharpen (both
     // neighbourhood ops; denoise before sharpen so noise isn't amplified). Then
-    // the pointwise/LUT ops the shader replicates: tune -> curves -> colorgrade
-    // -> lut -> mono. Selective adjustments are masked layers above the Base.
+    // the pointwise/LUT ops the shader replicates: tune -> colormixer -> curves
+    // -> colorgrade -> lut -> mono. Selective adjustments are masked layers above
+    // the Base.
     m_lens =
         static_cast<LensCorrectionNode *>(m_graph.addNode(std::make_unique<LensCorrectionNode>()));
     m_heal = static_cast<HealNode *>(m_graph.addNode(std::make_unique<HealNode>()));
@@ -333,6 +336,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_defringe = static_cast<DefringeNode *>(m_graph.addNode(std::make_unique<DefringeNode>()));
     m_sharpen = static_cast<SharpenNode *>(m_graph.addNode(std::make_unique<SharpenNode>()));
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
+    m_colorMixer =
+        static_cast<ColorMixerNode *>(m_graph.addNode(std::make_unique<ColorMixerNode>()));
     m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
     m_colorGrade =
         static_cast<ColorGradeNode *>(m_graph.addNode(std::make_unique<ColorGradeNode>()));
@@ -441,6 +446,16 @@ MainWindow::MainWindow(QWidget *parent)
         updatePreview();
     });
     connect(m_monoPanel, &MonoPanel::closed, this, &MainWindow::closeMonoTool);
+
+    m_colorMixerPanel = new ColorMixerPanel(this);
+    connect(m_colorMixerPanel, &ColorMixerPanel::valuesChanged, this,
+            [this](const ColorMixerValues &v) {
+                if (auto *cm = activeColorMixer())
+                    cm->setValues(v);
+                updatePreview();
+            });
+    connect(m_colorMixerPanel, &ColorMixerPanel::closed, this,
+            &MainWindow::closeColorMixerTool);
 
     m_colorGradePanel = new ColorGradePanel(this);
     connect(m_colorGradePanel, &ColorGradePanel::valuesChanged, this,
@@ -954,10 +969,10 @@ MainWindow::MainWindow(QWidget *parent)
     // (only one is open at a time); the persistent panels close themselves.
     const auto closeTool = [this] { closeActiveTool(); };
     QWidget *toolPanels[] = {m_tonePanel,    m_curvesPanel,  m_looksPanel,
-                             m_monoPanel,     m_colorGradePanel, m_lensPanel,
-                             m_sharpenPanel,  m_denoisePanel, m_defringePanel,
-                             m_rawPanel,      m_grainPanel,   m_vignettePanel,
-                             m_cropPanel,     m_healPanel};
+                             m_monoPanel,     m_colorMixerPanel, m_colorGradePanel,
+                             m_lensPanel,     m_sharpenPanel, m_denoisePanel,
+                             m_defringePanel, m_rawPanel,     m_grainPanel,
+                             m_vignettePanel, m_cropPanel,    m_healPanel};
     for (QWidget *p : toolPanels)
         addPanelCloseButton(p, closeTool);
     addPanelCloseButton(m_layersPanel, [this] { hideLayersPanel(); });
@@ -1040,6 +1055,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("export"), QStringLiteral("Export image…"), file},
         {QStringLiteral("tone"), QStringLiteral("Tone (exposure, contrast, saturation)"), toneColor},
         {QStringLiteral("curves"), QStringLiteral("Curves"), toneColor},
+        {QStringLiteral("colormixer"), QStringLiteral("Color mixer (HSL)"), toneColor},
         {QStringLiteral("colorgrade"), QStringLiteral("Color grading (wheels)"), toneColor},
         {QStringLiteral("monochrome"), QStringLiteral("Monochrome (B&W + toning)"), toneColor},
         {QStringLiteral("looks"), QStringLiteral("Looks (LUT)"), toneColor},
@@ -1083,6 +1099,8 @@ void MainWindow::runCommand(const QString &id)
         openLooksTool();
     } else if (id == QLatin1String("monochrome")) {
         openMonoTool();
+    } else if (id == QLatin1String("colormixer")) {
+        openColorMixerTool();
     } else if (id == QLatin1String("colorgrade")) {
         openColorGradeTool();
     } else if (id == QLatin1String("selective")) {
@@ -1801,6 +1819,12 @@ ColorGradeNode *MainWindow::activeColorGrade() const
         m_graph.activeLayer().nodeOfType(QStringLiteral("colorgrade")));
 }
 
+ColorMixerNode *MainWindow::activeColorMixer() const
+{
+    return static_cast<ColorMixerNode *>(
+        m_graph.activeLayer().nodeOfType(QStringLiteral("colormixer")));
+}
+
 void MainWindow::openLayersTool()
 {
     if (m_layersPanel->isVisible())
@@ -1873,6 +1897,10 @@ void MainWindow::reseedOpenPanels()
         if (auto *mono = activeMono())
             m_monoPanel->reveal(mono->values());
     }
+    if (m_colorMixerPanel->isVisible()) {
+        if (auto *cm = activeColorMixer())
+            m_colorMixerPanel->reveal(cm->values());
+    }
     if (m_colorGradePanel->isVisible()) {
         if (auto *g = activeColorGrade())
             m_colorGradePanel->reveal(g->values());
@@ -1886,6 +1914,7 @@ void MainWindow::addAdjustmentLayer()
     // Every adjustment layer gets a tone/curves/look node set (added to it as
     // it is now the active layer).
     m_graph.addNode(std::make_unique<TuneNode>());
+    m_graph.addNode(std::make_unique<ColorMixerNode>());
     m_graph.addNode(std::make_unique<CurvesNode>());
     m_graph.addNode(std::make_unique<ColorGradeNode>());
     m_graph.addNode(std::make_unique<LutNode>());
@@ -1930,6 +1959,13 @@ void MainWindow::selectLayer(int index)
             m_graph.commit();
         }
         m_monoPanel->reveal(activeMono()->values());
+    }
+    if (m_colorMixerPanel->isVisible()) {
+        if (!activeColorMixer()) {
+            m_graph.addNode(std::make_unique<ColorMixerNode>());
+            m_graph.commit();
+        }
+        m_colorMixerPanel->reveal(activeColorMixer()->values());
     }
     if (m_colorGradePanel->isVisible()) {
         if (!activeColorGrade()) {
@@ -2094,6 +2130,29 @@ void MainWindow::openMonoTool()
 void MainWindow::closeMonoTool()
 {
     m_monoPanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::openColorMixerTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    // Most layers carry a colour-mixer node; a layer added by another tool may
+    // not, so add one on demand.
+    if (!activeColorMixer()) {
+        m_graph.addNode(std::make_unique<ColorMixerNode>());
+        m_graph.commit();
+    }
+    m_colorMixerPanel->adjustSize();
+    const int margin = 18;
+    m_colorMixerPanel->move(width() - m_colorMixerPanel->width() - margin, margin);
+    m_colorMixerPanel->reveal(activeColorMixer()->values());
+}
+
+void MainWindow::closeColorMixerTool()
+{
+    m_colorMixerPanel->hide();
     m_graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
@@ -2533,16 +2592,18 @@ void MainWindow::rebuildAdjustments()
             addNodeAdj(QStringLiteral("Sharpen"), 4, m_sharpen);
         if (nodeIsActive(m_tune))
             addNodeAdj(QStringLiteral("Tone"), 5, m_tune);
+        if (nodeIsActive(m_colorMixer))
+            addNodeAdj(QStringLiteral("Color Mixer"), 6, m_colorMixer);
         if (nodeIsActive(m_curves))
-            addNodeAdj(QStringLiteral("Curves"), 6, m_curves);
+            addNodeAdj(QStringLiteral("Curves"), 7, m_curves);
         if (nodeIsActive(m_colorGrade))
-            addNodeAdj(QStringLiteral("Color Grade"), 7, m_colorGrade);
+            addNodeAdj(QStringLiteral("Color Grade"), 8, m_colorGrade);
         if (nodeIsActive(m_lutNode))
-            addNodeAdj(QStringLiteral("Look"), 8, m_lutNode);
+            addNodeAdj(QStringLiteral("Look"), 9, m_lutNode);
         if (nodeIsActive(m_mono))
-            addNodeAdj(QStringLiteral("B&W"), 9, m_mono);
+            addNodeAdj(QStringLiteral("B&W"), 10, m_mono);
         if (nodeIsActive(m_grain))
-            addNodeAdj(QStringLiteral("Grain"), 10, m_grain);
+            addNodeAdj(QStringLiteral("Grain"), 11, m_grain);
 
         // Selective layers (non-Base), then the final geometric/finishing stages.
         for (int i = 1; i < m_graph.layerCount(); ++i) {
@@ -2901,8 +2962,10 @@ int MainWindow::ensureSelectiveLayer()
     int idx = m_graph.activeLayerIndex();
     if (idx == 0 || !selectable(m_graph.layer(idx).mask().type)) {
         m_graph.addLayer(QStringLiteral("Selective %1").arg(m_graph.layerCount()));
-        // Full adjustment node set so any tool (Tone/Curves/Grade/Looks/Mono) works.
+        // Full adjustment node set so any tool (Tone/Mixer/Curves/Grade/Looks/Mono)
+        // works.
         m_graph.addNode(std::make_unique<TuneNode>());
+        m_graph.addNode(std::make_unique<ColorMixerNode>());
         m_graph.addNode(std::make_unique<CurvesNode>());
         m_graph.addNode(std::make_unique<ColorGradeNode>());
         m_graph.addNode(std::make_unique<LutNode>());
@@ -3145,6 +3208,8 @@ void MainWindow::closeActiveTool()
         closeLooksTool();
     else if (m_monoPanel->isVisible())
         closeMonoTool();
+    else if (m_colorMixerPanel->isVisible())
+        closeColorMixerTool();
     else if (m_colorGradePanel->isVisible())
         closeColorGradeTool();
     else if (m_lensPanel->isVisible())
@@ -3220,6 +3285,10 @@ void MainWindow::afterHistoryChange()
     if (m_monoPanel->isVisible()) {
         if (auto *mono = activeMono())
             m_monoPanel->reveal(mono->values());
+    }
+    if (m_colorMixerPanel->isVisible()) {
+        if (auto *cm = activeColorMixer())
+            m_colorMixerPanel->reveal(cm->values());
     }
     if (m_colorGradePanel->isVisible()) {
         if (auto *g = activeColorGrade())
@@ -3342,6 +3411,7 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_curvesPanel);
     clampIntoView(m_looksPanel);
     clampIntoView(m_monoPanel);
+    clampIntoView(m_colorMixerPanel);
     clampIntoView(m_colorGradePanel);
     clampIntoView(m_lensPanel);
     clampIntoView(m_sharpenPanel);
@@ -3393,6 +3463,7 @@ void MainWindow::layoutOverlays()
                                static_cast<QWidget *>(m_curvesPanel),
                                static_cast<QWidget *>(m_looksPanel),
                                static_cast<QWidget *>(m_monoPanel),
+                               static_cast<QWidget *>(m_colorMixerPanel),
                                static_cast<QWidget *>(m_colorGradePanel),
                                static_cast<QWidget *>(m_lensPanel),
                                static_cast<QWidget *>(m_sharpenPanel),

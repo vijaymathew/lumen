@@ -90,6 +90,18 @@ struct PreviewState {
     float shadows = 0.0f;
     float whites = 0.0f;
     float blacks = 0.0f;
+    // ColorMixerNode — per-color HSL. colorMixEnabled gates the shader pass; the
+    // 24 amounts are 8 hue bands × (hue shift / saturation / luminance), each in
+    // [-1,1], 0 = neutral. Named scalars (not GLSL arrays) so std140 packs them
+    // tightly, matching the contiguous-float upload. Appended last so existing
+    // field offsets hold. Matches texture.frag applyColorMix / ColorMixerNode.
+    float colorMixEnabled = 0.0f;
+    float mixHue0 = 0.0f, mixHue1 = 0.0f, mixHue2 = 0.0f, mixHue3 = 0.0f;
+    float mixHue4 = 0.0f, mixHue5 = 0.0f, mixHue6 = 0.0f, mixHue7 = 0.0f;
+    float mixSat0 = 0.0f, mixSat1 = 0.0f, mixSat2 = 0.0f, mixSat3 = 0.0f;
+    float mixSat4 = 0.0f, mixSat5 = 0.0f, mixSat6 = 0.0f, mixSat7 = 0.0f;
+    float mixLum0 = 0.0f, mixLum1 = 0.0f, mixLum2 = 0.0f, mixLum3 = 0.0f;
+    float mixLum4 = 0.0f, mixLum5 = 0.0f, mixLum6 = 0.0f, mixLum7 = 0.0f;
 
     friend bool operator==(const PreviewState &, const PreviewState &) = default;
 };

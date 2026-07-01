@@ -71,6 +71,8 @@ add_library(lumen_core STATIC
     src/core/WhiteBalance.cpp
     src/core/ColorGradeNode.h
     src/core/ColorGradeNode.cpp
+    src/core/ColorMixerNode.h
+    src/core/ColorMixerNode.cpp
     src/core/TuneNode.h
     src/core/TuneNode.cpp
     src/core/Curve.h
@@ -141,6 +143,8 @@ qt_add_executable(lumen
     src/ui/TonePanel.cpp
     src/ui/ColorWheel.cpp
     src/ui/ColorGradePanel.cpp
+    src/ui/ColorMixerPanel.h
+    src/ui/ColorMixerPanel.cpp
     src/ui/CurvesPanel.h
     src/ui/CurvesPanel.cpp
     src/ui/LooksPanel.h
@@ -245,6 +249,11 @@ if(BUILD_TESTING)
     target_link_libraries(colorgrade_test PRIVATE lumen_core)
     target_compile_options(colorgrade_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME colorgrade_test COMMAND colorgrade_test)
+
+    add_executable(colormixer_test tests/colormixer_test.cpp)
+    target_link_libraries(colormixer_test PRIVATE lumen_core)
+    target_compile_options(colormixer_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME colormixer_test COMMAND colormixer_test)
 
     add_executable(export_test tests/export_test.cpp)
     target_link_libraries(export_test PRIVATE lumen_core)
