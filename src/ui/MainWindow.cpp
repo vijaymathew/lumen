@@ -2188,19 +2188,29 @@ void MainWindow::reseedOpenPanels()
     }
 }
 
-void MainWindow::addAdjustmentLayer()
+Layer &MainWindow::addMaskedAdjustmentLayer(const QString &name)
 {
-    Layer &layer = m_graph.addLayer(
-        QStringLiteral("Layer %1").arg(m_graph.layerCount()));
-    // Every adjustment layer gets a tone/curves/look node set (added to it as
-    // it is now the active layer).
+    Layer &layer = m_graph.addLayer(name);
+    // Full adjustment node set so any tool (Tone/Mixer/Curves/Grade/Looks/Mono)
+    // works on the layer (added to it as it is now the active layer).
     m_graph.addNode(std::make_unique<TuneNode>());
     m_graph.addNode(std::make_unique<ColorMixerNode>());
     m_graph.addNode(std::make_unique<CurvesNode>());
     m_graph.addNode(std::make_unique<ColorGradeNode>());
     m_graph.addNode(std::make_unique<LutNode>());
     m_graph.addNode(std::make_unique<MonoNode>());
-    Q_UNUSED(layer);
+    // Start with a full-range luminosity mask (a no-op until dialled in) so the
+    // panel's mask editor — including the Shadows/Midtones/Highlights presets — is
+    // available immediately, matching the "Selective adjustment" command.
+    MaskSpec mask;
+    mask.type = MaskSpec::Luminosity;
+    layer.setMask(mask);
+    return layer;
+}
+
+void MainWindow::addAdjustmentLayer()
+{
+    addMaskedAdjustmentLayer(QStringLiteral("Layer %1").arg(m_graph.layerCount()));
     refreshLayersPanel();
     updatePreview();
     m_graph.commit();
@@ -3247,15 +3257,7 @@ int MainWindow::ensureSelectiveLayer()
     };
     int idx = m_graph.activeLayerIndex();
     if (idx == 0 || !selectable(m_graph.layer(idx).mask().type)) {
-        m_graph.addLayer(QStringLiteral("Selective %1").arg(m_graph.layerCount()));
-        // Full adjustment node set so any tool (Tone/Mixer/Curves/Grade/Looks/Mono)
-        // works.
-        m_graph.addNode(std::make_unique<TuneNode>());
-        m_graph.addNode(std::make_unique<ColorMixerNode>());
-        m_graph.addNode(std::make_unique<CurvesNode>());
-        m_graph.addNode(std::make_unique<ColorGradeNode>());
-        m_graph.addNode(std::make_unique<LutNode>());
-        m_graph.addNode(std::make_unique<MonoNode>());
+        addMaskedAdjustmentLayer(QStringLiteral("Selective %1").arg(m_graph.layerCount()));
         idx = m_graph.activeLayerIndex();
     }
     // Default a still-unset mask to a full-range luminosity mask (a no-op until

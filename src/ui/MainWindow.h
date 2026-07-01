@@ -276,6 +276,11 @@ private:
     // the layer's TuneNode), edited via the Layers panel. ensureSelectiveLayer
     // adds/selects a layer to drive and returns its index.
     int ensureSelectiveLayer();
+    // Appends a new adjustment layer with the full node set and a default
+    // full-range Luminosity mask (so the panel's mask editor — Shadows/Midtones/
+    // Highlights presets included — is available immediately). Shared by the
+    // Layers-panel Add button and the Selective command.
+    Layer &addMaskedAdjustmentLayer(const QString &name);
     void syncBrushMaskToLayer(); // copy the working brush mask into the active layer
     void openHealTool();
     void closeHealTool();
