@@ -13,6 +13,7 @@
 #include "gpu/CanvasWidget.h"
 #include "input/CommandPalette.h"
 #include "ui/CurvesPanel.h"
+#include "ui/ImageOpenDialog.h"
 #include "ui/ExportDialog.h"
 #include "core/Histogram.h"
 #include "ui/DenoisePanel.h"
@@ -1707,8 +1708,10 @@ void MainWindow::openImageDialog()
         patterns << QStringLiteral("*.%1").arg(e) << QStringLiteral("*.%1").arg(e.toUpper());
     const QString filter = QStringLiteral("Images (%1);;All files (*)")
                                .arg(patterns.join(QLatin1Char(' ')));
+    // Our own preview dialog (not the native one) so every format — RAW included
+    // — shows a consistent thumbnail as the user browses.
     const QString path =
-        QFileDialog::getOpenFileName(this, QStringLiteral("Open image"), dir, filter);
+        ImageOpenDialog::getOpenFileName(this, QStringLiteral("Open image"), dir, filter);
     if (!path.isEmpty()) {
         rememberDir(QStringLiteral("openImage"), path);
         openPath(path);

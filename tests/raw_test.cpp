@@ -47,6 +47,13 @@ int main(int /*argc*/, char **argv)
     CHECK(raw::decodeBytes(nullptr, 0, &error).isNull());
     CHECK(!error.isEmpty());
 
+    // Thumbnail extraction on a missing / non-RAW path fails gracefully: null
+    // QImage + an error, no crash. (A real embedded-preview extraction needs a
+    // camera file, which the repo doesn't ship.)
+    error.clear();
+    CHECK(raw::loadThumbnail(QStringLiteral("/no/such/file.rw2"), 240, &error).isNull());
+    CHECK(!error.isEmpty());
+
     ImageBuffer::shutdownLibrary();
     std::puts("raw_test: OK");
     return 0;

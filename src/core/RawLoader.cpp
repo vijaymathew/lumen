@@ -1,6 +1,8 @@
 #include "core/RawLoader.h"
 
 #include <QFileInfo>
+#include <QImage>
+#include <QTransform>
 
 #include <libraw/libraw.h>
 
@@ -171,6 +173,97 @@ Image raw::decodeBytes(const void *data, qsizetype size, QString *error, LensMet
         return Image();
     }
     return processToImage(raw, error, meta, opts);
+}
+
+namespace {
+
+// The camera's embedded preview JPEG (or, rarely, an RGB bitmap), rotated to the
+// shooting orientation. Fast — no demosaic. Null QImage if the file has no
+// embedded preview. Assumes `raw` has an opened file.
+QImage embeddedThumb(LibRaw &raw)
+{
+    if (raw.unpack_thumb() != LIBRAW_SUCCESS)
+        return QImage();
+    int err = 0;
+    libraw_processed_image_t *thumb = raw.dcraw_make_mem_thumb(&err);
+    if (!thumb)
+        return QImage();
+
+    QImage img;
+    if (thumb->type == LIBRAW_IMAGE_JPEG) {
+        img.loadFromData(reinterpret_cast<const uchar *>(thumb->data), thumb->data_size,
+                         "JPEG");
+    } else if (thumb->type == LIBRAW_IMAGE_BITMAP && thumb->colors == 3
+               && thumb->bits == 8) {
+        const QImage view(reinterpret_cast<const uchar *>(thumb->data), thumb->width,
+                          thumb->height, thumb->width * 3, QImage::Format_RGB888);
+        img = view.copy(); // detach from LibRaw's buffer before it is freed
+    }
+    const int flip = raw.imgdata.sizes.flip; // capture orientation (dcraw codes)
+    LibRaw::dcraw_clear_mem(thumb);
+
+    // The embedded preview is stored in sensor orientation; rotate to display
+    // orientation (dcraw flip: 3=180°, 5=90° CCW, 6=90° CW).
+    if (!img.isNull() && (flip == 3 || flip == 5 || flip == 6)) {
+        QTransform t;
+        t.rotate(flip == 3 ? 180 : (flip == 6 ? 90 : 270));
+        img = img.transformed(t, Qt::SmoothTransformation);
+    }
+    return img;
+}
+
+// Fallback for files with no embedded preview (e.g. some DNGs): a half-size
+// demosaic — a quarter of the pixels, so far quicker than a full decode while
+// still viewable. dcraw_process already applies the capture orientation.
+QImage halfSizePreview(LibRaw &raw)
+{
+    auto &p = raw.imgdata.params;
+    p.half_size = 1;    // quarter-resolution: fast
+    p.output_bps = 8;   // 8-bit is plenty for a thumbnail
+    p.output_color = 1; // sRGB
+    p.use_camera_wb = 1;
+    if (raw.unpack() != LIBRAW_SUCCESS || raw.dcraw_process() != LIBRAW_SUCCESS)
+        return QImage();
+    int err = 0;
+    libraw_processed_image_t *img = raw.dcraw_make_mem_image(&err);
+    if (!img)
+        return QImage();
+    QImage out;
+    if (img->type == LIBRAW_IMAGE_BITMAP && img->colors == 3 && img->bits == 8) {
+        const QImage view(reinterpret_cast<const uchar *>(img->data), img->width,
+                          img->height, img->width * 3, QImage::Format_RGB888);
+        out = view.copy();
+    }
+    LibRaw::dcraw_clear_mem(img);
+    return out;
+}
+
+} // namespace
+
+QImage raw::loadThumbnail(const QString &path, int maxEdge, QString *error)
+{
+    LibRaw raw;
+    if (const int e = raw.open_file(path.toUtf8().constData())) {
+        if (error)
+            *error = QStringLiteral("Could not open '%1': %2")
+                         .arg(path, QString::fromUtf8(LibRaw::strerror(e)));
+        return QImage();
+    }
+
+    // Prefer the embedded preview; fall back to a quick half-size decode so every
+    // decodable RAW yields a thumbnail, even those without an embedded preview.
+    QImage img = embeddedThumb(raw);
+    if (img.isNull())
+        img = halfSizePreview(raw);
+    if (img.isNull()) {
+        if (error)
+            *error = QStringLiteral("No preview available for '%1'").arg(path);
+        return QImage();
+    }
+
+    if (maxEdge > 0 && (img.width() > maxEdge || img.height() > maxEdge))
+        img = img.scaled(maxEdge, maxEdge, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    return img;
 }
 
 QJsonObject raw::RawDecodeOptions::toJson() const

@@ -200,6 +200,10 @@ qt_add_executable(lumen
     src/ui/ZoneGizmo.cpp
     src/ui/ExportDialog.h
     src/ui/ExportDialog.cpp
+    src/ui/ImageOpenDialog.h
+    src/ui/ImageOpenDialog.cpp
+    src/ui/ThumbnailProxyModel.h
+    src/ui/ThumbnailProxyModel.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
 )

@@ -83,4 +83,11 @@ Image decodeFile(const QString &path, QString *error = nullptr, LensMetadata *me
 Image decodeBytes(const void *data, qsizetype size, QString *error = nullptr,
                   LensMetadata *meta = nullptr, const RawDecodeOptions &opts = {});
 
+// Extracts the RAW's embedded preview (the JPEG the camera stores for playback)
+// as a QImage, rotated to the capture orientation and downscaled so its longest
+// edge is at most `maxEdge` (0 = no limit). This is fast — no demosaic — which is
+// what makes it suitable for a file picker's thumbnail. Returns a null QImage and
+// sets *error when the file has no usable embedded preview.
+QImage loadThumbnail(const QString &path, int maxEdge = 0, QString *error = nullptr);
+
 } // namespace raw
