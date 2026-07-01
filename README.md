@@ -116,8 +116,7 @@ Common shortcuts:
   optional **Little CMS (lcms2)** drives wide-gamut export.
 - **Architecture** — a UI-free `lumen_core` library (image pipeline, edit graph,
   layers, serialization) sitting beneath the Qt front-end, so the imaging code is
-  independently unit-tested. See [docs/DESIGN.md](docs/DESIGN.md) for the full
-  design.
+  independently unit-tested.
 
 ## Building
 
