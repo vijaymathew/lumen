@@ -9,6 +9,14 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
+# Record the directories of any non-system libraries the app links (e.g. an
+# imaging lib from a custom prefix) in the installed binary's RPATH, so it
+# resolves them at runtime and not only from the build tree. Qt is handled
+# separately below — qt_standard_project_setup() pins its own install RPATH,
+# which this heuristic doesn't extend. (Harmless for system libs: implicit
+# /usr/lib dirs are never added.)
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
@@ -249,6 +257,41 @@ endif()
 # Treat warnings seriously in our own code (not in deps).
 target_compile_options(lumen PRIVATE ${LUMEN_WARNINGS})
 
+# --- Install --------------------------------------------------------------
+# `cmake --install build` (or install.sh) drops the binary into the prefix:
+# a plain executable under bin/ on Linux, the lumen.app bundle at the prefix
+# root on macOS.
+include(GNUInstallDirs)
+install(TARGETS lumen
+    BUNDLE  DESTINATION .
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# The app may link a Qt from a non-system prefix (e.g. one install.sh fetched
+# into .qt/). Add that Qt's lib dir to the installed binary's RPATH so it
+# resolves libQt6*.so at runtime — otherwise the installed lumen only runs from
+# the build tree. Derived from Qt6_DIR (<prefix>/lib/cmake/Qt6). On macOS the
+# .app bundle carries its frameworks, so this is Linux/BSD only. Harmless for a
+# system Qt (that lib dir is on the default search path already).
+if(UNIX AND NOT APPLE)
+    get_filename_component(_qt_lib_dir "${Qt6_DIR}/../.." ABSOLUTE)
+    # Set the install RPATH explicitly: the $ORIGIN-relative defaults (for any
+    # co-installed libs) plus the Qt lib dir. $ORIGIN is a literal here — the
+    # dynamic loader expands it at runtime, not CMake.
+    set_property(TARGET lumen PROPERTY INSTALL_RPATH
+        "$ORIGIN;$ORIGIN/../lib;${_qt_lib_dir}")
+endif()
+
+# Desktop integration on Linux/BSD (macOS uses the .app bundle instead): a
+# .desktop entry and a scalable icon. This gives `make install` a launchable,
+# icon'd app, and is what the AppImage packaging job bundles from.
+if(UNIX AND NOT APPLE)
+    install(FILES packaging/lumen.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+    install(FILES packaging/lumen.svg
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
+        RENAME lumen.svg)
+endif()
+
 # --- Tests ----------------------------------------------------------------
 
 include(CTest)
@@ -405,5 +448,3 @@ if(BUILD_TESTING)
     target_compile_options(grain_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME grain_test COMMAND grain_test)
 endif()
-
-

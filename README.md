@@ -118,7 +118,61 @@ Common shortcuts:
   layers, serialization) sitting beneath the Qt front-end, so the imaging code is
   independently unit-tested.
 
+## Download
+
+The quickest way to run Lumen — no compiler, no dependencies, no terminal
+required. Grab the latest build for your platform from the
+[**Releases**](https://github.com/vijaymathew/lumen/releases/latest) page:
+
+- **Linux** — download `Lumen-x86_64.AppImage`, then make it executable and run:
+
+  ```bash
+  chmod +x Lumen-x86_64.AppImage
+  ./Lumen-x86_64.AppImage
+  ```
+
+- **macOS** — download `Lumen.dmg`, open it, and drag **Lumen** to Applications.
+  On first launch, right-click the app and choose **Open** to get past
+  Gatekeeper (the build is not yet notarised).
+
+Both are self-contained — Qt and the imaging libraries are bundled in. Want to
+build it yourself instead? See [Building](#building).
+
 ## Building
+
+### From source, in one command
+
+Clone the repo and run the bootstrap script — it installs the dependencies
+(imaging libraries, toolchain, and Qt 6.7+), then builds and installs Lumen:
+
+```bash
+git clone https://github.com/vijaymathew/lumen.git
+cd lumen
+./install.sh
+```
+
+Or, if you prefer `make`:
+
+```bash
+make            # install deps, build, and install to /usr/local
+make build      # configure + build only (deps already present)
+make test       # build, then run the test suite
+```
+
+That's the whole thing. Useful `install.sh` flags:
+
+```bash
+./install.sh --prefix ~/.local   # install somewhere other than /usr/local
+./install.sh --no-deps           # dependencies already present; just build + install
+./install.sh --qt-dir /path/to/Qt/6.7.2/gcc_64   # use a specific Qt
+```
+
+On Linux it uses `apt`, `dnf`, or `pacman` for the imaging libraries plus the
+OpenGL/xcb libraries Qt links against; on macOS it uses Homebrew. When the
+system Qt is older than 6.7 (common on Linux), it fetches Qt 6.7+ into `.qt/`
+via [aqtinstall](https://github.com/miurahr/aqtinstall) automatically — that
+fallback needs `python3` and `pip`, or you can point at an existing Qt with
+`--qt-dir`. Prefer to wire everything up by hand? The manual steps are below.
 
 ### Requirements
 
@@ -130,7 +184,7 @@ Common shortcuts:
 - Optional: **Lensfun** (automatic lens correction) and **lcms2** (wide-gamut
   export colour management) — features degrade gracefully when absent.
 
-### Linux
+### Manual build — Linux
 
 Distro Qt is often older than 6.7. Install Qt 6.7+ (e.g. via
 [aqtinstall](https://github.com/miurahr/aqtinstall) or the Qt online installer),
@@ -148,7 +202,7 @@ cmake --build build --parallel
 If Qt is in a non-standard location, point CMake at it:
 `-DCMAKE_PREFIX_PATH=/path/to/Qt/6.7.2/gcc_64`.
 
-### macOS
+### Manual build — macOS
 
 ```bash
 brew install vips libraw lensfun little-cms2 ninja
