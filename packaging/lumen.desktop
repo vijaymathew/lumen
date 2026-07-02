@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Lumen
+GenericName=Photo Editor
+Comment=A fast, non-destructive photo editor
+Exec=lumen %f
+Icon=lumen
+Categories=Graphics;Photography;
+Terminal=false
+MimeType=image/jpeg;image/png;image/tiff;image/webp;image/x-adobe-dng;image/x-canon-cr2;image/x-nikon-nef;image/x-sony-arw;

@@ -44,3 +44,32 @@ jobs:
 
       - name: Build
         run: cmake --build build --parallel
+
+  # Exercise the one-shot bootstrap end-to-end. Dependencies + Qt are installed
+  # by the steps above (so we run with --no-deps), then install.sh drives the
+  # configure → build → install path and we assert the binary landed.
+  install-script:
+    name: install.sh (--no-deps)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libvips + LibRaw + Lensfun + lcms2 + Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvips-dev libraw-dev liblensfun-dev liblensfun-data-v1 \
+            liblcms2-dev ninja-build
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.2'
+          modules: 'qtshadertools'
+          cache: true
+
+      - name: Bootstrap (build + install to a temp prefix)
+        run: ./install.sh --no-deps --prefix "$PWD/_install"
+
+      - name: Verify install
+        run: test -x "$PWD/_install/bin/lumen"

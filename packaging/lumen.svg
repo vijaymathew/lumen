@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Lumen">
+  <!-- Square app icon mirroring the runtime mark in src/ui/AppIcon.cpp:
+       a rounded violet→indigo tile, a glowing orb (the "lumen"), and a lens ring. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="256" y2="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9a8cf0"/>
+      <stop offset="1" stop-color="#4b3fa8"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="128" cy="128" r="76.8" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0.588"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="0.5" y="0.5" width="255" height="255" rx="56.3" ry="56.3" fill="url(#tile)"/>
+  <circle cx="128" cy="128" r="76.8" fill="url(#glow)"/>
+  <circle cx="128" cy="128" r="84.5" fill="none" stroke="#ffffff" stroke-opacity="0.92" stroke-width="14.1"/>
+</svg>

@@ -1,0 +1,127 @@
+name: Release
+
+# Build ready-to-run, dependency-bundled artifacts: an AppImage (Linux) and a
+# .dmg (macOS). Runs on version tags (attaching the artifacts to the GitHub
+# Release) and on manual dispatch (artifacts downloadable from the run).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # softprops/action-gh-release needs this to attach assets
+
+jobs:
+  linux-appimage:
+    name: AppImage (Linux)
+    # Build on the oldest supported runner for the widest glibc compatibility.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build + runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvips-dev libraw-dev liblensfun-dev liblensfun-data-v1 \
+            liblcms2-dev ninja-build librsvg2-bin \
+            libgl1-mesa-dev libxkbcommon-dev \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.2'
+          modules: 'qtshadertools'
+          cache: true
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build --parallel
+
+      - name: Install into AppDir
+        run: cmake --install build --prefix AppDir/usr
+
+      - name: Rasterise icon
+        # linuxdeploy wants a raster icon for the AppImage's thumbnail (.DirIcon).
+        run: rsvg-convert -w 256 -h 256 packaging/lumen.svg -o lumen.png
+
+      - name: Fetch linuxdeploy + Qt plugin
+        run: |
+          base=https://github.com/linuxdeploy
+          curl -fsSLO $base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -fsSLO $base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-qt-x86_64.AppImage
+
+      - name: Build AppImage
+        env:
+          QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake
+          # Extract-and-run avoids needing FUSE on the runner.
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          OUTPUT: Lumen-x86_64.AppImage
+        run: |
+          ./linuxdeploy-x86_64.AppImage \
+            --appdir AppDir \
+            --plugin qt \
+            --icon-file lumen.png \
+            --desktop-file AppDir/usr/share/applications/lumen.desktop \
+            --output appimage
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lumen-AppImage
+          path: Lumen-x86_64.AppImage
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Lumen-x86_64.AppImage
+
+  macos-dmg:
+    name: DMG (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libraries
+        run: brew install vips libraw lensfun little-cms2 ninja
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.2'
+          modules: 'qtshadertools'
+          cache: true
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build --parallel
+
+      - name: Install .app
+        run: cmake --install build --prefix dist
+
+      - name: Bundle dependencies + build DMG
+        # macdeployqt copies the Qt frameworks and the Homebrew imaging dylibs
+        # into the bundle and rewrites their load paths, then packs the .dmg.
+        run: |
+          "$QT_ROOT_DIR/bin/macdeployqt" dist/lumen.app -dmg
+          mv dist/lumen.dmg Lumen.dmg
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lumen-dmg
+          path: Lumen.dmg
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Lumen.dmg
