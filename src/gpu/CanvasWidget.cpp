@@ -781,6 +781,11 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
 
         const QRhiViewport imgViewport(0, 0, float(m_textureSize.width()),
                                        float(m_textureSize.height()));
+        qDebug() << "DBG paintGL texSize" << m_textureSize << "eff" << effectiveImageSize()
+                 << "extras" << m_extraLayers.size() << "cropView" << int(m_cropView)
+                 << "offA" << (m_offscreenTex ? m_offscreenTex->pixelSize() : QSize())
+                 << "offB" << (m_offscreenTexB ? m_offscreenTexB->pixelSize() : QSize())
+                 << "target" << target << "yUp" << rhi()->isYUpInFramebuffer();
 
         // Base pass: the Base layer's chain into offscreen A.
         cb->beginPass(m_offscreenRt.get(), QColor(0, 0, 0, 0), {1.0f, 0}, u);

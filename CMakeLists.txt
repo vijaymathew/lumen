@@ -116,6 +116,8 @@ add_library(lumen_core STATIC
     src/core/Project.cpp
     src/core/Preset.h
     src/core/Preset.cpp
+    src/core/BuiltinPresets.h
+    src/core/BuiltinPresets.cpp
     src/core/Autosave.h
     src/core/Autosave.cpp
     src/core/RawLoader.h
@@ -174,6 +176,8 @@ qt_add_executable(lumen
     src/ui/CurvesPanel.cpp
     src/ui/LooksPanel.h
     src/ui/LooksPanel.cpp
+    src/ui/PresetsPanel.h
+    src/ui/PresetsPanel.cpp
     src/ui/HealPanel.h
     src/ui/HealPanel.cpp
     src/ui/LayersPanel.h
@@ -300,6 +304,19 @@ if(BUILD_TESTING)
     target_link_libraries(edit_graph_test PRIVATE lumen_core)
     target_compile_options(edit_graph_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME edit_graph_test COMMAND edit_graph_test)
+
+    add_executable(builtin_presets_test tests/builtin_presets_test.cpp)
+    target_link_libraries(builtin_presets_test PRIVATE lumen_core)
+    target_compile_options(builtin_presets_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME builtin_presets_test COMMAND builtin_presets_test)
+
+    # GUI smoke check for the Presets browser — renders the real panel to a PNG.
+    # Needs a display, so it's a buildable target only (not a CTest assertion).
+    qt_add_executable(presets_gui_smoke
+        tests/presets_gui_smoke.cpp
+        src/ui/PresetsPanel.h
+        src/ui/PresetsPanel.cpp)
+    target_link_libraries(presets_gui_smoke PRIVATE lumen_core Qt6::Widgets)
 
     add_executable(tune_node_test tests/tune_node_test.cpp)
     target_link_libraries(tune_node_test PRIVATE lumen_core)

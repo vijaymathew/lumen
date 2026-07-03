@@ -48,6 +48,8 @@ class ZoneGizmo;
 class CropGizmo;
 class CropPanel;
 class LooksPanel;
+class PresetsPanel;
+namespace preset { struct Builtin; }
 class MonoPanel;
 class ColorMixerNode;
 class ColorMixerPanel;
@@ -194,6 +196,16 @@ private:
     void openLooksTool();
     void closeLooksTool();
     void loadLookFile();
+    void openPresetsTool();  // shows the Presets browser (built-in looks)
+    void closePresetsTool();
+    // Renders a thumbnail of the current photo with each built-in preset applied.
+    void refreshPresetThumbnails();
+    // Applies a preset as a full-coverage adjustment layer at opacity = amount%,
+    // replacing any prior preset layer. The Amount slider blends the whole look.
+    void applyPresetLook(const preset::Builtin &b, int amountPct);
+    void setPresetAmount(int amountPct); // live-updates the active preset layer's opacity
+    Layer &addPresetLayer(const QString &name); // full-coverage adjustment layer
+    int presetLayerIndex() const;               // the active preset layer, or -1
     void openMonoTool();
     void closeMonoTool();
     void openColorGradeTool();
@@ -314,6 +326,9 @@ private:
     TonePanel *m_tonePanel = nullptr;
     CurvesPanel *m_curvesPanel = nullptr;
     LooksPanel *m_looksPanel = nullptr;
+    PresetsPanel *m_presetsPanel = nullptr;
+    int m_presetAmount = 100;   // Presets browser Amount slider [0,100]
+    QString m_activePresetId;   // id of the preset on the current preset layer, if any
     MonoPanel *m_monoPanel = nullptr;
     ColorMixerPanel *m_colorMixerPanel = nullptr;
     ColorGradePanel *m_colorGradePanel = nullptr;

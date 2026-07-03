@@ -6,6 +6,7 @@
 #include "core/Image.h"
 #include "core/LayerPreview.h"
 #include "core/MaskSpec.h"
+#include "core/BuiltinPresets.h"
 #include "core/Preset.h"
 #include "core/Project.h"
 #include "core/RawLoader.h"
@@ -27,6 +28,7 @@
 #include "ui/CropGizmo.h"
 #include "ui/CropPanel.h"
 #include "ui/LooksPanel.h"
+#include "ui/PresetsPanel.h"
 #include "ui/ColorGradePanel.h"
 #include "ui/MonoPanel.h"
 #include "core/ColorMixerNode.h"
@@ -71,6 +73,10 @@
 #include <algorithm>
 
 namespace {
+
+// Name prefix that marks the Presets browser's dedicated full-coverage layer, so
+// it can be found/replaced across applies. Shown in the Layers panel too.
+const QString kPresetLayerPrefix = QStringLiteral("Preset: ");
 
 // Snapshot a TuneNode's tonal state for seeding the Tone panel. Centralised so
 // the (positional) ToneValues aggregate has one definition to keep in sync.
@@ -441,6 +447,54 @@ MainWindow::MainWindow(QWidget *parent)
             l->setIntensity(static_cast<float>(v));
         updatePreview();
     });
+
+    m_presetsPanel = new PresetsPanel(this);
+    connect(m_presetsPanel, &PresetsPanel::applyRequested, this, [this](const QString &id) {
+        for (const preset::Builtin &b : preset::library()) {
+            if (b.id != id)
+                continue;
+            applyPresetLook(b, m_presetsPanel->amount());
+            break;
+        }
+    });
+    connect(m_presetsPanel, &PresetsPanel::amountChanged, this,
+            [this](int percent) { setPresetAmount(percent); });
+    connect(m_presetsPanel, &PresetsPanel::deleteRequested, this, [this](const QString &id) {
+        const QString path = preset::userPresetPath(id);
+        if (path.isEmpty())
+            return;
+        const QString label = QFileInfo(path).completeBaseName();
+        if (QMessageBox::question(this, QStringLiteral("Lumen"),
+                                  QStringLiteral("Delete preset “%1”?").arg(label),
+                                  QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+            != QMessageBox::Yes)
+            return;
+        if (QFile::remove(path)) {
+            showHint(QStringLiteral("Deleted preset"));
+            refreshPresetThumbnails();
+        } else {
+            showHint(QStringLiteral("Could not delete the preset file"));
+        }
+    });
+    connect(m_presetsPanel, &PresetsPanel::renameRequested, this,
+            [this](const QString &id, const QString &newName) {
+                const QString path = preset::userPresetPath(id);
+                if (path.isEmpty())
+                    return;
+                QJsonObject obj;
+                QString error;
+                if (!preset::load(path, &obj, &error)) {
+                    showHint(QStringLiteral("Could not open the preset file"));
+                    return;
+                }
+                obj[QStringLiteral("name")] = newName; // the file keeps its path/id
+                if (!preset::save(path, obj, &error)) {
+                    showHint(QStringLiteral("Could not save the preset: %1").arg(error));
+                    return;
+                }
+                showHint(QStringLiteral("Renamed preset to “%1”").arg(newName));
+                refreshPresetThumbnails();
+            });
 
     m_monoPanel = new MonoPanel(this);
     connect(m_monoPanel, &MonoPanel::valuesChanged, this, [this](const MonoValues &v) {
@@ -1015,10 +1069,11 @@ MainWindow::MainWindow(QWidget *parent)
     // (only one is open at a time); the persistent panels close themselves.
     const auto closeTool = [this] { closeActiveTool(); };
     QWidget *toolPanels[] = {m_tonePanel,    m_curvesPanel,  m_looksPanel,
-                             m_monoPanel,     m_colorMixerPanel, m_colorGradePanel,
-                             m_lensPanel,     m_sharpenPanel, m_denoisePanel,
-                             m_defringePanel, m_rawPanel,     m_grainPanel,
-                             m_vignettePanel, m_cropPanel,    m_healPanel};
+                             m_presetsPanel,  m_monoPanel,    m_colorMixerPanel,
+                             m_colorGradePanel, m_lensPanel,  m_sharpenPanel,
+                             m_denoisePanel,  m_defringePanel, m_rawPanel,
+                             m_grainPanel,    m_vignettePanel, m_cropPanel,
+                             m_healPanel};
     for (QWidget *p : toolPanels)
         addPanelCloseButton(p, closeTool);
     addPanelCloseButton(m_layersPanel, [this] { hideLayersPanel(); });
@@ -1134,6 +1189,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("vignette"), QStringLiteral("Vignette"), effects},
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment"), selective},
         {QStringLiteral("layers"), QStringLiteral("Layers"), selective},
+        {QStringLiteral("presets-browser"), QStringLiteral("Presets browser (looks)"), presets},
         {QStringLiteral("copy-settings"), QStringLiteral("Copy edit settings"), presets},
         {QStringLiteral("paste-settings"), QStringLiteral("Paste edit settings"), presets},
         {QStringLiteral("save-preset"), QStringLiteral("Save preset…"), presets},
@@ -1203,6 +1259,8 @@ void MainWindow::runCommand(const QString &id)
         openHealTool();
     } else if (id == QLatin1String("layers")) {
         openLayersTool();
+    } else if (id == QLatin1String("presets-browser")) {
+        openPresetsTool();
     } else if (id == QLatin1String("copy-settings")) {
         copySettings();
     } else if (id == QLatin1String("paste-settings")) {
@@ -1757,7 +1815,11 @@ void MainWindow::savePreset()
         return;
     }
     const QFileInfo src(m_sourcePath);
-    const QString dir = lastDir(QStringLiteral("preset"), src.dir().path());
+    // Default into the user presets folder so a saved preset immediately shows up
+    // in the Presets browser (the user can still navigate elsewhere in the dialog).
+    const QString presetsDir = preset::userPresetsDir();
+    const QString dir = lastDir(QStringLiteral("preset"),
+                                presetsDir.isEmpty() ? src.dir().path() : presetsDir);
     const QString suggested =
         QDir(dir).filePath(src.completeBaseName() + QStringLiteral(".lumenpreset"));
     QString path = QFileDialog::getSaveFileName(
@@ -1776,6 +1838,8 @@ void MainWindow::savePreset()
         return;
     }
     rememberDir(QStringLiteral("preset"), path);
+    if (m_presetsPanel->isVisible())
+        refreshPresetThumbnails(); // surface the new preset in the open browser
     showHint(QStringLiteral("Saved preset “%1”").arg(name));
 }
 
@@ -2428,6 +2492,125 @@ void MainWindow::closeLooksTool()
     m_graph.commit();
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
+}
+
+void MainWindow::openPresetsTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_presetsPanel->setAmount(m_presetAmount); // reflect the current blend
+    refreshPresetThumbnails();                 // preview each look against the current photo
+    m_presetsPanel->adjustSize();
+    const int margin = 18;
+    m_presetsPanel->move(width() - m_presetsPanel->width() - margin, margin);
+    m_presetsPanel->reveal();
+}
+
+void MainWindow::closePresetsTool()
+{
+    m_presetsPanel->hide();
+    m_graph.commit(); // capture any live Amount-slider change as one undo step
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::refreshPresetThumbnails()
+{
+    const QVector<preset::Builtin> presets = preset::library();
+    QVector<PresetsPanel::Item> items;
+    items.reserve(presets.size());
+
+    // Render each preset exactly as applying it would: on a temporary full-coverage
+    // layer at 100%, over the current photo — so the thumbnail matches the applied
+    // result (grain/vignette, which are Base/graph-global, are excluded from both).
+    const bool haveSource = !m_graph.source().isNull();
+    // Suppress the active preset layer so thumbnails show each preset alone rather
+    // than stacked on top of whichever preset is applied right now.
+    const int presetIdx = presetLayerIndex();
+    const float savedOpacity = presetIdx >= 0 ? m_graph.layer(presetIdx).opacity() : 0.0f;
+    if (presetIdx >= 0)
+        m_graph.layer(presetIdx).setOpacity(0.0f);
+    const int savedActive = m_graph.activeLayerIndex();
+    constexpr int kThumbDim = 200;
+
+    for (const preset::Builtin &b : presets) {
+        PresetsPanel::Item item{b.id, b.name, b.category, {},
+                                b.id.startsWith(QStringLiteral("user:"))};
+        if (haveSource) {
+            Layer &temp = addPresetLayer(QStringLiteral("__thumb"));
+            const int tempIdx = m_graph.activeLayerIndex();
+            preset::applyToLayer(b.data, temp);
+            temp.setOpacity(1.0f);
+            const QImage img = m_graph.resultDownsampled(kThumbDim).toQImage();
+            if (!img.isNull())
+                item.thumb = QPixmap::fromImage(img);
+            m_graph.removeLayer(tempIdx);
+        }
+        items.push_back(item);
+    }
+
+    m_graph.setActiveLayer(savedActive);
+    if (presetIdx >= 0)
+        m_graph.layer(presetIdx).setOpacity(savedOpacity);
+
+    m_presetsPanel->setItems(items);
+}
+
+int MainWindow::presetLayerIndex() const
+{
+    for (int i = 1; i < m_graph.layerCount(); ++i)
+        if (m_graph.layer(i).name().startsWith(kPresetLayerPrefix))
+            return i;
+    return -1;
+}
+
+Layer &MainWindow::addPresetLayer(const QString &name)
+{
+    // Full-coverage (None mask) adjustment layer, so its opacity blends the whole
+    // preset look uniformly. Same creative node set as a masked adjustment layer.
+    Layer &layer = m_graph.addLayer(name);
+    m_graph.addNode(std::make_unique<TuneNode>());
+    m_graph.addNode(std::make_unique<ColorMixerNode>());
+    m_graph.addNode(std::make_unique<CurvesNode>());
+    m_graph.addNode(std::make_unique<ColorGradeNode>());
+    m_graph.addNode(std::make_unique<LutNode>());
+    m_graph.addNode(std::make_unique<MonoNode>());
+    return layer;
+}
+
+void MainWindow::applyPresetLook(const preset::Builtin &b, int amountPct)
+{
+    if (m_graph.source().isNull()) {
+        showHint(QStringLiteral("Open an image before applying a preset"));
+        return;
+    }
+    // Replace any existing preset layer with a fresh one carrying this preset.
+    const int existing = presetLayerIndex();
+    if (existing >= 0)
+        m_graph.removeLayer(existing);
+    Layer &layer = addPresetLayer(kPresetLayerPrefix + b.name);
+    preset::applyToLayer(b.data, layer);
+    layer.setOpacity(std::clamp(amountPct, 0, 100) / 100.0f);
+    m_graph.setActiveLayer(0); // leave editing focused on the Base, not the preset
+
+    m_activePresetId = b.id;
+    m_presetAmount = amountPct;
+    m_graph.commit();
+    afterHistoryChange();     // rebuild the preview + reseed open tools
+    refreshLayersPanel();     // the new preset layer shows in the stack
+    refreshPresetThumbnails(); // re-render (baseline may have shifted)
+    showHint(QStringLiteral("Applied “%1”").arg(b.name));
+}
+
+void MainWindow::setPresetAmount(int amountPct)
+{
+    m_presetAmount = amountPct;
+    const int idx = presetLayerIndex();
+    if (idx < 0)
+        return; // no preset applied yet; the value seeds the next apply
+    m_graph.layer(idx).setOpacity(std::clamp(amountPct, 0, 100) / 100.0f);
+    updatePreview(); // live; one undo step is committed when the tool closes
+    if (m_layersPanel->isVisible())
+        refreshLayersPanel();
 }
 
 void MainWindow::openMonoTool()
@@ -3523,6 +3706,8 @@ void MainWindow::closeActiveTool()
         closeCurvesTool();
     else if (m_looksPanel->isVisible())
         closeLooksTool();
+    else if (m_presetsPanel->isVisible())
+        closePresetsTool();
     else if (m_monoPanel->isVisible())
         closeMonoTool();
     else if (m_colorMixerPanel->isVisible())
