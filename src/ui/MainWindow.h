@@ -97,14 +97,17 @@ private:
     void buildCommands();
     void runCommand(const QString &id);
     void openImageDialog();
-    void saveProject();   // async write of the current work to a .lumen file
+    void saveProject();   // save to the current file; prompts only on first save
+    void saveProjectAs(); // always prompt for a new .lumen destination
     void openProject();   // pick a .lumen file via dialog, then load it
     void loadProjectFile(const QString &path); // load a .lumen async (source + layers)
 
-    // Save helpers. promptSaveProjectPath() runs the Save dialog; saveProjectSync()
-    // is the blocking save the quit/discard flow needs (it must finish before the
+    // Save helpers. promptSaveProjectPath() runs the Save dialog; writeProjectAsync()
+    // snapshots the document and writes it off the UI thread; saveProjectSync() is
+    // the blocking save the quit/discard flow needs (it must finish before the
     // document can be discarded); applySaveSuccess() updates state after a write.
     QString promptSaveProjectPath();
+    void writeProjectAsync(const QString &path);
     bool saveProjectSync();
     void applySaveSuccess(const QString &path);
 

@@ -1031,6 +1031,7 @@ MainWindow::MainWindow(QWidget *parent)
     // the palette; "/" and Esc are handled in keyPressEvent instead.
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+O")), this, [this] { openImageDialog(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+S")), this, [this] { saveProject(); });
+    new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+S")), this, [this] { saveProjectAs(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")), this, [this] { openProject(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+C")), this, [this] { copySettings(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+V")), this, [this] { pasteSettings(); });
@@ -1113,7 +1114,8 @@ void MainWindow::buildCommands()
     m_palette->setCommands({
         {QStringLiteral("open"), QStringLiteral("Open image…"), file},
         {QStringLiteral("open-project"), QStringLiteral("Open project (.lumen)…"), file},
-        {QStringLiteral("save-project"), QStringLiteral("Save project (.lumen)…"), file},
+        {QStringLiteral("save-project"), QStringLiteral("Save project"), file},
+        {QStringLiteral("save-project-as"), QStringLiteral("Save project as (.lumen)…"), file},
         {QStringLiteral("export"), QStringLiteral("Export image…"), file},
         {QStringLiteral("tone"), QStringLiteral("Tone (exposure, contrast, saturation)"), toneColor},
         {QStringLiteral("curves"), QStringLiteral("Curves"), toneColor},
@@ -1155,6 +1157,8 @@ void MainWindow::runCommand(const QString &id)
         openProject();
     } else if (id == QLatin1String("save-project")) {
         saveProject();
+    } else if (id == QLatin1String("save-project-as")) {
+        saveProjectAs();
     } else if (id == QLatin1String("export")) {
         exportImage();
     } else if (id == QLatin1String("tone")) {
@@ -1400,10 +1404,32 @@ void MainWindow::saveProject()
         showHint(QStringLiteral("A save is already in progress"));
         return;
     }
+    // Re-save to the existing file silently; only a first ("fresh") save needs the
+    // dialog. Use "Save as…" to write to a new location.
+    const QString path = m_projectPath.isEmpty() ? promptSaveProjectPath() : m_projectPath;
+    if (path.isEmpty())
+        return;
+    writeProjectAsync(path);
+}
+
+void MainWindow::saveProjectAs()
+{
+    if (m_graph.source().isNull()) {
+        showHint(QStringLiteral("Open an image before saving a project"));
+        return;
+    }
+    if (m_saveWatcher.isRunning()) {
+        showHint(QStringLiteral("A save is already in progress"));
+        return;
+    }
     const QString path = promptSaveProjectPath();
     if (path.isEmpty())
         return;
+    writeProjectAsync(path);
+}
 
+void MainWindow::writeProjectAsync(const QString &path)
+{
     // Snapshot the document on the UI thread (reads the graph), then write it off
     // the UI thread behind the "Saving…" badge — the write can be slow to external
     // or network drives.
