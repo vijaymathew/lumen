@@ -1668,6 +1668,7 @@ bool MainWindow::applyProjectResult(const OpenProjectResult &r)
     refreshWorkingSource();  // rebuild the corrected source from the restored lens
     refreshBaseImage(false); // re-applies the heal mask, fits the view
     recomputeSelectiveMask();
+    updateCropView();        // push the restored crop/orientation to the canvas
     updatePreview();
     m_graph.resetHistory();
 
@@ -2592,9 +2593,11 @@ void MainWindow::updateCropView()
         // The crop tool itself wants the full oriented frame to edit against.
         mode = CanvasWidget::CropEditing;
     } else if (m_layersPanel->isVisible() || m_healPanel->isVisible()) {
-        // Full-frame rule: gizmo/pick tools (mask/zone/heal/eyedropper) operate in
-        // the un-oriented full frame so their coordinate mapping stays exact.
-        mode = CanvasWidget::CropNone;
+        // Gizmo/pick tools (mask/zone/heal/eyedropper) operate against the full,
+        // un-cropped frame. Use CropMaskEdit rather than CropNone so the user's
+        // orientation (rotation/flip) stays applied on screen while the canvas
+        // still maps coordinates back to the un-oriented source the masks live in.
+        mode = CanvasWidget::CropMaskEdit;
     } else if (!m_graph.crop().isIdentity() && m_graph.crop().enabled) {
         mode = CanvasWidget::CropApplied;
     } else {
