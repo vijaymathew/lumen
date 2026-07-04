@@ -2106,7 +2106,7 @@ void MainWindow::exportImage()
         showHint(QStringLiteral("Open an image before exporting"));
         return;
     }
-    if (m_exportWatcher.isRunning()) {
+    if (m_exportWatcher.isRunning() || m_exportPending) {
         showHint(QStringLiteral("An export is already in progress"));
         return;
     }
@@ -2140,33 +2140,42 @@ void MainWindow::exportImage()
     if (QFileInfo(path).suffix().isEmpty())
         path += QStringLiteral(".") + m_exportExt;
 
-    // 3. Walk the graph and write at full resolution OFF the UI thread: a full-res
-    //    libvips encode is slow, and with an active heal mask result() runs the
-    //    inpaint inline (HealNode::apply is eager) — either would freeze the app.
-    //    The busy badge shows progress; re-entry is blocked above. The finished
-    //    handler reports success/failure.
-    const bool healActive =
-        m_heal && m_heal->isEnabled() && !m_heal->healMask().isEmpty();
-    // For the non-heal case the pipeline is lazy, so snapshot it on the UI thread
-    // (race-free) and only materialise on the worker; with heal active, build it
-    // on the worker so the eager inpaint never blocks the UI.
-    const Image snapshot = healActive ? Image() : m_graph.result();
+    // 3. Show the "Exporting…" badge now, then defer the graph snapshot and the
+    //    worker launch to the next event-loop tick. Returning first lets the Save
+    //    dialog actually close and the badge paint before we touch the graph —
+    //    otherwise, on large files, the dialog appears to hang over the window.
+    //    m_exportPending guards the (single-tick) window before the worker starts.
     auto *badge = static_cast<BusyBadge *>(m_healBusy);
     badge->setLabel(QStringLiteral("Exporting…"));
     badge->start();
     layoutOverlays();
-    m_exportWatcher.setFuture(QtConcurrent::run(
-        [this, path, exportOpts, healActive, snapshot]() -> ExportResult {
-            ExportResult r;
-            r.path = path;
-            const Image result = healActive ? m_graph.result() : snapshot;
-            if (result.isNull()) {
-                r.error = QStringLiteral("nothing to export");
+    m_exportPending = true;
+
+    const bool healActive =
+        m_heal && m_heal->isEnabled() && !m_heal->healMask().isEmpty();
+    QTimer::singleShot(0, this, [this, path, exportOpts, healActive]() {
+        // Walk the graph and write at full resolution OFF the UI thread: a
+        // full-res libvips encode is slow, and with an active heal mask result()
+        // runs the inpaint inline (HealNode::apply is eager) — either would
+        // freeze the app. For the non-heal case the pipeline is lazy, so snapshot
+        // it here on the UI thread (race-free) and only materialise on the
+        // worker; with heal active, build it on the worker instead. The finished
+        // handler reports success/failure.
+        const Image snapshot = healActive ? Image() : m_graph.result();
+        m_exportPending = false;
+        m_exportWatcher.setFuture(QtConcurrent::run(
+            [this, path, exportOpts, healActive, snapshot]() -> ExportResult {
+                ExportResult r;
+                r.path = path;
+                const Image result = healActive ? m_graph.result() : snapshot;
+                if (result.isNull()) {
+                    r.error = QStringLiteral("nothing to export");
+                    return r;
+                }
+                r.ok = result.saveToFile(path, exportOpts, &r.error);
                 return r;
-            }
-            r.ok = result.saveToFile(path, exportOpts, &r.error);
-            return r;
-        }));
+            }));
+    });
 }
 
 void MainWindow::toggleFullScreen()

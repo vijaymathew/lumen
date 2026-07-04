@@ -516,6 +516,9 @@ private:
         QString path;
     };
     QFutureWatcher<ExportResult> m_exportWatcher;
+    // True from the moment an export is armed until its worker is launched on the
+    // next event-loop tick — closes the re-entry window the deferred launch opens.
+    bool m_exportPending = false;
 
     // Save (serialise the document + embed the source bytes, then write) runs off
     // the UI thread so the "Saving…" badge animates; re-entry is blocked while a
