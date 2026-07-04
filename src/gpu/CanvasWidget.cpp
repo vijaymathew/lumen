@@ -597,6 +597,25 @@ QMatrix4x4 CanvasWidget::cropTexXform() const
         break; // 0 → identity
     }
 
+    // StraightenInv: undo the fine tilt in the oriented frame. The rotation is
+    // done in pixel space (about the frame centre) so the non-square normalized
+    // frame isn't sheared. Mirrors applyCrop's vips_rotate (verified: the undo
+    // angle is -straighten). Applied for the browse and crop-edit views; the
+    // mask-edit view stays upright, since masks live in the un-oriented source
+    // and are addressed through this same matrix (see sourceNormFromOriented).
+    QMatrix4x4 straightenInv;
+    if (std::abs(m_crop.straighten) > 1e-6 && !m_textureSize.isEmpty()
+        && (m_cropView == CropApplied || m_cropView == CropEditing)) {
+        const bool swap = (m_crop.rotation == 90 || m_crop.rotation == 270);
+        const float ow = swap ? m_textureSize.height() : m_textureSize.width();
+        const float oh = swap ? m_textureSize.width() : m_textureSize.height();
+        straightenInv.translate(0.5f, 0.5f);
+        straightenInv.scale(1.0f / ow, 1.0f / oh);
+        straightenInv.rotate(static_cast<float>(-m_crop.straighten), 0.0f, 0.0f, 1.0f);
+        straightenInv.scale(ow, oh);
+        straightenInv.translate(-0.5f, -0.5f);
+    }
+
     // FlipUndo: flips were applied to the source before rotation; undo in source.
     QMatrix4x4 flipUndo;
     if (m_crop.flipH) {
@@ -608,7 +627,7 @@ QMatrix4x4 CanvasWidget::cropTexXform() const
         flipUndo.scale(1.0f, -1.0f);
     }
 
-    return flipUndo * rotInv * crop;
+    return flipUndo * rotInv * straightenInv * crop;
 }
 
 QPointF CanvasWidget::sourceNormFromOriented(QPointF orientedNorm) const

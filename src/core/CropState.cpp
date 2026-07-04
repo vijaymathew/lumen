@@ -8,6 +8,7 @@
 
 namespace {
 constexpr double kMinFrac = 0.01; // smallest crop edge as a fraction of the frame
+constexpr double kPi = 3.14159265358979323846;
 } // namespace
 
 bool CropState::isIdentity() const
@@ -60,6 +61,48 @@ CropState CropState::fromJson(const QJsonObject &o)
     c.enabled = o.value(QStringLiteral("enabled")).toBool(true); // back-compat: true
     c.sanitize();
     return c;
+}
+
+QRectF straightenSafeRect(double angleDeg, double frameW, double frameH,
+                          double desiredAspect)
+{
+    if (frameW <= 0.0 || frameH <= 0.0)
+        return QRectF(0.0, 0.0, 1.0, 1.0);
+    const double rad = std::abs(angleDeg) * kPi / 180.0;
+    const double c = std::cos(rad), s = std::sin(rad);
+
+    // Candidate rect is centred with half-extents (hx, hy). A corner (±hx, ±hy)
+    // stays inside the frame rotated by the angle iff, in the frame's own axes,
+    //   hx*c + hy*s <= frameW/2   and   hx*s + hy*c <= frameH/2.
+    double hx = 0.0, hy = 0.0;
+    if (desiredAspect > 0.0) {
+        // Fixed aspect: hx = desiredAspect * hy. Take the tighter of the two
+        // constraints so both hold.
+        const double ty = std::min((frameW * 0.5) / (desiredAspect * c + s),
+                                    (frameH * 0.5) / (desiredAspect * s + c));
+        hy = ty;
+        hx = desiredAspect * ty;
+    } else {
+        // Free aspect: the max-area rect touches all four edges, so solve both
+        // constraints as equalities. cos(2θ) = c²-s² vanishes at 45°, where the
+        // rect degenerates along the short axis — fall back below.
+        const double cos2 = c * c - s * s;
+        if (cos2 > 1e-6) {
+            hx = (frameW * 0.5 * c - frameH * 0.5 * s) / cos2;
+            hy = (frameH * 0.5 * c - frameW * 0.5 * s) / cos2;
+        }
+        if (hx <= 0.0 || hy <= 0.0) {
+            // Near 45° (or degenerate): largest rect that fits, half the short
+            // side projected onto each axis.
+            const double shortSide = std::min(frameW, frameH);
+            hx = hy = (shortSide * 0.5) / (c + s);
+        }
+    }
+    // Clamp to the frame (rounding at tiny angles can nudge slightly over) and
+    // normalize, centred.
+    const double w = std::min(2.0 * hx / frameW, 1.0);
+    const double h = std::min(2.0 * hy / frameH, 1.0);
+    return QRectF((1.0 - w) * 0.5, (1.0 - h) * 0.5, w, h);
 }
 
 Image applyCrop(const Image &img, const CropState &cropIn)

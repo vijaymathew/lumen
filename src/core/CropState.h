@@ -34,6 +34,15 @@ struct CropState {
     static CropState fromJson(const QJsonObject &);
 };
 
+// Largest axis-aligned crop rectangle, centred and normalized within an oriented
+// frame of size `frameW`×`frameH`, that stays inside that frame after it is
+// rotated by `angleDeg` about its centre — i.e. clear of the transparent corners
+// a straighten introduces. `desiredAspect` is the crop's width/height in oriented
+// pixels; pass <= 0 for a free aspect (maximises area). At angle 0 this returns
+// the full frame {0,0,1,1}. Used to auto-inset the crop rect when straightening.
+QRectF straightenSafeRect(double angleDeg, double frameW, double frameH,
+                          double desiredAspect);
+
 // Applies `crop` to `img`: flip → rotate (90° steps) → straighten → extract the
 // rect. The rect is normalized in the oriented frame (after rotation 90/270 the
 // frame is height×width); the straighten angle rotates content about the frame

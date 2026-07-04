@@ -11,6 +11,7 @@
 #include <QImage>
 #include <QJsonObject>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
@@ -196,6 +197,36 @@ int main(int /*argc*/, char **argv)
         CHECK(qAlpha(q.pixel(W / 2, H / 2)) > 200); // centre still covered by content
         CHECK(qRed(q.pixel(W / 2, H / 2)) > 200);
         CHECK(qAlpha(q.pixel(0, 0)) < 50);          // a corner rotated to background
+    }
+
+    // 10. straightenSafeRect: at angle 0 it's the full frame; at a tilt every
+    //     corner of the returned (centred) rect stays inside the rotated frame,
+    //     for free and fixed aspects.
+    {
+        CHECK(straightenSafeRect(0.0, 40.0, 20.0, 0.0) == QRectF(0.0, 0.0, 1.0, 1.0));
+
+        const double fw = 40.0, fh = 20.0;
+        const double angles[] = {2.0, 10.0, -15.0, 30.0, 44.0};
+        const double aspects[] = {0.0, 1.0, fw / fh, 0.75}; // free, square, frame, tall
+        for (double ang : angles) {
+            for (double ar : aspects) {
+                QRectF r = straightenSafeRect(ang, fw, fh, ar);
+                CHECK(r.width() > 0.0 && r.height() > 0.0);
+                CHECK(r.width() <= 1.0 + 1e-9 && r.height() <= 1.0 + 1e-9);
+                // Centred within the frame.
+                CHECK(qAbs(r.center().x() - 0.5) < 1e-9);
+                CHECK(qAbs(r.center().y() - 0.5) < 1e-9);
+                // Corner offset from centre, in pixels.
+                const double hx = r.width() * fw * 0.5;
+                const double hy = r.height() * fh * 0.5;
+                const double rad = qAbs(ang) * 3.14159265358979323846 / 180.0;
+                const double c = std::cos(rad), s = std::sin(rad);
+                CHECK(hx * c + hy * s <= fw * 0.5 + 1e-6); // inside rotated frame
+                CHECK(hx * s + hy * c <= fh * 0.5 + 1e-6);
+                if (ar > 0.0) // aspect honoured
+                    CHECK(qAbs((r.width() * fw) / (r.height() * fh) - ar) < 1e-6);
+            }
+        }
     }
 
     std::printf("crop_test OK\n");
