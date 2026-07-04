@@ -11,6 +11,7 @@
 #include <QImage>
 #include <QJsonObject>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -225,6 +226,28 @@ int main(int /*argc*/, char **argv)
                 CHECK(hx * s + hy * c <= fh * 0.5 + 1e-6);
                 if (ar > 0.0) // aspect honoured
                     CHECK(qAbs((r.width() * fw) / (r.height() * fh) - ar) < 1e-6);
+            }
+        }
+    }
+
+    // 11. End-to-end: applying straightenSafeRect as the crop after a straighten
+    //     leaves NO transparent pixels — the inset genuinely clears the tilt's
+    //     corners in the real export path (applyCrop). This is the contract the
+    //     UI relies on when it auto-insets the crop while straightening.
+    {
+        Image red = solidRed(W, H);
+        for (double ang : {3.0, 12.0, -20.0, 35.0}) {
+            for (double ar : {0.0, 1.0, 16.0 / 9.0}) {
+                CropState c;
+                c.straighten = ang;
+                c.rect = straightenSafeRect(ang, W, H, ar);
+                QImage q = applyCrop(red, c).toQImage();
+                CHECK(!q.isNull() && q.width() > 0 && q.height() > 0);
+                int minAlpha = 255;
+                for (int y = 0; y < q.height(); ++y)
+                    for (int x = 0; x < q.width(); ++x)
+                        minAlpha = std::min(minAlpha, qAlpha(q.pixel(x, y)));
+                CHECK(minAlpha > 250); // fully opaque → no corner leaked in
             }
         }
     }

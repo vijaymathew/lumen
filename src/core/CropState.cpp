@@ -66,20 +66,28 @@ CropState CropState::fromJson(const QJsonObject &o)
 QRectF straightenSafeRect(double angleDeg, double frameW, double frameH,
                           double desiredAspect)
 {
-    if (frameW <= 0.0 || frameH <= 0.0)
-        return QRectF(0.0, 0.0, 1.0, 1.0);
+    if (frameW <= 0.0 || frameH <= 0.0 || std::abs(angleDeg) < 1e-6)
+        return QRectF(0.0, 0.0, 1.0, 1.0); // no tilt → no inset needed
     const double rad = std::abs(angleDeg) * kPi / 180.0;
     const double c = std::cos(rad), s = std::sin(rad);
 
+    // The rotated content's edge is anti-aliased by the resample (vips_rotate),
+    // so the exact inscribed rectangle would sample a thin band of partial-alpha
+    // pixels at its border. Sit a couple of pixels inside that boundary so the
+    // crop stays fully opaque. Negligible on real images; the guard is in pixels.
+    constexpr double kEdgeGuardPx = 2.0;
+    const double halfW = std::max(frameW * 0.5 - kEdgeGuardPx, 0.0);
+    const double halfH = std::max(frameH * 0.5 - kEdgeGuardPx, 0.0);
+
     // Candidate rect is centred with half-extents (hx, hy). A corner (±hx, ±hy)
-    // stays inside the frame rotated by the angle iff, in the frame's own axes,
-    //   hx*c + hy*s <= frameW/2   and   hx*s + hy*c <= frameH/2.
+    // stays inside the (guarded) frame rotated by the angle iff, in the frame's
+    // own axes,  hx*c + hy*s <= halfW   and   hx*s + hy*c <= halfH.
     double hx = 0.0, hy = 0.0;
     if (desiredAspect > 0.0) {
         // Fixed aspect: hx = desiredAspect * hy. Take the tighter of the two
         // constraints so both hold.
-        const double ty = std::min((frameW * 0.5) / (desiredAspect * c + s),
-                                    (frameH * 0.5) / (desiredAspect * s + c));
+        const double ty = std::min(halfW / (desiredAspect * c + s),
+                                    halfH / (desiredAspect * s + c));
         hy = ty;
         hx = desiredAspect * ty;
     } else {
@@ -88,13 +96,13 @@ QRectF straightenSafeRect(double angleDeg, double frameW, double frameH,
         // rect degenerates along the short axis — fall back below.
         const double cos2 = c * c - s * s;
         if (cos2 > 1e-6) {
-            hx = (frameW * 0.5 * c - frameH * 0.5 * s) / cos2;
-            hy = (frameH * 0.5 * c - frameW * 0.5 * s) / cos2;
+            hx = (halfW * c - halfH * s) / cos2;
+            hy = (halfH * c - halfW * s) / cos2;
         }
         if (hx <= 0.0 || hy <= 0.0) {
             // Near 45° (or degenerate): largest rect that fits, half the short
             // side projected onto each axis.
-            const double shortSide = std::min(frameW, frameH);
+            const double shortSide = std::min(halfW, halfH) * 2.0;
             hx = hy = (shortSide * 0.5) / (c + s);
         }
     }

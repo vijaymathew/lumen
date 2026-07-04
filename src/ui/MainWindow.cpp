@@ -648,13 +648,26 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_cropPanel = new CropPanel(this);
     connect(m_cropPanel, &CropPanel::aspectChanged, this, [this](double aspect) {
+        m_cropAspect = aspect;
         if (m_cropGizmo)
             m_cropGizmo->setAspect(aspect);
+        // A straightened crop must re-inset to the new aspect to stay off the
+        // tilt's transparent corners.
+        CropState c = m_graph.crop();
+        if (std::abs(c.straighten) > 1e-6) {
+            c.rect = straightenSafeCropRect(c);
+            m_graph.setCrop(c);
+            if (m_cropGizmo)
+                m_cropGizmo->setRect(c.rect);
+            updateCropView();
+            updatePreview();
+        }
     });
     connect(m_cropPanel, &CropPanel::rotateRequested, this, [this](int deltaCW) {
         CropState c = m_graph.crop();
         c.rotation = ((c.rotation + deltaCW) % 360 + 360) % 360;
-        c.rect = QRectF(0.0, 0.0, 1.0, 1.0); // a re-orient resets the rectangle
+        // A re-orient resets the rectangle (re-inset if a straighten is active).
+        c.rect = straightenSafeCropRect(c);
         m_graph.setCrop(c);
         if (m_cropGizmo)
             m_cropGizmo->setRect(c.rect);
@@ -668,6 +681,18 @@ MainWindow::MainWindow(QWidget *parent)
         else
             c.flipV = !c.flipV;
         m_graph.setCrop(c);
+        updateCropView();
+        updatePreview();
+    });
+    connect(m_cropPanel, &CropPanel::straightenChanged, this, [this](double deg) {
+        CropState c = m_graph.crop();
+        c.straighten = deg;
+        // Keep the crop clear of the tilt's transparent corners. (The whole crop
+        // session is a single undo step, committed in closeCropTool.)
+        c.rect = straightenSafeCropRect(c);
+        m_graph.setCrop(c);
+        if (m_cropGizmo)
+            m_cropGizmo->setRect(c.rect);
         updateCropView();
         updatePreview();
     });
@@ -2968,6 +2993,18 @@ double MainWindow::sourceAspect() const
            / static_cast<double>(m_sourceQImage.height());
 }
 
+QRectF MainWindow::straightenSafeCropRect(const CropState &c) const
+{
+    if (std::abs(c.straighten) < 1e-6)
+        return QRectF(0.0, 0.0, 1.0, 1.0);
+    const bool swap = (c.rotation == 90 || c.rotation == 270);
+    const double sw = m_sourceQImage.width();
+    const double sh = m_sourceQImage.height();
+    const double ow = swap ? sh : sw; // oriented frame dims (pre-straighten)
+    const double oh = swap ? sw : sh;
+    return straightenSafeRect(c.straighten, ow, oh, m_cropAspect);
+}
+
 void MainWindow::openCropTool()
 {
     m_input.setMode(InputController::Mode::ToolActive);
@@ -2975,6 +3012,7 @@ void MainWindow::openCropTool()
     const int margin = 18;
     m_cropPanel->move(width() - m_cropPanel->width() - margin, margin);
     m_cropPanel->reveal(m_graph.crop(), sourceAspect());
+    m_cropAspect = 0.0;
     m_cropGizmo->setAspect(0.0); // free until the user picks a preset
     m_cropGizmo->setRect(m_graph.crop().rect);
     updateCropView(); // switches the canvas into Editing (full-frame) mode

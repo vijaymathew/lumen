@@ -252,6 +252,10 @@ private:
     // gizmo/pick tool needs it; else the cropped browse view).
     void updateCropView();
     double sourceAspect() const; // original (un-oriented) source width/height
+    // Largest centred crop rect clear of the straighten tilt's transparent
+    // corners, for `c`'s orientation and the active aspect (m_cropAspect).
+    // Returns the full frame when `c` is not straightened.
+    QRectF straightenSafeCropRect(const CropState &c) const;
     void toggleHistogram();  // show/hide the histogram overlay
     void updateHistogram();  // recompute from the current result (when visible)
     void toggleClipping();   // show/hide on-canvas clipping warnings ("blinkies")
@@ -384,6 +388,7 @@ private:
     MaskGizmo *m_maskGizmo = nullptr; // on-canvas gradient/radial mask editor
     ZoneGizmo *m_zoneGizmo = nullptr; // on-canvas exclusive-zone shape editor
     CropGizmo *m_cropGizmo = nullptr; // on-canvas crop rectangle editor
+    double m_cropAspect = 0.0;        // active crop aspect (w/h; 0 = free), for straighten inset
     QLabel *m_hint = nullptr;
     // Bottom-right cluster of glanceable view toggles (mirror the G/J/A keys).
     QWidget *m_viewToggles = nullptr;

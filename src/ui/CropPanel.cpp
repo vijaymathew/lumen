@@ -5,12 +5,21 @@
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <QSlider>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 
 namespace {
 constexpr int kPanelWidth = 248;
+constexpr double kStraightenScale = 10.0; // slider units per degree (0.1° steps)
+constexpr int kStraightenRange = 450;     // ±45.0°
+
+QString straightenText(double deg)
+{
+    return QStringLiteral("%1°").arg(deg, 0, 'f', 1);
+}
 
 struct AspectPreset {
     const char *label;
@@ -84,6 +93,30 @@ CropPanel::CropPanel(QWidget *parent)
     rotRow->addWidget(m_flipV);
     layout->addLayout(rotRow);
 
+    // Straighten: a fine tilt slider (level-the-horizon), with a live degree read-out.
+    auto *straightenHeader = new QHBoxLayout;
+    straightenHeader->setContentsMargins(0, 0, 0, 0);
+    auto *straightenLabel = new QLabel(QStringLiteral("Straighten"), this);
+    straightenLabel->setObjectName(QStringLiteral("rowName"));
+    m_straightenValue = new QLabel(straightenText(0.0), this);
+    m_straightenValue->setObjectName(QStringLiteral("rowValue"));
+    m_straightenValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    straightenHeader->addWidget(straightenLabel);
+    straightenHeader->addWidget(m_straightenValue);
+    layout->addLayout(straightenHeader);
+
+    m_straighten = new QSlider(Qt::Horizontal, this);
+    m_straighten->setRange(-kStraightenRange, kStraightenRange);
+    m_straighten->setSingleStep(1);  // 0.1°
+    m_straighten->setPageStep(50);   // 5°
+    m_straighten->setValue(0);
+    connect(m_straighten, &QSlider::valueChanged, this, [this](int v) {
+        const double deg = v / kStraightenScale;
+        m_straightenValue->setText(straightenText(deg));
+        emit straightenChanged(deg);
+    });
+    layout->addWidget(m_straighten);
+
     auto *reset = new QPushButton(QStringLiteral("Reset crop"), this);
     connect(reset, &QPushButton::clicked, this, [this] {
         selectAspectButton(0);
@@ -99,6 +132,15 @@ CropPanel::CropPanel(QWidget *parent)
         }
         #toolTitle { color: #e8e8ea; font-size: 13px; }
         #rowName { color: #b4b4b8; font-size: 12px; }
+        #rowValue { color: #e8e8ea; font-size: 12px; }
+        QSlider::groove:horizontal {
+            height: 4px; background: #38383d; border-radius: 2px;
+        }
+        QSlider::handle:horizontal {
+            background: #cfcbf0; border: 1px solid #7F77DD; width: 14px;
+            margin: -6px 0; border-radius: 7px;
+        }
+        QSlider::handle:horizontal:hover { background: #ffffff; }
         QPushButton {
             background: #2a2a2e; color: #e8e8ea; border: 1px solid #38383d;
             border-radius: 6px; padding: 4px 8px; font-size: 12px;
@@ -122,8 +164,12 @@ void CropPanel::reveal(const CropState &crop, double originalAspect)
     {
         const QSignalBlocker bh(m_flipH);
         const QSignalBlocker bv(m_flipV);
+        const QSignalBlocker bs(m_straighten);
         m_flipH->setChecked(crop.flipH);
         m_flipV->setChecked(crop.flipV);
+        const int v = static_cast<int>(std::lround(crop.straighten * kStraightenScale));
+        m_straighten->setValue(std::clamp(v, -kStraightenRange, kStraightenRange));
+        m_straightenValue->setText(straightenText(crop.straighten));
     }
     adjustSize();
     show();

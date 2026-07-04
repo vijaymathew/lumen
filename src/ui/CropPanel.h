@@ -5,11 +5,14 @@
 #include <QVector>
 #include <QWidget>
 
+class QLabel;
 class QPushButton;
+class QSlider;
 
 // CropPanel is the floating tool card for Crop & Rotate: aspect-ratio presets,
-// 90° rotate (CW/CCW), horizontal/vertical flip, and reset. It fires granular
-// actions; MainWindow applies them to the graph's CropState. Closes on Esc/Enter.
+// 90° rotate (CW/CCW), horizontal/vertical flip, a fine straighten slider, and
+// reset. It fires granular actions; MainWindow applies them to the graph's
+// CropState. Closes on Esc/Enter.
 class CropPanel : public QWidget {
     Q_OBJECT
 
@@ -24,6 +27,7 @@ signals:
     void aspectChanged(double aspect); // width/height; 0 = free
     void rotateRequested(int deltaCW); // +90 (CW) or -90 (CCW)
     void flipRequested(bool horizontal);
+    void straightenChanged(double degrees); // fine tilt, [-45, 45]
     void resetRequested();
     void closed();
 
@@ -39,6 +43,8 @@ private:
     QVector<QPushButton *> m_aspectButtons;
     QPushButton *m_flipH = nullptr;
     QPushButton *m_flipV = nullptr;
+    QSlider *m_straighten = nullptr;
+    QLabel *m_straightenValue = nullptr;
     double m_originalAspect = 1.0;
 
     bool m_dragging = false;
