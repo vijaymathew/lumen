@@ -6,6 +6,7 @@
 #include "core/GrainNode.h"
 #include "core/MonoNode.h"
 #include "core/Preset.h"
+#include "core/StructureNode.h"
 #include "core/TuneNode.h"
 #include "core/Vignette.h"
 
@@ -33,7 +34,7 @@ QJsonObject entry(const EditNode &n)
 // Wraps a configured node set + vignette into a preset::fromGraph-format document.
 QJsonObject assemble(const QString &name, const TuneNode &tune, const CurvesNode &curves,
                      const ColorGradeNode &grade, const MonoNode &mono, const GrainNode &grain,
-                     const VignetteParams &vig)
+                     const StructureNode &structure, const VignetteParams &vig)
 {
     QJsonArray nodes;
     // Emit every creative node the built-ins touch, always — even at defaults — so
@@ -43,6 +44,7 @@ QJsonObject assemble(const QString &name, const TuneNode &tune, const CurvesNode
     nodes.append(entry(grade));
     nodes.append(entry(mono));
     nodes.append(entry(grain));
+    nodes.append(entry(structure));
 
     QJsonObject root;
     root[QStringLiteral("lumenPreset")] = static_cast<int>(kVersion);
@@ -84,6 +86,12 @@ Builtin bwHighContrast()
     gv.size = 2.5f;
     grain.setValues(gv);
 
+    StructureNode structure;
+    StructureNode::Values stv;
+    stv.enabled = true;
+    stv.amount = 35.0f; // crisp, textured detail
+    structure.setValues(stv);
+
     VignetteParams vig;
     vig.enabled = true;
     vig.amount = -24.0f;
@@ -93,7 +101,7 @@ Builtin bwHighContrast()
     return {QStringLiteral("bw-high-contrast"), QStringLiteral("Silver — High Contrast"),
             QStringLiteral("B&W"),
             assemble(QStringLiteral("Silver — High Contrast"), tune, CurvesNode{},
-                     ColorGradeNode{}, mono, grain, vig)};
+                     ColorGradeNode{}, mono, grain, structure, vig)};
 }
 
 // --- B&W: Silver — Soft Toned ----------------------------------------------
@@ -131,7 +139,7 @@ Builtin bwSoftToned()
     return {QStringLiteral("bw-soft-toned"), QStringLiteral("Silver — Soft Toned"),
             QStringLiteral("B&W"),
             assemble(QStringLiteral("Silver — Soft Toned"), tune, CurvesNode{},
-                     ColorGradeNode{}, mono, grain, vig)};
+                     ColorGradeNode{}, mono, grain, StructureNode{}, vig)};
 }
 
 // --- Color: Warm Portrait ---------------------------------------------------
@@ -164,7 +172,7 @@ Builtin colorWarmPortrait()
     return {QStringLiteral("color-warm-portrait"), QStringLiteral("Warm Portrait"),
             QStringLiteral("Color"),
             assemble(QStringLiteral("Warm Portrait"), tune, CurvesNode{}, grade, MonoNode{},
-                     GrainNode{}, vig)};
+                     GrainNode{}, StructureNode{}, vig)};
 }
 
 // --- Color: Faded Film ------------------------------------------------------
@@ -205,7 +213,7 @@ Builtin colorFadedFilm()
     return {QStringLiteral("color-faded-film"), QStringLiteral("Faded Film"),
             QStringLiteral("Color"),
             assemble(QStringLiteral("Faded Film"), tune, CurvesNode{}, grade, MonoNode{}, grain,
-                     vig)};
+                     StructureNode{}, vig)};
 }
 
 // --- B&W: Film Noir ---------------------------------------------------------
@@ -240,6 +248,12 @@ Builtin bwFilmNoir()
     gv.size = 2.2f;
     grain.setValues(gv);
 
+    StructureNode structure;
+    StructureNode::Values stv;
+    stv.enabled = true;
+    stv.amount = 25.0f; // grit to match the mood
+    structure.setValues(stv);
+
     VignetteParams vig;
     vig.enabled = true;
     vig.amount = -40.0f;
@@ -249,7 +263,7 @@ Builtin bwFilmNoir()
     return {QStringLiteral("bw-film-noir"), QStringLiteral("Silver — Film Noir"),
             QStringLiteral("B&W"),
             assemble(QStringLiteral("Silver — Film Noir"), tune, CurvesNode{}, ColorGradeNode{},
-                     mono, grain, vig)};
+                     mono, grain, structure, vig)};
 }
 
 // --- B&W: Fine Art ----------------------------------------------------------
@@ -289,7 +303,7 @@ Builtin bwFineArt()
     return {QStringLiteral("bw-fine-art"), QStringLiteral("Silver — Fine Art"),
             QStringLiteral("B&W"),
             assemble(QStringLiteral("Silver — Fine Art"), tune, CurvesNode{}, ColorGradeNode{},
-                     mono, grain, vig)};
+                     mono, grain, StructureNode{}, vig)};
 }
 
 // --- B&W: Antique Plate -----------------------------------------------------
@@ -329,7 +343,7 @@ Builtin bwAntiquePlate()
     return {QStringLiteral("bw-antique-plate"), QStringLiteral("Silver — Antique Plate"),
             QStringLiteral("B&W"),
             assemble(QStringLiteral("Silver — Antique Plate"), tune, CurvesNode{}, ColorGradeNode{},
-                     mono, grain, vig)};
+                     mono, grain, StructureNode{}, vig)};
 }
 
 // --- Color: Teal & Orange ---------------------------------------------------
@@ -352,6 +366,12 @@ Builtin colorTealOrange()
     gv.gainY = 0.05f;
     grade.setValues(gv);
 
+    StructureNode structure;
+    StructureNode::Values stv;
+    stv.enabled = true;
+    stv.amount = 30.0f; // cinematic texture
+    structure.setValues(stv);
+
     VignetteParams vig;
     vig.enabled = true;
     vig.amount = -10.0f;
@@ -361,7 +381,7 @@ Builtin colorTealOrange()
     return {QStringLiteral("color-teal-orange"), QStringLiteral("Teal & Orange"),
             QStringLiteral("Color"),
             assemble(QStringLiteral("Teal & Orange"), tune, CurvesNode{}, grade, MonoNode{},
-                     GrainNode{}, vig)};
+                     GrainNode{}, structure, vig)};
 }
 
 // --- Color: Golden Hour -----------------------------------------------------
@@ -387,6 +407,12 @@ Builtin colorGoldenHour()
     gv.liftY = 0.01f;
     grade.setValues(gv);
 
+    StructureNode structure;
+    StructureNode::Values stv;
+    stv.enabled = true;
+    stv.amount = 15.0f; // gentle lift, keeps skin soft
+    structure.setValues(stv);
+
     VignetteParams vig;
     vig.enabled = true;
     vig.amount = -8.0f;
@@ -396,7 +422,7 @@ Builtin colorGoldenHour()
     return {QStringLiteral("color-golden-hour"), QStringLiteral("Golden Hour"),
             QStringLiteral("Color"),
             assemble(QStringLiteral("Golden Hour"), tune, CurvesNode{}, grade, MonoNode{},
-                     GrainNode{}, vig)};
+                     GrainNode{}, structure, vig)};
 }
 
 // --- Color: Bleach Bypass ---------------------------------------------------
@@ -437,7 +463,7 @@ Builtin colorBleachBypass()
     return {QStringLiteral("color-bleach-bypass"), QStringLiteral("Bleach Bypass"),
             QStringLiteral("Color"),
             assemble(QStringLiteral("Bleach Bypass"), tune, CurvesNode{}, grade, MonoNode{}, grain,
-                     vig)};
+                     StructureNode{}, vig)};
 }
 
 } // namespace

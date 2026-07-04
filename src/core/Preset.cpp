@@ -27,7 +27,8 @@ bool isCreativeType(const QString &type)
         QStringLiteral("colormixer"), QStringLiteral("colorgrade"),
         QStringLiteral("lut"),        QStringLiteral("mono"),
         QStringLiteral("grain"),      QStringLiteral("sharpen"),
-        QStringLiteral("denoise"),    QStringLiteral("defringe"),
+        QStringLiteral("structure"),  QStringLiteral("denoise"),
+        QStringLiteral("defringe"),
     };
     for (const QString &t : kCreative)
         if (type == t)

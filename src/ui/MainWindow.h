@@ -25,6 +25,7 @@
 #include "core/RawLoader.h"
 #include "core/SelectiveMask.h"
 #include "core/SharpenNode.h"
+#include "core/StructureNode.h"
 #include "core/TuneNode.h"
 #include "input/InputController.h"
 
@@ -56,6 +57,7 @@ class ColorMixerPanel;
 class GrainPanel;
 class VignettePanel;
 class SharpenPanel;
+class StructurePanel;
 class TonePanel;
 class QLabel;
 class QPushButton;
@@ -210,6 +212,10 @@ private:
     // preset's vignette by amount% (the vignette can't ride the layer opacity, so
     // Amount scales it here instead — keeping it part of the "whole look" blend).
     void applyPresetVignette(int amountPct);
+    // Same idea for structure (applied to the Base structure node). Returns whether
+    // the Base node changed; re-baking is expensive, so callers coalesce the re-bake
+    // (the bake timer) rather than kicking it per Amount tick.
+    bool applyPresetStructure(int amountPct);
     void openMonoTool();
     void closeMonoTool();
     void openColorGradeTool();
@@ -220,6 +226,8 @@ private:
     void closeLensTool();
     void openSharpenTool();  // toggles the Sharpen panel
     void closeSharpenTool();
+    void openStructureTool();  // toggles the Structure (local contrast) panel
+    void closeStructureTool();
     void openDenoiseTool();  // toggles the Denoise panel
     void closeDenoiseTool();
     void openDefringeTool(); // toggles the Defringe panel
@@ -284,7 +292,7 @@ private:
     // busy badge labels by which op the user actually triggered. A handler sets
     // m_bakeOp before kicking the bake; refreshBaseImage consumes it for the
     // label and falls back to precedence when it's Auto (e.g. a load/lens refresh).
-    enum class BakeOp { Auto, Heal, Denoise, Defringe, Sharpen };
+    enum class BakeOp { Auto, Heal, Denoise, Defringe, Sharpen, Structure };
     BakeOp m_bakeOp = BakeOp::Auto;
     // Canvas colour-pick has two purposes: choosing a colour-mask target, or the
     // white-balance eyedropper. `m_pickPurpose` routes the picked point.
@@ -340,11 +348,17 @@ private:
     // 100% the preset's is fully in.
     VignetteParams m_presetBaselineVignette;
     VignetteParams m_presetVignette;
+    // Structure (local contrast) is a baked Base op — it can't ride the preset
+    // layer's opacity either, so it gets the same baseline/preset snapshot + Amount
+    // blend as the vignette (applied to the Base structure node, re-baked).
+    StructureNode::Values m_presetBaselineStructure;
+    StructureNode::Values m_presetStructure;
     MonoPanel *m_monoPanel = nullptr;
     ColorMixerPanel *m_colorMixerPanel = nullptr;
     ColorGradePanel *m_colorGradePanel = nullptr;
     LensPanel *m_lensPanel = nullptr;
     SharpenPanel *m_sharpenPanel = nullptr;
+    StructurePanel *m_structurePanel = nullptr;
     GrainPanel *m_grainPanel = nullptr;
     VignettePanel *m_vignettePanel = nullptr;
     CropPanel *m_cropPanel = nullptr;
@@ -393,7 +407,8 @@ private:
     LensCorrectionNode *m_lens = nullptr; // owned by m_graph (first in the chain)
     DenoiseNode *m_denoise = nullptr;     // owned by m_graph (after heal, before defringe)
     DefringeNode *m_defringe = nullptr;   // owned by m_graph (after denoise, before sharpen)
-    SharpenNode *m_sharpen = nullptr;     // owned by m_graph (after denoise, before tune)
+    SharpenNode *m_sharpen = nullptr;     // owned by m_graph (after defringe, before structure)
+    StructureNode *m_structure = nullptr; // owned by m_graph (local contrast, after sharpen)
     GrainNode *m_grain = nullptr;         // owned by m_graph (final Base node, after mono)
     Image m_workingSource;               // cached lens-corrected source (preview base input)
     QString m_sourcePath;                // for a sensible default export name

@@ -136,6 +136,8 @@ add_library(lumen_core STATIC
     src/core/LensCorrectionNode.cpp
     src/core/SharpenNode.h
     src/core/SharpenNode.cpp
+    src/core/StructureNode.h
+    src/core/StructureNode.cpp
     src/core/DenoiseNode.h
     src/core/DenoiseNode.cpp
     src/core/DefringeNode.h
@@ -198,6 +200,8 @@ qt_add_executable(lumen
     src/ui/LensPanel.cpp
     src/ui/SharpenPanel.h
     src/ui/SharpenPanel.cpp
+    src/ui/StructurePanel.h
+    src/ui/StructurePanel.cpp
     src/ui/DenoisePanel.h
     src/ui/DenoisePanel.cpp
     src/ui/DefringePanel.h
@@ -449,6 +453,11 @@ if(BUILD_TESTING)
     target_link_libraries(sharpen_test PRIVATE lumen_core)
     target_compile_options(sharpen_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME sharpen_test COMMAND sharpen_test)
+
+    add_executable(structure_test tests/structure_test.cpp)
+    target_link_libraries(structure_test PRIVATE lumen_core)
+    target_compile_options(structure_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME structure_test COMMAND structure_test)
 
     add_executable(histogram_test tests/histogram_test.cpp)
     target_link_libraries(histogram_test PRIVATE lumen_core)
