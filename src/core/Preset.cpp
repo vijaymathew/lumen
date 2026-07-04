@@ -3,7 +3,9 @@
 #include "core/EditGraph.h"
 #include "core/EditNode.h"
 #include "core/Layer.h"
+#include "core/MonoNode.h"
 
+#include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -25,7 +27,8 @@ bool isCreativeType(const QString &type)
         QStringLiteral("colormixer"), QStringLiteral("colorgrade"),
         QStringLiteral("lut"),        QStringLiteral("mono"),
         QStringLiteral("grain"),      QStringLiteral("sharpen"),
-        QStringLiteral("denoise"),    QStringLiteral("defringe"),
+        QStringLiteral("structure"),  QStringLiteral("denoise"),
+        QStringLiteral("defringe"),
     };
     for (const QString &t : kCreative)
         if (type == t)
@@ -44,16 +47,23 @@ QJsonObject fromGraph(const EditGraph &graph, const QString &name)
 
     const Layer &base = graph.baseLayer();
     QJsonArray nodes;
+    bool monochrome = false;
     for (int i = 0; i < base.nodeCount(); ++i) {
         const EditNode *n = base.nodeAt(i);
         if (!n || !isCreativeType(n->typeName()))
             continue;
+        // The look is "B&W" when the monochrome conversion is on; used by the
+        // Presets browser to file the preset under the right section.
+        if (n->typeName() == QLatin1String("mono"))
+            monochrome = static_cast<const MonoNode *>(n)->values().enabled;
         QJsonObject e;
         e[QStringLiteral("type")] = n->typeName();
         e[QStringLiteral("state")] = n->saveState();
         nodes.append(e);
     }
     root[QStringLiteral("nodes")] = nodes;
+    root[QStringLiteral("category")] =
+        monochrome ? QStringLiteral("B&W") : QStringLiteral("Color");
     // Store the vignette unconditionally (even identity) so applying a preset is
     // deterministic: it clears a target's existing vignette when the preset has none.
     root[QStringLiteral("vignette")] = graph.vignette().toJson();
@@ -70,24 +80,38 @@ QString name(const QJsonObject &preset)
     return preset.value(QStringLiteral("name")).toString();
 }
 
-bool applyToGraph(const QJsonObject &preset, EditGraph &graph)
+bool applyToLayer(const QJsonObject &preset, Layer &layer)
 {
     if (!isPreset(preset))
         return false;
 
-    Layer &base = graph.baseLayer();
     for (const QJsonValue &v : preset.value(QStringLiteral("nodes")).toArray()) {
         const QJsonObject e = v.toObject();
         const QString type = e.value(QStringLiteral("type")).toString();
         if (!isCreativeType(type))
             continue; // ignore anything unexpected in the file
-        if (EditNode *node = base.nodeOfType(type))
+        // Only the node types this layer carries are touched; e.g. a non-Base
+        // layer has no grain node, so grain in the preset is silently skipped.
+        if (EditNode *node = layer.nodeOfType(type))
             node->restoreState(e.value(QStringLiteral("state")).toObject());
     }
-    graph.setVignette(
-        VignetteParams::fromJson(preset.value(QStringLiteral("vignette")).toObject()));
-    base.invalidateFrom(0); // parameters changed — recompute the whole chain
+    layer.invalidateFrom(0); // parameters changed — recompute the whole chain
     return true;
+}
+
+bool applyToGraph(const QJsonObject &preset, EditGraph &graph)
+{
+    if (!applyToLayer(preset, graph.baseLayer()))
+        return false;
+    // The vignette is a graph-level (post-composite) stage, so it applies here
+    // rather than in applyToLayer, which only touches a layer's node chain.
+    graph.setVignette(vignetteOf(preset));
+    return true;
+}
+
+VignetteParams vignetteOf(const QJsonObject &preset)
+{
+    return VignetteParams::fromJson(preset.value(QStringLiteral("vignette")).toObject());
 }
 
 bool save(const QString &path, const QJsonObject &preset, QString *error)
@@ -131,6 +155,15 @@ bool load(const QString &path, QJsonObject *out, QString *error)
     if (out)
         *out = obj;
     return true;
+}
+
+QString userPresetsDir()
+{
+    // Mirrors autosave::projectsDir()'s ~/.lumen home so all app data sits together.
+    const QString path = QDir(QDir::homePath()).filePath(QStringLiteral(".lumen/presets"));
+    if (!QDir().mkpath(path))
+        return QString();
+    return path;
 }
 
 } // namespace preset

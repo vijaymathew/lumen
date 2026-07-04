@@ -6,6 +6,7 @@
 #include "core/Image.h"
 #include "core/LayerPreview.h"
 #include "core/MaskSpec.h"
+#include "core/BuiltinPresets.h"
 #include "core/Preset.h"
 #include "core/Project.h"
 #include "core/RawLoader.h"
@@ -27,6 +28,7 @@
 #include "ui/CropGizmo.h"
 #include "ui/CropPanel.h"
 #include "ui/LooksPanel.h"
+#include "ui/PresetsPanel.h"
 #include "ui/ColorGradePanel.h"
 #include "ui/MonoPanel.h"
 #include "core/ColorMixerNode.h"
@@ -36,6 +38,7 @@
 #include "ui/DefringePanel.h"
 #include "ui/RawSettingsPanel.h"
 #include "ui/SharpenPanel.h"
+#include "ui/StructurePanel.h"
 #include "ui/TonePanel.h"
 
 #include <memory>
@@ -52,6 +55,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -71,6 +75,69 @@
 #include <algorithm>
 
 namespace {
+
+// Name prefix that marks the Presets browser's dedicated full-coverage layer, so
+// it can be found/replaced across applies. Shown in the Layers panel too.
+const QString kPresetLayerPrefix = QStringLiteral("Preset: ");
+
+// Interpolates a vignette between `base` and `target` by t∈[0,1], so a preset's
+// vignette can fade in with the Amount slider. A disabled side contributes no
+// darkening (amount 0) and borrows the other side's falloff shape, so fading from
+// "no vignette" to a preset's vignette is a smooth deepening rather than a jump.
+VignetteParams blendVignette(VignetteParams base, VignetteParams target, float t)
+{
+    if (!base.enabled) {
+        base.amount = 0.0f;
+        base.midpoint = target.midpoint;
+        base.roundness = target.roundness;
+        base.feather = target.feather;
+    }
+    if (!target.enabled) {
+        target.amount = 0.0f;
+        target.midpoint = base.midpoint;
+        target.roundness = base.roundness;
+        target.feather = base.feather;
+    }
+    const auto mix = [t](float a, float b) { return a + (b - a) * t; };
+    VignetteParams r;
+    r.amount = mix(base.amount, target.amount);
+    r.midpoint = mix(base.midpoint, target.midpoint);
+    r.roundness = mix(base.roundness, target.roundness);
+    r.feather = mix(base.feather, target.feather);
+    r.enabled = (base.enabled || target.enabled) && std::abs(r.amount) > 1e-3f;
+    return r;
+}
+
+// The structure (local-contrast) values a preset carries, or defaults (disabled)
+// if it has none. Structure is a baked Base op — it can't ride a preset layer's
+// opacity, so the browser drives the Base node from these directly.
+StructureNode::Values structureFromPreset(const QJsonObject &data)
+{
+    StructureNode s;
+    for (const QJsonValue &v : data.value(QStringLiteral("nodes")).toArray()) {
+        const QJsonObject e = v.toObject();
+        if (e.value(QStringLiteral("type")).toString() == QLatin1String("structure")) {
+            s.restoreState(e.value(QStringLiteral("state")).toObject());
+            break;
+        }
+    }
+    return s.values();
+}
+
+// Interpolates structure between `base` and `target` by t∈[0,1], mirroring the
+// vignette blend so Amount fades the whole look (structure included) toward the
+// original. A disabled side contributes no local contrast (amount 0).
+StructureNode::Values blendStructure(StructureNode::Values base, StructureNode::Values target,
+                                     float t)
+{
+    const float a = base.enabled ? base.amount : 0.0f;
+    const float b = target.enabled ? target.amount : 0.0f;
+    StructureNode::Values r;
+    r.amount = a + (b - a) * t;
+    r.radius = target.enabled ? target.radius : base.radius;
+    r.enabled = (base.enabled || target.enabled) && std::abs(r.amount) > 1e-3f;
+    return r;
+}
 
 // Snapshot a TuneNode's tonal state for seeding the Tone panel. Centralised so
 // the (positional) ToneValues aggregate has one definition to keep in sync.
@@ -327,17 +394,20 @@ MainWindow::MainWindow(QWidget *parent)
 
     // The graph owns the nodes; we keep raw pointers to drive them. The "baked"
     // group runs first in libvips and is rendered into the preview base texture:
-    // lens (warps geometry) -> heal (edits pixels) -> denoise -> sharpen (both
-    // neighbourhood ops; denoise before sharpen so noise isn't amplified). Then
-    // the pointwise/LUT ops the shader replicates: tune -> colormixer -> curves
-    // -> colorgrade -> lut -> mono. Selective adjustments are masked layers above
-    // the Base.
+    // lens (warps geometry) -> heal (edits pixels) -> denoise -> defringe ->
+    // sharpen -> structure (neighbourhood ops; denoise before sharpen so noise
+    // isn't amplified, structure after sharpen so local contrast builds on the
+    // detail). Then the pointwise/LUT ops the shader replicates: tune ->
+    // colormixer -> curves -> colorgrade -> lut -> mono. Selective adjustments are
+    // masked layers above the Base.
     m_lens =
         static_cast<LensCorrectionNode *>(m_graph.addNode(std::make_unique<LensCorrectionNode>()));
     m_heal = static_cast<HealNode *>(m_graph.addNode(std::make_unique<HealNode>()));
     m_denoise = static_cast<DenoiseNode *>(m_graph.addNode(std::make_unique<DenoiseNode>()));
     m_defringe = static_cast<DefringeNode *>(m_graph.addNode(std::make_unique<DefringeNode>()));
     m_sharpen = static_cast<SharpenNode *>(m_graph.addNode(std::make_unique<SharpenNode>()));
+    m_structure =
+        static_cast<StructureNode *>(m_graph.addNode(std::make_unique<StructureNode>()));
     m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
     m_colorMixer =
         static_cast<ColorMixerNode *>(m_graph.addNode(std::make_unique<ColorMixerNode>()));
@@ -442,6 +512,55 @@ MainWindow::MainWindow(QWidget *parent)
         updatePreview();
     });
 
+    m_presetsPanel = new PresetsPanel(this);
+    connect(m_presetsPanel, &PresetsPanel::applyRequested, this, [this](const QString &id) {
+        for (const preset::Builtin &b : preset::library()) {
+            if (b.id != id)
+                continue;
+            applyPresetLook(b, m_presetsPanel->amount());
+            break;
+        }
+    });
+    connect(m_presetsPanel, &PresetsPanel::amountChanged, this,
+            [this](int percent) { setPresetAmount(percent); });
+    connect(m_presetsPanel, &PresetsPanel::deleteRequested, this, [this](const QString &id) {
+        const QString path = preset::userPresetPath(id);
+        if (path.isEmpty())
+            return;
+        const QString label = QFileInfo(path).completeBaseName();
+        if (QMessageBox::question(this, QStringLiteral("Lumen"),
+                                  QStringLiteral("Delete preset “%1”?").arg(label),
+                                  QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+            != QMessageBox::Yes)
+            return;
+        if (QFile::remove(path)) {
+            showHint(QStringLiteral("Deleted preset"));
+            invalidatePresetThumbCache(); // the id may be reused by a later save
+            refreshPresetThumbnails();
+        } else {
+            showHint(QStringLiteral("Could not delete the preset file"));
+        }
+    });
+    connect(m_presetsPanel, &PresetsPanel::renameRequested, this,
+            [this](const QString &id, const QString &newName) {
+                const QString path = preset::userPresetPath(id);
+                if (path.isEmpty())
+                    return;
+                QJsonObject obj;
+                QString error;
+                if (!preset::load(path, &obj, &error)) {
+                    showHint(QStringLiteral("Could not open the preset file"));
+                    return;
+                }
+                obj[QStringLiteral("name")] = newName; // the file keeps its path/id
+                if (!preset::save(path, obj, &error)) {
+                    showHint(QStringLiteral("Could not save the preset: %1").arg(error));
+                    return;
+                }
+                showHint(QStringLiteral("Renamed preset to “%1”").arg(newName));
+                refreshPresetThumbnails();
+            });
+
     m_monoPanel = new MonoPanel(this);
     connect(m_monoPanel, &MonoPanel::valuesChanged, this, [this](const MonoValues &v) {
         if (auto *mono = activeMono())
@@ -494,6 +613,19 @@ MainWindow::MainWindow(QWidget *parent)
                 m_bakeTimer->start();
             });
     connect(m_sharpenPanel, &SharpenPanel::closed, this, &MainWindow::closeSharpenTool);
+
+    m_structurePanel = new StructurePanel(this);
+    connect(m_structurePanel, &StructurePanel::valuesChanged, this,
+            [this](const StructureNode::Values &v) {
+                if (!m_structure)
+                    return;
+                m_structure->setValues(v);
+                // Structure bakes into the base; coalesce drags so we don't kick a
+                // full-res pass per tick.
+                m_bakeOp = BakeOp::Structure;
+                m_bakeTimer->start();
+            });
+    connect(m_structurePanel, &StructurePanel::closed, this, &MainWindow::closeStructureTool);
 
     m_grainPanel = new GrainPanel(this);
     connect(m_grainPanel, &GrainPanel::valuesChanged, this,
@@ -743,6 +875,7 @@ MainWindow::MainWindow(QWidget *parent)
             return;
         }
         m_graph.setSource(r.image);
+        ++m_sourceGeneration; // new pixels → preset thumbnails must re-render
         // Keep the current WB temperature (don't reseed to as-shot).
         applyCameraProfile(r.meta.color, /*seedKelvin=*/false);
         refreshWorkingSource();  // rebuild the corrected source + display QImage
@@ -1015,10 +1148,11 @@ MainWindow::MainWindow(QWidget *parent)
     // (only one is open at a time); the persistent panels close themselves.
     const auto closeTool = [this] { closeActiveTool(); };
     QWidget *toolPanels[] = {m_tonePanel,    m_curvesPanel,  m_looksPanel,
-                             m_monoPanel,     m_colorMixerPanel, m_colorGradePanel,
-                             m_lensPanel,     m_sharpenPanel, m_denoisePanel,
-                             m_defringePanel, m_rawPanel,     m_grainPanel,
-                             m_vignettePanel, m_cropPanel,    m_healPanel};
+                             m_presetsPanel,  m_monoPanel,    m_colorMixerPanel,
+                             m_colorGradePanel, m_lensPanel,  m_sharpenPanel,
+                             m_structurePanel, m_denoisePanel, m_defringePanel,
+                             m_rawPanel,      m_grainPanel,   m_vignettePanel,
+                             m_cropPanel,     m_healPanel};
     for (QWidget *p : toolPanels)
         addPanelCloseButton(p, closeTool);
     addPanelCloseButton(m_layersPanel, [this] { hideLayersPanel(); });
@@ -1031,12 +1165,19 @@ MainWindow::MainWindow(QWidget *parent)
     // the palette; "/" and Esc are handled in keyPressEvent instead.
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+O")), this, [this] { openImageDialog(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+S")), this, [this] { saveProject(); });
+    new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+S")), this, [this] { saveProjectAs(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")), this, [this] { openProject(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+C")), this, [this] { copySettings(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+V")), this, [this] { pasteSettings(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Q")), this, [this] { close(); });
     new QShortcut(QKeySequence(Qt::Key_F11), this, [this] { toggleFullScreen(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+0")), this, [this] { m_canvas->resetView(); });
+    new QShortcut(QKeySequence(QStringLiteral("Ctrl+P")), this, [this] {
+        if (m_presetsPanel->isVisible())
+            closePresetsTool();
+        else
+            openPresetsTool();
+    });
     new QShortcut(QKeySequence::Undo, this, [this] { doUndo(); });
     new QShortcut(QKeySequence::Redo, this, [this] { doRedo(); });
 
@@ -1113,7 +1254,8 @@ void MainWindow::buildCommands()
     m_palette->setCommands({
         {QStringLiteral("open"), QStringLiteral("Open image…"), file},
         {QStringLiteral("open-project"), QStringLiteral("Open project (.lumen)…"), file},
-        {QStringLiteral("save-project"), QStringLiteral("Save project (.lumen)…"), file},
+        {QStringLiteral("save-project"), QStringLiteral("Save project"), file},
+        {QStringLiteral("save-project-as"), QStringLiteral("Save project as (.lumen)…"), file},
         {QStringLiteral("export"), QStringLiteral("Export image…"), file},
         {QStringLiteral("tone"), QStringLiteral("Tone (exposure, contrast, saturation)"), toneColor},
         {QStringLiteral("curves"), QStringLiteral("Curves"), toneColor},
@@ -1122,6 +1264,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("monochrome"), QStringLiteral("Monochrome (B&W + toning)"), toneColor},
         {QStringLiteral("looks"), QStringLiteral("Looks (LUT)"), toneColor},
         {QStringLiteral("sharpen"), QStringLiteral("Sharpen"), detail},
+        {QStringLiteral("structure"), QStringLiteral("Structure (local contrast / clarity)"), detail},
         {QStringLiteral("denoise"), QStringLiteral("Denoise"), detail},
         {QStringLiteral("defringe"), QStringLiteral("Defringe"), detail},
         {QStringLiteral("heal"), QStringLiteral("Healing brush"), detail},
@@ -1132,6 +1275,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("vignette"), QStringLiteral("Vignette"), effects},
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment"), selective},
         {QStringLiteral("layers"), QStringLiteral("Layers"), selective},
+        {QStringLiteral("presets-browser"), QStringLiteral("Presets browser (looks)  ·  Ctrl+P"), presets},
         {QStringLiteral("copy-settings"), QStringLiteral("Copy edit settings"), presets},
         {QStringLiteral("paste-settings"), QStringLiteral("Paste edit settings"), presets},
         {QStringLiteral("save-preset"), QStringLiteral("Save preset…"), presets},
@@ -1155,6 +1299,8 @@ void MainWindow::runCommand(const QString &id)
         openProject();
     } else if (id == QLatin1String("save-project")) {
         saveProject();
+    } else if (id == QLatin1String("save-project-as")) {
+        saveProjectAs();
     } else if (id == QLatin1String("export")) {
         exportImage();
     } else if (id == QLatin1String("tone")) {
@@ -1179,6 +1325,8 @@ void MainWindow::runCommand(const QString &id)
         openLensTool();
     } else if (id == QLatin1String("sharpen")) {
         openSharpenTool();
+    } else if (id == QLatin1String("structure")) {
+        openStructureTool();
     } else if (id == QLatin1String("denoise")) {
         openDenoiseTool();
     } else if (id == QLatin1String("defringe")) {
@@ -1199,6 +1347,8 @@ void MainWindow::runCommand(const QString &id)
         openHealTool();
     } else if (id == QLatin1String("layers")) {
         openLayersTool();
+    } else if (id == QLatin1String("presets-browser")) {
+        openPresetsTool();
     } else if (id == QLatin1String("copy-settings")) {
         copySettings();
     } else if (id == QLatin1String("paste-settings")) {
@@ -1297,6 +1447,7 @@ void MainWindow::finishOpenImage(const OpenImageResult &r)
     m_graph.restoreState(m_defaultGraphState);
 
     m_graph.setSource(r.source); // full-res original; the lens node corrects on top
+    ++m_sourceGeneration;        // new pixels → preset thumbnails must re-render
     // Seed the lens node: a RAW carries EXIF identity for automatic correction;
     // anything else starts neutral (manual perspective still available).
     LensCorrectionNode::Params lp; // defaults: corrections on, perspective neutral
@@ -1400,10 +1551,32 @@ void MainWindow::saveProject()
         showHint(QStringLiteral("A save is already in progress"));
         return;
     }
+    // Re-save to the existing file silently; only a first ("fresh") save needs the
+    // dialog. Use "Save as…" to write to a new location.
+    const QString path = m_projectPath.isEmpty() ? promptSaveProjectPath() : m_projectPath;
+    if (path.isEmpty())
+        return;
+    writeProjectAsync(path);
+}
+
+void MainWindow::saveProjectAs()
+{
+    if (m_graph.source().isNull()) {
+        showHint(QStringLiteral("Open an image before saving a project"));
+        return;
+    }
+    if (m_saveWatcher.isRunning()) {
+        showHint(QStringLiteral("A save is already in progress"));
+        return;
+    }
     const QString path = promptSaveProjectPath();
     if (path.isEmpty())
         return;
+    writeProjectAsync(path);
+}
 
+void MainWindow::writeProjectAsync(const QString &path)
+{
     // Snapshot the document on the UI thread (reads the graph), then write it off
     // the UI thread behind the "Saving…" badge — the write can be slow to external
     // or network drives.
@@ -1659,6 +1832,7 @@ bool MainWindow::applyProjectResult(const OpenProjectResult &r)
     m_sourceBytes = r.sourceBytes;
     m_sourceName = r.sourceName;
     m_graph.setSource(r.source);
+    ++m_sourceGeneration;              // new pixels → preset thumbnails must re-render
     m_graph.loadProjectState(r.graph); // restores the lens node's params too
     // Refresh the camera profile from the actual decode, keeping the restored
     // WB temperature (don't reseed to as-shot).
@@ -1668,6 +1842,7 @@ bool MainWindow::applyProjectResult(const OpenProjectResult &r)
     refreshWorkingSource();  // rebuild the corrected source from the restored lens
     refreshBaseImage(false); // re-applies the heal mask, fits the view
     recomputeSelectiveMask();
+    updateCropView();        // push the restored crop/orientation to the canvas
     updatePreview();
     m_graph.resetHistory();
 
@@ -1730,7 +1905,11 @@ void MainWindow::savePreset()
         return;
     }
     const QFileInfo src(m_sourcePath);
-    const QString dir = lastDir(QStringLiteral("preset"), src.dir().path());
+    // Default into the user presets folder so a saved preset immediately shows up
+    // in the Presets browser (the user can still navigate elsewhere in the dialog).
+    const QString presetsDir = preset::userPresetsDir();
+    const QString dir = lastDir(QStringLiteral("preset"),
+                                presetsDir.isEmpty() ? src.dir().path() : presetsDir);
     const QString suggested =
         QDir(dir).filePath(src.completeBaseName() + QStringLiteral(".lumenpreset"));
     QString path = QFileDialog::getSaveFileName(
@@ -1749,6 +1928,9 @@ void MainWindow::savePreset()
         return;
     }
     rememberDir(QStringLiteral("preset"), path);
+    invalidatePresetThumbCache(); // may overwrite an existing id with new settings
+    if (m_presetsPanel->isVisible())
+        refreshPresetThumbnails(); // surface the new preset in the open browser
     showHint(QStringLiteral("Saved preset “%1”").arg(name));
 }
 
@@ -2403,6 +2585,217 @@ void MainWindow::closeLooksTool()
     m_canvas->setFocus();
 }
 
+void MainWindow::openPresetsTool()
+{
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_presetsPanel->setAmount(m_presetAmount); // reflect the current blend
+    refreshPresetThumbnails();                 // preview each look against the current photo
+    m_presetsPanel->adjustSize();
+    const int margin = 18;
+    m_presetsPanel->move(width() - m_presetsPanel->width() - margin, margin);
+    m_presetsPanel->reveal();
+}
+
+void MainWindow::closePresetsTool()
+{
+    m_presetsPanel->hide();
+    m_graph.commit(); // capture any live Amount-slider change as one undo step
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
+void MainWindow::invalidatePresetThumbCache()
+{
+    m_thumbCache.clear();
+    m_thumbCacheSig.clear();
+}
+
+void MainWindow::refreshPresetThumbnails()
+{
+    const QVector<preset::Builtin> presets = preset::library();
+    QVector<PresetsPanel::Item> items;
+    items.reserve(presets.size());
+
+    // Thumbnails depend only on the source, the Base-layer edits and the crop (the
+    // active preset layer is suppressed during the render and each preset swaps in
+    // its own vignette/structure). Build a signature from exactly those inputs; when
+    // it matches the last render we reuse cached pixmaps and only render presets the
+    // cache is missing (e.g. a newly-saved user preset).
+    const QByteArray signature = [this] {
+        QJsonObject sig;
+        sig.insert(QStringLiteral("src"), QString::number(m_sourceGeneration));
+        sig.insert(QStringLiteral("base"), m_graph.baseLayer().saveState());
+        sig.insert(QStringLiteral("crop"), m_graph.crop().toJson());
+        return QJsonDocument(sig).toJson(QJsonDocument::Compact);
+    }();
+    if (signature != m_thumbCacheSig) {
+        m_thumbCache.clear();
+        m_thumbCacheSig = signature;
+    }
+
+    // Render each preset exactly as applying it would: on a temporary full-coverage
+    // layer at 100% over the current photo (tone/colour/grain), plus the preset's
+    // graph-global stages (vignette, and structure on the Base node) swapped in for
+    // the render — so the thumbnail matches the applied result.
+    const bool haveSource = !m_graph.source().isNull();
+    // Suppress the active preset layer so thumbnails show each preset alone rather
+    // than stacked on top of whichever preset is applied right now.
+    const int presetIdx = presetLayerIndex();
+    const float savedOpacity = presetIdx >= 0 ? m_graph.layer(presetIdx).opacity() : 0.0f;
+    if (presetIdx >= 0)
+        m_graph.layer(presetIdx).setOpacity(0.0f);
+    const int savedActive = m_graph.activeLayerIndex();
+    // Vignette (graph-global) and structure (a Base node) can't ride the temp
+    // layer, so swap each preset's own in for its render, then restore afterwards.
+    const VignetteParams savedVignette = m_graph.vignette();
+    const StructureNode::Values savedStructure =
+        m_structure ? m_structure->values() : StructureNode::Values{};
+    constexpr int kThumbDim = 200;
+
+    for (const preset::Builtin &b : presets) {
+        PresetsPanel::Item item{b.id, b.name, b.category, {},
+                                b.id.startsWith(QStringLiteral("user:")),
+                                b.id == m_activePresetId};
+        if (haveSource) {
+            auto cached = m_thumbCache.constFind(b.id);
+            if (cached != m_thumbCache.constEnd()) {
+                item.thumb = cached.value();
+            } else {
+                Layer &temp = addPresetLayer(QStringLiteral("__thumb"));
+                const int tempIdx = m_graph.activeLayerIndex();
+                preset::applyToLayer(b.data, temp); // tone/colour/grain onto the layer
+                temp.setOpacity(1.0f);
+                m_graph.setVignette(preset::vignetteOf(b.data)); // and its vignette
+                if (m_structure)
+                    m_structure->setValues(structureFromPreset(b.data)); // and its structure
+                const QImage img = m_graph.resultDownsampled(kThumbDim).toQImage();
+                if (!img.isNull()) {
+                    item.thumb = QPixmap::fromImage(img);
+                    m_thumbCache.insert(b.id, item.thumb);
+                }
+                m_graph.removeLayer(tempIdx);
+            }
+        }
+        items.push_back(item);
+    }
+
+    m_graph.setActiveLayer(savedActive);
+    m_graph.setVignette(savedVignette);
+    if (m_structure)
+        m_structure->setValues(savedStructure);
+    if (presetIdx >= 0)
+        m_graph.layer(presetIdx).setOpacity(savedOpacity);
+
+    m_presetsPanel->setItems(items);
+}
+
+int MainWindow::presetLayerIndex() const
+{
+    for (int i = 1; i < m_graph.layerCount(); ++i)
+        if (m_graph.layer(i).name().startsWith(kPresetLayerPrefix))
+            return i;
+    return -1;
+}
+
+Layer &MainWindow::addPresetLayer(const QString &name)
+{
+    // Full-coverage (None mask) adjustment layer, so its opacity blends the whole
+    // preset look uniformly. Carries every creative node the preset can drive —
+    // including grain, so grain rides the same opacity blend as the tone/colour.
+    Layer &layer = m_graph.addLayer(name);
+    m_graph.addNode(std::make_unique<TuneNode>());
+    m_graph.addNode(std::make_unique<ColorMixerNode>());
+    m_graph.addNode(std::make_unique<CurvesNode>());
+    m_graph.addNode(std::make_unique<ColorGradeNode>());
+    m_graph.addNode(std::make_unique<LutNode>());
+    m_graph.addNode(std::make_unique<MonoNode>());
+    m_graph.addNode(std::make_unique<GrainNode>());
+    return layer;
+}
+
+void MainWindow::applyPresetLook(const preset::Builtin &b, int amountPct)
+{
+    if (m_graph.source().isNull()) {
+        showHint(QStringLiteral("Open an image before applying a preset"));
+        return;
+    }
+    // Replace any existing preset layer with a fresh one carrying this preset.
+    // Snapshot the pre-preset vignette as the blend baseline, but only when no
+    // preset is currently applied — when swapping one preset for another the graph
+    // vignette is already the outgoing preset's blend, not the user's original.
+    const int existing = presetLayerIndex();
+    if (existing < 0) {
+        m_presetBaselineVignette = m_graph.vignette();
+        m_presetBaselineStructure = m_structure ? m_structure->values() : StructureNode::Values{};
+    }
+    if (existing >= 0)
+        m_graph.removeLayer(existing);
+    Layer &layer = addPresetLayer(kPresetLayerPrefix + b.name);
+    preset::applyToLayer(b.data, layer);
+    layer.setOpacity(std::clamp(amountPct, 0, 100) / 100.0f);
+    m_graph.setActiveLayer(0); // leave editing focused on the Base, not the preset
+
+    m_activePresetId = b.id;
+    m_presetAmount = amountPct;
+    m_presetVignette = preset::vignetteOf(b.data);
+    m_presetStructure = structureFromPreset(b.data);
+    applyPresetVignette(amountPct);  // fold the preset's vignette into the blend
+    applyPresetStructure(amountPct); // and its local-contrast (baked on the Base)
+    m_graph.commit();
+    afterHistoryChange();     // rebuild the preview (incl. the baked structure) + reseed tools
+    refreshLayersPanel();     // the new preset layer shows in the stack
+    refreshPresetThumbnails(); // re-render (baseline may have shifted)
+    showHint(QStringLiteral("Applied “%1”").arg(b.name));
+}
+
+void MainWindow::setPresetAmount(int amountPct)
+{
+    m_presetAmount = amountPct;
+    const int idx = presetLayerIndex();
+    if (idx < 0)
+        return; // no preset applied yet; the value seeds the next apply
+    m_graph.layer(idx).setOpacity(std::clamp(amountPct, 0, 100) / 100.0f);
+    applyPresetVignette(amountPct); // keep the vignette in step with the blend
+    const bool structureChanged = applyPresetStructure(amountPct);
+    updatePreview(); // live; one undo step is committed when the tool closes
+    if (structureChanged) {
+        // Structure is baked; coalesce the (expensive) full-res re-bake so dragging
+        // the Amount slider stays smooth — it fires once the slider settles.
+        m_bakeOp = BakeOp::Structure;
+        m_bakeTimer->start();
+    }
+    if (m_layersPanel->isVisible())
+        refreshLayersPanel();
+}
+
+void MainWindow::applyPresetVignette(int amountPct)
+{
+    // Only steer the vignette when a preset was applied this session — otherwise
+    // the baseline/preset snapshots are empty and we'd wipe a vignette that was
+    // loaded with a project (whose preset context isn't restored).
+    if (m_activePresetId.isEmpty())
+        return;
+    const float t = std::clamp(amountPct, 0, 100) / 100.0f;
+    const VignetteParams v = blendVignette(m_presetBaselineVignette, m_presetVignette, t);
+    m_graph.setVignette(v);
+    m_canvas->setVignette(v); // present-pass op; no base re-bake needed
+}
+
+bool MainWindow::applyPresetStructure(int amountPct)
+{
+    // As with the vignette, only steer structure when a preset is active this
+    // session. Returns whether the Base structure node actually changed (so the
+    // caller knows a re-bake is needed).
+    if (m_activePresetId.isEmpty() || !m_structure)
+        return false;
+    const float t = std::clamp(amountPct, 0, 100) / 100.0f;
+    const StructureNode::Values v =
+        blendStructure(m_presetBaselineStructure, m_presetStructure, t);
+    const bool changed = v != m_structure->values();
+    m_structure->setValues(v);
+    return changed;
+}
+
 void MainWindow::openMonoTool()
 {
     m_input.setMode(InputController::Mode::ToolActive);
@@ -2512,6 +2905,25 @@ void MainWindow::closeSharpenTool()
     m_canvas->setFocus();
 }
 
+void MainWindow::openStructureTool()
+{
+    if (!m_structure)
+        return;
+    m_input.setMode(InputController::Mode::ToolActive);
+    m_structurePanel->adjustSize();
+    const int margin = 18;
+    m_structurePanel->move(width() - m_structurePanel->width() - margin, margin);
+    m_structurePanel->reveal(m_structure->values());
+}
+
+void MainWindow::closeStructureTool()
+{
+    m_structurePanel->hide();
+    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
+}
+
 void MainWindow::openGrainTool()
 {
     if (!m_grain)
@@ -2592,9 +3004,11 @@ void MainWindow::updateCropView()
         // The crop tool itself wants the full oriented frame to edit against.
         mode = CanvasWidget::CropEditing;
     } else if (m_layersPanel->isVisible() || m_healPanel->isVisible()) {
-        // Full-frame rule: gizmo/pick tools (mask/zone/heal/eyedropper) operate in
-        // the un-oriented full frame so their coordinate mapping stays exact.
-        mode = CanvasWidget::CropNone;
+        // Gizmo/pick tools (mask/zone/heal/eyedropper) operate against the full,
+        // un-cropped frame. Use CropMaskEdit rather than CropNone so the user's
+        // orientation (rotation/flip) stays applied on screen while the canvas
+        // still maps coordinates back to the un-oriented source the masks live in.
+        mode = CanvasWidget::CropMaskEdit;
     } else if (!m_graph.crop().isIdentity() && m_graph.crop().enabled) {
         mode = CanvasWidget::CropApplied;
     } else {
@@ -2886,20 +3300,23 @@ void MainWindow::rebuildAdjustments()
         if (const auto v = m_sharpen ? m_sharpen->values() : SharpenNode::Values{};
             v.enabled && v.amount > 0.0f)
             addNodeAdj(QStringLiteral("Sharpen"), 4, m_sharpen);
+        if (const auto v = m_structure ? m_structure->values() : StructureNode::Values{};
+            v.enabled && v.amount != 0.0f)
+            addNodeAdj(QStringLiteral("Structure"), 5, m_structure);
         if (nodeIsActive(m_tune))
-            addNodeAdj(QStringLiteral("Tone"), 5, m_tune);
+            addNodeAdj(QStringLiteral("Tone"), 6, m_tune);
         if (nodeIsActive(m_colorMixer))
-            addNodeAdj(QStringLiteral("Color Mixer"), 6, m_colorMixer);
+            addNodeAdj(QStringLiteral("Color Mixer"), 7, m_colorMixer);
         if (nodeIsActive(m_curves))
-            addNodeAdj(QStringLiteral("Curves"), 7, m_curves);
+            addNodeAdj(QStringLiteral("Curves"), 8, m_curves);
         if (nodeIsActive(m_colorGrade))
-            addNodeAdj(QStringLiteral("Color Grade"), 8, m_colorGrade);
+            addNodeAdj(QStringLiteral("Color Grade"), 9, m_colorGrade);
         if (nodeIsActive(m_lutNode))
-            addNodeAdj(QStringLiteral("Look"), 9, m_lutNode);
+            addNodeAdj(QStringLiteral("Look"), 10, m_lutNode);
         if (nodeIsActive(m_mono))
-            addNodeAdj(QStringLiteral("B&W"), 10, m_mono);
+            addNodeAdj(QStringLiteral("B&W"), 11, m_mono);
         if (nodeIsActive(m_grain))
-            addNodeAdj(QStringLiteral("Grain"), 11, m_grain);
+            addNodeAdj(QStringLiteral("Grain"), 12, m_grain);
 
         // Selective layers (non-Base), then the final geometric/finishing stages.
         for (int i = 1; i < m_graph.layerCount(); ++i) {
@@ -3176,8 +3593,13 @@ void MainWindow::refreshBaseImage(bool keepView)
         m_sharpen ? m_sharpen->values() : SharpenNode::Values{};
     const bool sharpenActive =
         m_sharpen && m_sharpen->isEnabled() && sv.enabled && sv.amount > 0.0f;
+    const StructureNode::Values stv =
+        m_structure ? m_structure->values() : StructureNode::Values{};
+    const bool structureActive =
+        m_structure && m_structure->isEnabled() && stv.enabled && stv.amount != 0.0f;
     if (m_graph.source().isNull()
-        || (!healActive && !denoiseActive && !defringeActive && !sharpenActive)) {
+        || (!healActive && !denoiseActive && !defringeActive && !sharpenActive
+            && !structureActive)) {
         if (!m_sourceQImage.isNull())
             m_canvas->setImage(m_sourceQImage, keepView);
         return;
@@ -3192,11 +3614,13 @@ void MainWindow::refreshBaseImage(bool keepView)
     const Image src = m_workingSource.isNull() ? m_graph.source() : m_workingSource;
     const MaskBuffer mask = healActive ? m_heal->healMask() : MaskBuffer();
     const bool hq = m_heal && m_heal->highQuality();
-    if (healActive || denoiseActive || defringeActive || sharpenActive) {
+    if (healActive || denoiseActive || defringeActive || sharpenActive || structureActive) {
         // Label by the op the user triggered (if it's actually active); otherwise
         // fall back to precedence (heal first) for unattributed refreshes.
         QString label;
-        if (triggeredBy == BakeOp::Sharpen && sharpenActive)
+        if (triggeredBy == BakeOp::Structure && structureActive)
+            label = QStringLiteral("Structuring…");
+        else if (triggeredBy == BakeOp::Sharpen && sharpenActive)
             label = QStringLiteral("Sharpening…");
         else if (triggeredBy == BakeOp::Defringe && defringeActive)
             label = QStringLiteral("Defringing…");
@@ -3208,7 +3632,8 @@ void MainWindow::refreshBaseImage(bool keepView)
             label = healActive ? QStringLiteral("Healing…")
                   : denoiseActive ? QStringLiteral("Denoising…")
                   : defringeActive ? QStringLiteral("Defringing…")
-                                  : QStringLiteral("Sharpening…");
+                  : sharpenActive ? QStringLiteral("Sharpening…")
+                                  : QStringLiteral("Structuring…");
         auto *badge = static_cast<BusyBadge *>(m_healBusy);
         badge->setLabel(label);
         badge->start();
@@ -3216,7 +3641,7 @@ void MainWindow::refreshBaseImage(bool keepView)
     }
 
     m_healWatcher.setFuture(
-        QtConcurrent::run([this, gen, src, mask, hq, dv, fv, sv]() -> QImage {
+        QtConcurrent::run([this, gen, src, mask, hq, dv, fv, sv, stv]() -> QImage {
             if (gen != m_healGen)
                 return QImage(); // superseded before we even started
             Image img = src;
@@ -3240,6 +3665,11 @@ void MainWindow::refreshBaseImage(bool keepView)
                 SharpenNode sharpen;
                 sharpen.setValues(sv);
                 img = sharpen.apply(img);
+            }
+            if (stv.enabled && stv.amount != 0.0f) {
+                StructureNode structure;
+                structure.setValues(stv);
+                img = structure.apply(img);
             }
             return img.toQImage();
         }));
@@ -3494,6 +3924,8 @@ void MainWindow::closeActiveTool()
         closeCurvesTool();
     else if (m_looksPanel->isVisible())
         closeLooksTool();
+    else if (m_presetsPanel->isVisible())
+        closePresetsTool();
     else if (m_monoPanel->isVisible())
         closeMonoTool();
     else if (m_colorMixerPanel->isVisible())
@@ -3504,6 +3936,8 @@ void MainWindow::closeActiveTool()
         closeLensTool();
     else if (m_sharpenPanel->isVisible())
         closeSharpenTool();
+    else if (m_structurePanel->isVisible())
+        closeStructureTool();
     else if (m_denoisePanel->isVisible())
         closeDenoiseTool();
     else if (m_defringePanel->isVisible())

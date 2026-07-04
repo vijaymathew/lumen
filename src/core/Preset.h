@@ -1,9 +1,12 @@
 #pragma once
 
+#include "core/Vignette.h"
+
 #include <QJsonObject>
 #include <QString>
 
 class EditGraph;
+class Layer;
 
 // A reusable edit preset: the global, image-independent part of an edit — the
 // Base layer's tone/colour/effect nodes plus the creative vignette — captured so
@@ -33,8 +36,26 @@ QString name(const QJsonObject &preset);
 // photo's prior edits. Returns false if `preset` is not a valid preset document.
 bool applyToGraph(const QJsonObject &preset, EditGraph &graph);
 
+// Applies just the preset's node parameters onto one layer's node chain (by node
+// type), ignoring the graph-level vignette and any node type the layer lacks.
+// This is how the Presets browser lays a preset onto a dedicated full-coverage
+// layer so its opacity can blend the whole look — the layer must carry every node
+// type the preset drives (grain included) for the look to land in full.
+bool applyToLayer(const QJsonObject &preset, Layer &layer);
+
+// The creative vignette stored in `preset` (identity if it carries none). The
+// Presets browser needs this separately because the vignette is a graph-level
+// stage, not a layer node, so it can't ride the preset layer's opacity blend.
+VignetteParams vignetteOf(const QJsonObject &preset);
+
 // A .lumenpreset file is the preset JSON written as indented UTF-8 text.
 bool save(const QString &path, const QJsonObject &preset, QString *error = nullptr);
 bool load(const QString &path, QJsonObject *out, QString *error = nullptr);
+
+// Directory where the user's own .lumenpreset files live (~/.lumen/presets).
+// The Presets browser scans it and "Save preset" defaults here, so a saved
+// preset shows up in the browser without any extra step. Created on first
+// access; returns an empty string if it cannot be created.
+QString userPresetsDir();
 
 } // namespace preset

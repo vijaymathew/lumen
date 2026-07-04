@@ -558,7 +558,7 @@ QSizeF CanvasWidget::effectiveImageSize() const
     const bool swap = (m_crop.rotation == 90 || m_crop.rotation == 270);
     const double ow = swap ? H : W;
     const double oh = swap ? W : H;
-    if (m_cropView == CropEditing)
+    if (m_cropView == CropEditing || m_cropView == CropMaskEdit)
         return {ow, oh}; // oriented full frame (rect ignored while editing)
     return {ow * m_crop.rect.width(), oh * m_crop.rect.height()}; // oriented + crop
 }
@@ -572,8 +572,11 @@ QMatrix4x4 CanvasWidget::cropTexXform() const
     if (m_cropView == CropNone)
         return m;
 
-    // Crop: output unit → oriented frame. Editing shows the full oriented frame.
-    QRectF rect = (m_cropView == CropEditing) ? QRectF(0, 0, 1, 1) : m_crop.rect;
+    // Crop: output unit → oriented frame. Editing/mask-edit show the full oriented
+    // frame (crop rect ignored); Applied extracts the crop rect.
+    QRectF rect = (m_cropView == CropEditing || m_cropView == CropMaskEdit)
+                      ? QRectF(0, 0, 1, 1)
+                      : m_crop.rect;
     QMatrix4x4 crop;
     crop.translate(rect.x(), rect.y());
     crop.scale(rect.width(), rect.height());
@@ -606,6 +609,25 @@ QMatrix4x4 CanvasWidget::cropTexXform() const
     }
 
     return flipUndo * rotInv * crop;
+}
+
+QPointF CanvasWidget::sourceNormFromOriented(QPointF orientedNorm) const
+{
+    if (m_cropView != CropMaskEdit)
+        return orientedNorm;
+    // cropTexXform maps an oriented [0,1] point to its source texcoord; with the
+    // full-frame rect this is pure orientation (rotation + flip), so the image the
+    // user sees rotated is edited against the correct un-oriented source pixels.
+    return cropTexXform().map(orientedNorm);
+}
+
+QPointF CanvasWidget::orientedNormFromSource(QPointF sourceNorm) const
+{
+    if (m_cropView != CropMaskEdit)
+        return sourceNorm;
+    bool invertible = false;
+    const QMatrix4x4 inv = cropTexXform().inverted(&invertible);
+    return invertible ? inv.map(sourceNorm) : sourceNorm;
 }
 
 QMatrix4x4 CanvasWidget::computeMvp(const QSize &targetPixels)
@@ -788,7 +810,6 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
             cb->draw(4);
             cb->endPass();
         }
-
         // Present the final offscreen (A if an even number of extra layers, else B).
         QRhiShaderResourceBindings *finalSrb =
             (m_extraLayers.size() % 2 == 0) ? m_presentSrb.get() : m_presentSrbB.get();
@@ -872,8 +893,11 @@ QPointF CanvasWidget::widgetForNormalized(QPointF norm, QSizeF *dispLogicalOut) 
     const QPointF tl = zoommath::imageTopLeft(widget, image, m_zoom, m_pan);
     if (dispLogicalOut)
         *dispLogicalOut = QSizeF(disp.width() / dpr, disp.height() / dpr);
-    const QPointF device(tl.x() + norm.x() * disp.width(),
-                         tl.y() + norm.y() * disp.height());
+    // Callers pass source-frame coords (mask geometry); place them in the oriented
+    // frame that is actually displayed.
+    const QPointF on = orientedNormFromSource(norm);
+    const QPointF device(tl.x() + on.x() * disp.width(),
+                         tl.y() + on.y() * disp.height());
     return device / dpr;
 }
 
@@ -887,8 +911,10 @@ QPointF CanvasWidget::normalizedForWidget(QPointF widgetLogical) const
     const QSizeF disp = zoommath::displayedSize(widget, image, m_zoom);
     const QPointF tl = zoommath::imageTopLeft(widget, image, m_zoom, m_pan);
     const QPointF device = widgetLogical * dpr;
-    return QPointF(std::clamp((device.x() - tl.x()) / disp.width(), 0.0, 1.0),
-                  std::clamp((device.y() - tl.y()) / disp.height(), 0.0, 1.0));
+    const QPointF oriented(std::clamp((device.x() - tl.x()) / disp.width(), 0.0, 1.0),
+                           std::clamp((device.y() - tl.y()) / disp.height(), 0.0, 1.0));
+    // Hand back source-frame coords so mask geometry is stored un-oriented.
+    return sourceNormFromOriented(oriented);
 }
 
 QPointF CanvasWidget::imageNormalizedAt(const QPointF &widgetPos)
@@ -897,8 +923,10 @@ QPointF CanvasWidget::imageNormalizedAt(const QPointF &widgetPos)
     const QSizeF widget(width() * dpr, height() * dpr);
     const QSizeF image = effectiveImageSize();
     const QPointF px = zoommath::imagePixelAt(widget, image, m_zoom, m_pan, widgetPos * dpr);
-    return QPointF(std::clamp(px.x() / image.width(), 0.0, 1.0),
-                   std::clamp(px.y() / image.height(), 0.0, 1.0));
+    const QPointF oriented(std::clamp(px.x() / image.width(), 0.0, 1.0),
+                           std::clamp(px.y() / image.height(), 0.0, 1.0));
+    // Brush stamps into the source-sized mask buffer; convert from the oriented view.
+    return sourceNormFromOriented(oriented);
 }
 
 void CanvasWidget::mousePressEvent(QMouseEvent *e)

@@ -6,6 +6,7 @@
 #include <QImage>
 #include <QJsonObject>
 #include <QMainWindow>
+#include <QPixmap>
 #include <QPointF>
 
 #include <atomic>
@@ -25,6 +26,7 @@
 #include "core/RawLoader.h"
 #include "core/SelectiveMask.h"
 #include "core/SharpenNode.h"
+#include "core/StructureNode.h"
 #include "core/TuneNode.h"
 #include "input/InputController.h"
 
@@ -48,12 +50,15 @@ class ZoneGizmo;
 class CropGizmo;
 class CropPanel;
 class LooksPanel;
+class PresetsPanel;
+namespace preset { struct Builtin; }
 class MonoPanel;
 class ColorMixerNode;
 class ColorMixerPanel;
 class GrainPanel;
 class VignettePanel;
 class SharpenPanel;
+class StructurePanel;
 class TonePanel;
 class QLabel;
 class QPushButton;
@@ -97,14 +102,17 @@ private:
     void buildCommands();
     void runCommand(const QString &id);
     void openImageDialog();
-    void saveProject();   // async write of the current work to a .lumen file
+    void saveProject();   // save to the current file; prompts only on first save
+    void saveProjectAs(); // always prompt for a new .lumen destination
     void openProject();   // pick a .lumen file via dialog, then load it
     void loadProjectFile(const QString &path); // load a .lumen async (source + layers)
 
-    // Save helpers. promptSaveProjectPath() runs the Save dialog; saveProjectSync()
-    // is the blocking save the quit/discard flow needs (it must finish before the
+    // Save helpers. promptSaveProjectPath() runs the Save dialog; writeProjectAsync()
+    // snapshots the document and writes it off the UI thread; saveProjectSync() is
+    // the blocking save the quit/discard flow needs (it must finish before the
     // document can be discarded); applySaveSuccess() updates state after a write.
     QString promptSaveProjectPath();
+    void writeProjectAsync(const QString &path);
     bool saveProjectSync();
     void applySaveSuccess(const QString &path);
 
@@ -191,6 +199,26 @@ private:
     void openLooksTool();
     void closeLooksTool();
     void loadLookFile();
+    void openPresetsTool();  // shows the Presets browser (built-in looks)
+    void closePresetsTool();
+    // Renders a thumbnail of the current photo with each built-in preset applied.
+    void refreshPresetThumbnails();
+    // Drops any cached preset thumbnails, forcing a re-render on the next refresh.
+    void invalidatePresetThumbCache();
+    // Applies a preset as a full-coverage adjustment layer at opacity = amount%,
+    // replacing any prior preset layer. The Amount slider blends the whole look.
+    void applyPresetLook(const preset::Builtin &b, int amountPct);
+    void setPresetAmount(int amountPct); // live-updates the active preset layer's opacity
+    Layer &addPresetLayer(const QString &name); // full-coverage adjustment layer
+    int presetLayerIndex() const;               // the active preset layer, or -1
+    // Blends the graph vignette from the pre-preset baseline toward the active
+    // preset's vignette by amount% (the vignette can't ride the layer opacity, so
+    // Amount scales it here instead — keeping it part of the "whole look" blend).
+    void applyPresetVignette(int amountPct);
+    // Same idea for structure (applied to the Base structure node). Returns whether
+    // the Base node changed; re-baking is expensive, so callers coalesce the re-bake
+    // (the bake timer) rather than kicking it per Amount tick.
+    bool applyPresetStructure(int amountPct);
     void openMonoTool();
     void closeMonoTool();
     void openColorGradeTool();
@@ -201,6 +229,8 @@ private:
     void closeLensTool();
     void openSharpenTool();  // toggles the Sharpen panel
     void closeSharpenTool();
+    void openStructureTool();  // toggles the Structure (local contrast) panel
+    void closeStructureTool();
     void openDenoiseTool();  // toggles the Denoise panel
     void closeDenoiseTool();
     void openDefringeTool(); // toggles the Defringe panel
@@ -265,7 +295,7 @@ private:
     // busy badge labels by which op the user actually triggered. A handler sets
     // m_bakeOp before kicking the bake; refreshBaseImage consumes it for the
     // label and falls back to precedence when it's Auto (e.g. a load/lens refresh).
-    enum class BakeOp { Auto, Heal, Denoise, Defringe, Sharpen };
+    enum class BakeOp { Auto, Heal, Denoise, Defringe, Sharpen, Structure };
     BakeOp m_bakeOp = BakeOp::Auto;
     // Canvas colour-pick has two purposes: choosing a colour-mask target, or the
     // white-balance eyedropper. `m_pickPurpose` routes the picked point.
@@ -311,11 +341,35 @@ private:
     TonePanel *m_tonePanel = nullptr;
     CurvesPanel *m_curvesPanel = nullptr;
     LooksPanel *m_looksPanel = nullptr;
+    PresetsPanel *m_presetsPanel = nullptr;
+    int m_presetAmount = 100;   // Presets browser Amount slider [0,100]
+    QString m_activePresetId;   // id of the preset on the current preset layer, if any
+    // Vignette isn't a layer node, so Amount can't blend it via layer opacity.
+    // We snapshot the graph vignette that existed before a preset was applied
+    // (the "baseline") and the active preset's own vignette, then interpolate
+    // between them by Amount — so at 0% the original vignette is restored and at
+    // 100% the preset's is fully in.
+    VignetteParams m_presetBaselineVignette;
+    VignetteParams m_presetVignette;
+    // Structure (local contrast) is a baked Base op — it can't ride the preset
+    // layer's opacity either, so it gets the same baseline/preset snapshot + Amount
+    // blend as the vignette (applied to the Base structure node, re-baked).
+    StructureNode::Values m_presetBaselineStructure;
+    StructureNode::Values m_presetStructure;
+    // Thumbnail cache: rendering every preset over the current photo is O(library)
+    // and runs on open/apply. Thumbnails only depend on the source + Base edits +
+    // crop (the preset layer is suppressed during the render), so we cache the
+    // pixmaps keyed by that signature and re-render only when it changes. Bumped on
+    // a new source; user-preset edits clear the cache explicitly.
+    QByteArray m_thumbCacheSig;
+    QHash<QString, QPixmap> m_thumbCache;
+    quint64 m_sourceGeneration = 0;
     MonoPanel *m_monoPanel = nullptr;
     ColorMixerPanel *m_colorMixerPanel = nullptr;
     ColorGradePanel *m_colorGradePanel = nullptr;
     LensPanel *m_lensPanel = nullptr;
     SharpenPanel *m_sharpenPanel = nullptr;
+    StructurePanel *m_structurePanel = nullptr;
     GrainPanel *m_grainPanel = nullptr;
     VignettePanel *m_vignettePanel = nullptr;
     CropPanel *m_cropPanel = nullptr;
@@ -364,7 +418,8 @@ private:
     LensCorrectionNode *m_lens = nullptr; // owned by m_graph (first in the chain)
     DenoiseNode *m_denoise = nullptr;     // owned by m_graph (after heal, before defringe)
     DefringeNode *m_defringe = nullptr;   // owned by m_graph (after denoise, before sharpen)
-    SharpenNode *m_sharpen = nullptr;     // owned by m_graph (after denoise, before tune)
+    SharpenNode *m_sharpen = nullptr;     // owned by m_graph (after defringe, before structure)
+    StructureNode *m_structure = nullptr; // owned by m_graph (local contrast, after sharpen)
     GrainNode *m_grain = nullptr;         // owned by m_graph (final Base node, after mono)
     Image m_workingSource;               // cached lens-corrected source (preview base input)
     QString m_sourcePath;                // for a sensible default export name

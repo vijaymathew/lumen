@@ -70,7 +70,11 @@ public:
     // oriented + cropped (browse); Editing = oriented full frame (crop tool open,
     // with the crop gizmo on top). The transform is applied in the present pass;
     // the offscreen always renders the full composite.
-    enum CropViewMode { CropNone, CropApplied, CropEditing };
+    // CropMaskEdit: like CropEditing (full oriented frame, crop rect ignored) but
+    // used by the mask/gizmo tools. The image displays oriented so the user's
+    // rotation/flip is preserved, while the coordinate helpers below transparently
+    // convert to/from the un-oriented source frame the masks actually live in.
+    enum CropViewMode { CropNone, CropApplied, CropEditing, CropMaskEdit };
     void setCropState(const CropState &crop, CropViewMode mode);
 
     // Creative (post-crop) vignette params for the present pass. Mirrors the
@@ -159,6 +163,12 @@ private:
     // Present-pass texcoord transform: output unit-quad → source [0,1], encoding
     // the current crop/orientation. Identity in CropNone.
     QMatrix4x4 cropTexXform() const;
+    // In CropMaskEdit the display is oriented but masks live in the un-oriented
+    // source frame; these convert a normalised point between the two (no-op in
+    // every other mode). oriented→source uses cropTexXform; source→oriented its
+    // inverse. Both map the unit square onto itself, so results stay in [0,1].
+    QPointF sourceNormFromOriented(QPointF orientedNorm) const;
+    QPointF orientedNormFromSource(QPointF sourceNorm) const;
     // Multiplies zoom by `factor`, keeping the image point under the cursor fixed.
     void zoomAt(float factor, const QPointF &cursorDevicePx);
 
