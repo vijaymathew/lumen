@@ -781,11 +781,6 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
 
         const QRhiViewport imgViewport(0, 0, float(m_textureSize.width()),
                                        float(m_textureSize.height()));
-        qDebug() << "DBG paintGL texSize" << m_textureSize << "eff" << effectiveImageSize()
-                 << "extras" << m_extraLayers.size() << "cropView" << int(m_cropView)
-                 << "offA" << (m_offscreenTex ? m_offscreenTex->pixelSize() : QSize())
-                 << "offB" << (m_offscreenTexB ? m_offscreenTexB->pixelSize() : QSize())
-                 << "target" << target << "yUp" << rhi()->isYUpInFramebuffer();
 
         // Base pass: the Base layer's chain into offscreen A.
         cb->beginPass(m_offscreenRt.get(), QColor(0, 0, 0, 0), {1.0f, 0}, u);
@@ -815,7 +810,6 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
             cb->draw(4);
             cb->endPass();
         }
-
         // Present the final offscreen (A if an even number of extra layers, else B).
         QRhiShaderResourceBindings *finalSrb =
             (m_extraLayers.size() % 2 == 0) ? m_presentSrb.get() : m_presentSrbB.get();
@@ -826,31 +820,6 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         cb->setVertexInput(0, 1, &vbufBinding);
         cb->draw(4);
         cb->endPass();
-
-        static int dumpCount = 0;
-        if (!m_extraLayers.empty() && dumpCount < 1) {
-            ++dumpCount;
-            auto *rbA = new QRhiReadbackResult;
-            auto *rbB = new QRhiReadbackResult;
-            rbA->completed = [rbA] {
-                QImage(reinterpret_cast<const uchar *>(rbA->data.constData()),
-                       rbA->pixelSize.width(), rbA->pixelSize.height(),
-                       QImage::Format_RGBA8888)
-                    .save(QStringLiteral("/tmp/dump_A.png"));
-                delete rbA;
-            };
-            rbB->completed = [rbB] {
-                QImage(reinterpret_cast<const uchar *>(rbB->data.constData()),
-                       rbB->pixelSize.width(), rbB->pixelSize.height(),
-                       QImage::Format_RGBA8888)
-                    .save(QStringLiteral("/tmp/dump_B.png"));
-                delete rbB;
-            };
-            QRhiResourceUpdateBatch *rb = rhi()->nextResourceUpdateBatch();
-            rb->readBackTexture({m_offscreenTex.get()}, rbA);
-            rb->readBackTexture({m_offscreenTexB.get()}, rbB);
-            cb->resourceUpdate(rb);
-        }
     } else {
         cb->beginPass(renderTarget(), clearColor, {1.0f, 0}, u);
         cb->endPass();
