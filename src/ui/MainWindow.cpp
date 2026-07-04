@@ -691,15 +691,19 @@ MainWindow::MainWindow(QWidget *parent)
         // session is a single undo step, committed in closeCropTool.)
         c.rect = straightenSafeCropRect(c);
         m_graph.setCrop(c);
-        if (m_cropGizmo)
+        if (m_cropGizmo) {
+            m_cropGizmo->setStraighten(deg);
             m_cropGizmo->setRect(c.rect);
+        }
         updateCropView();
         updatePreview();
     });
     connect(m_cropPanel, &CropPanel::resetRequested, this, [this] {
         m_graph.setCrop(CropState{});
-        if (m_cropGizmo)
+        if (m_cropGizmo) {
+            m_cropGizmo->setStraighten(0.0);
             m_cropGizmo->setRect(QRectF(0.0, 0.0, 1.0, 1.0));
+        }
         if (m_cropPanel->isVisible())
             m_cropPanel->reveal(m_graph.crop(), sourceAspect());
         updateCropView();
@@ -3014,6 +3018,7 @@ void MainWindow::openCropTool()
     m_cropPanel->reveal(m_graph.crop(), sourceAspect());
     m_cropAspect = 0.0;
     m_cropGizmo->setAspect(0.0); // free until the user picks a preset
+    m_cropGizmo->setStraighten(m_graph.crop().straighten);
     m_cropGizmo->setRect(m_graph.crop().rect);
     updateCropView(); // switches the canvas into Editing (full-frame) mode
     m_canvas->setFitZoom(0.85f); // pull the frame in so the handles clear the edges

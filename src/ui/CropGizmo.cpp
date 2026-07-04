@@ -3,18 +3,29 @@
 #include "gpu/CanvasWidget.h"
 
 #include <QCoreApplication>
+#include <QMatrix4x4>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <cmath>
 
 namespace {
 constexpr double kHandleR = 9.0;  // hit radius (logical px)
 constexpr double kMinSize = 0.03; // smallest crop edge (normalized)
+constexpr double kEdgeGuardPx = 2.0; // match core/CropState straightenSafeRect
 
 double clamp01(double v) { return std::clamp(v, 0.0, 1.0); }
+
+QRectF lerpRect(const QRectF &a, const QRectF &b, double f)
+{
+    return QRectF(QPointF(a.left() + (b.left() - a.left()) * f,
+                          a.top() + (b.top() - a.top()) * f),
+                  QPointF(a.right() + (b.right() - a.right()) * f,
+                          a.bottom() + (b.bottom() - a.bottom()) * f));
+}
 } // namespace
 
 CropGizmo::CropGizmo(CanvasWidget *canvas, QWidget *parent)
@@ -57,6 +68,52 @@ void CropGizmo::setAspect(double aspect)
     update();
 }
 
+void CropGizmo::setStraighten(double degrees)
+{
+    m_straighten = degrees;
+    update();
+}
+
+QPointF CropGizmo::sourceForOriented(QPointF n) const
+{
+    // Same construction as CanvasWidget::cropTexXform's straightenInv (verified to
+    // match the export path): a pixel-space rotation by -straighten about centre.
+    const QSizeF f = m_canvas->effectiveImageSize();
+    const float ow = static_cast<float>(f.width()), oh = static_cast<float>(f.height());
+    if (ow <= 0.0f || oh <= 0.0f)
+        return n;
+    QMatrix4x4 m;
+    m.translate(0.5f, 0.5f);
+    m.scale(1.0f / ow, 1.0f / oh);
+    m.rotate(static_cast<float>(-m_straighten), 0.0f, 0.0f, 1.0f);
+    m.scale(ow, oh);
+    m.translate(-0.5f, -0.5f);
+    return m.map(n);
+}
+
+bool CropGizmo::rectSafe(const QRectF &r) const
+{
+    if (std::abs(m_straighten) < 1e-6)
+        return true; // no tilt → the whole [0,1] frame is valid
+    const QSizeF f = m_canvas->effectiveImageSize();
+    const double ow = f.width(), oh = f.height();
+    if (ow <= 0.0 || oh <= 0.0)
+        return true;
+    // The tilt's valid region is convex, so testing the four corners suffices.
+    // A corner is valid when its pre-straighten point lands inside the frame,
+    // minus the anti-alias guard. A small epsilon absorbs the rounding at the
+    // auto-inset boundary so the initial rect isn't spuriously rejected.
+    const double gx = kEdgeGuardPx / ow, gy = kEdgeGuardPx / oh, eps = 1e-3;
+    const QPointF corners[4] = {r.topLeft(), r.topRight(), r.bottomLeft(), r.bottomRight()};
+    for (const QPointF &cpt : corners) {
+        const QPointF s = sourceForOriented(cpt);
+        if (s.x() < gx - eps || s.x() > 1.0 - gx + eps || s.y() < gy - eps
+            || s.y() > 1.0 - gy + eps)
+            return false;
+    }
+    return true;
+}
+
 QPointF CropGizmo::toWidget(QPointF norm) const { return m_canvas->widgetForNormalized(norm); }
 QPointF CropGizmo::toNorm(QPointF widget) const { return m_canvas->normalizedForWidget(widget); }
 
@@ -83,15 +140,36 @@ CropGizmo::Handle CropGizmo::hitTest(const QPointF &p) const
 void CropGizmo::applyDrag(const QPointF &nIn)
 {
     const QPointF n(clamp01(nIn.x()), clamp01(nIn.y()));
-    double l = m_rect.left(), t = m_rect.top(), r = m_rect.right(), b = m_rect.bottom();
 
+    QRectF cand;
     if (m_active == Move) {
         QPointF tl = n - m_grabOffset;
         double x = std::clamp(tl.x(), 0.0, 1.0 - m_dragStartRect.width());
         double y = std::clamp(tl.y(), 0.0, 1.0 - m_dragStartRect.height());
-        m_rect = QRectF(x, y, m_dragStartRect.width(), m_dragStartRect.height());
+        cand = QRectF(x, y, m_dragStartRect.width(), m_dragStartRect.height());
+    } else {
+        cand = computeResizeDrag(n);
+    }
+
+    // Keep the crop clear of a straighten tilt's transparent corners. The safe
+    // set is convex in (l,t,r,b) and the drag started from a safe rect, so a
+    // binary search along start→candidate finds the furthest valid rect (this
+    // preserves the aspect ratio, since lerping two equal-aspect rects keeps it).
+    if (rectSafe(cand)) {
+        m_rect = cand;
         return;
     }
+    double lo = 0.0, hi = 1.0;
+    for (int i = 0; i < 24; ++i) {
+        const double mid = 0.5 * (lo + hi);
+        (rectSafe(lerpRect(m_dragStartRect, cand, mid)) ? lo : hi) = mid;
+    }
+    m_rect = lerpRect(m_dragStartRect, cand, lo);
+}
+
+QRectF CropGizmo::computeResizeDrag(const QPointF &n) const
+{
+    double l = m_rect.left(), t = m_rect.top(), r = m_rect.right(), b = m_rect.bottom();
 
     switch (m_active) {
     case TL: l = std::min(n.x(), r - kMinSize); t = std::min(n.y(), b - kMinSize); break;
@@ -136,7 +214,7 @@ void CropGizmo::applyDrag(const QPointF &nIn)
     l = clamp01(l); t = clamp01(t); r = clamp01(r); b = clamp01(b);
     if (r - l < kMinSize) r = std::min(1.0, l + kMinSize);
     if (b - t < kMinSize) b = std::min(1.0, t + kMinSize);
-    m_rect = QRectF(QPointF(l, t), QPointF(r, b));
+    return QRectF(QPointF(l, t), QPointF(r, b));
 }
 
 void CropGizmo::paintEvent(QPaintEvent *)
