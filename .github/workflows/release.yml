@@ -19,6 +19,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Determine version
+        id: version
+        # On a tag, the release version is the tag minus its leading "v"; on a
+        # manual run, fall back to the project() version in CMakeLists.txt (the
+        # first indented "VERSION x.y.z", skipping cmake_minimum_required).
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="$(awk '/^[[:space:]]*VERSION[[:space:]]/{print $2; exit}' CMakeLists.txt)"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "Version: $v"
+
       - name: Install build + runtime libraries
         run: |
           sudo apt-get update
@@ -60,7 +75,7 @@ jobs:
           QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake
           # Extract-and-run avoids needing FUSE on the runner.
           APPIMAGE_EXTRACT_AND_RUN: '1'
-          OUTPUT: Lumen-x86_64.AppImage
+          OUTPUT: Lumen-${{ steps.version.outputs.version }}-x86_64.AppImage
         run: |
           ./linuxdeploy-x86_64.AppImage \
             --appdir AppDir \
@@ -73,20 +88,47 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Lumen-AppImage
-          path: Lumen-x86_64.AppImage
+          path: Lumen-${{ steps.version.outputs.version }}-x86_64.AppImage
           if-no-files-found: error
+
+      - name: Extract release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        # Pull this version's section out of CHANGELOG.md (from its "## [x.y.z]"
+        # heading up to the next section or the link-reference footer).
+        run: |
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { found=1; next }
+            found && (/^## \[/ || /^\[[^]]*\]: /) { exit }
+            found { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          echo "--- release notes ---"; cat RELEASE_NOTES.md
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: Lumen-x86_64.AppImage
+          files: Lumen-${{ steps.version.outputs.version }}-x86_64.AppImage
+          body_path: RELEASE_NOTES.md
 
   macos-dmg:
     name: DMG (macOS)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        # Same rule as the Linux job: tag (minus "v") on a release, else the
+        # project() version in CMakeLists.txt on a manual run.
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="$(awk '/^[[:space:]]*VERSION[[:space:]]/{print $2; exit}' CMakeLists.txt)"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "Version: $v"
 
       - name: Install libraries
         run: brew install vips libraw lensfun little-cms2 ninja
@@ -111,17 +153,30 @@ jobs:
         # into the bundle and rewrites their load paths, then packs the .dmg.
         run: |
           "$QT_ROOT_DIR/bin/macdeployqt" dist/lumen.app -dmg
-          mv dist/lumen.dmg Lumen.dmg
+          mv dist/lumen.dmg "Lumen-${VERSION}.dmg"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Lumen-dmg
-          path: Lumen.dmg
+          path: Lumen-${{ steps.version.outputs.version }}.dmg
           if-no-files-found: error
+
+      - name: Extract release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        # This version's section of CHANGELOG.md (matches the Linux job so both
+        # jobs attach the same body to the release).
+        run: |
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { found=1; next }
+            found && (/^## \[/ || /^\[[^]]*\]: /) { exit }
+            found { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          echo "--- release notes ---"; cat RELEASE_NOTES.md
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: Lumen.dmg
+          files: Lumen-${{ steps.version.outputs.version }}.dmg
+          body_path: RELEASE_NOTES.md
