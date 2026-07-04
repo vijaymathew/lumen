@@ -251,6 +251,9 @@ private:
     // current context (Editing while the crop tool is open; full frame while a
     // gizmo/pick tool needs it; else the cropped browse view).
     void updateCropView();
+    // Sets the window title. Empty document → "Lumen <version>" (launch/idle);
+    // otherwise "Lumen — <document>". One place so the format never drifts.
+    void updateTitle(const QString &document = QString());
     double sourceAspect() const; // original (un-oriented) source width/height
     // Largest centred crop rect clear of the straighten tilt's transparent
     // corners, for `c`'s orientation and the active aspect (m_cropAspect).
