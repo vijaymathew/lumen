@@ -36,6 +36,20 @@ static Image marker(int w, int h, int mx, int my)
     return Image::fromInterleaved(px.data(), w, h, 4);
 }
 
+// Builds a solid opaque red w×h image (no markers); used to probe geometry where
+// interpolation would blur a single-pixel marker.
+static Image solidRed(int w, int h)
+{
+    std::vector<uint8_t> px(static_cast<size_t>(w) * h * 4);
+    for (size_t i = 0; i < static_cast<size_t>(w) * h; ++i) {
+        px[i * 4 + 0] = 255;
+        px[i * 4 + 1] = 0;
+        px[i * 4 + 2] = 0;
+        px[i * 4 + 3] = 255;
+    }
+    return Image::fromInterleaved(px.data(), w, h, 4);
+}
+
 int main(int /*argc*/, char **argv)
 {
     if (!ImageBuffer::initLibrary(argv[0])) {
@@ -114,10 +128,12 @@ int main(int /*argc*/, char **argv)
         c.rotation = 270;
         c.flipH = true;
         c.flipV = false;
+        c.straighten = -3.5;
         c.rect = QRectF(0.1, 0.2, 0.5, 0.6);
         CropState back = CropState::fromJson(c.toJson());
         CHECK(back.rotation == c.rotation);
         CHECK(back.flipH == c.flipH && back.flipV == c.flipV);
+        CHECK(qAbs(back.straighten - c.straighten) < 1e-9);
         CHECK(qAbs(back.rect.x() - c.rect.x()) < 1e-9);
         CHECK(qAbs(back.rect.width() - c.rect.width()) < 1e-9);
         CHECK(back == c);
@@ -140,6 +156,46 @@ int main(int /*argc*/, char **argv)
         QJsonObject legacy = c.toJson();
         legacy.remove(QStringLiteral("enabled"));
         CHECK(CropState::fromJson(legacy).enabled == true);
+    }
+
+    // 8. Straighten: non-zero angle is non-identity, clamps to [-45, 45], and
+    //    defaults back to 0 for projects saved before the field existed.
+    {
+        CropState c;
+        c.straighten = 5.0;
+        CHECK(!c.isIdentity());        // a pure tilt is still an adjustment
+        c.straighten = 0.0;
+        CHECK(c.isIdentity());
+
+        CropState over;
+        over.straighten = 90.0;
+        over.sanitize();
+        CHECK(qAbs(over.straighten - 45.0) < 1e-9); // clamped
+        over.straighten = -90.0;
+        over.sanitize();
+        CHECK(qAbs(over.straighten + 45.0) < 1e-9);
+
+        CropState tilted;
+        tilted.straighten = 12.0;
+        QJsonObject legacy = tilted.toJson();
+        legacy.remove(QStringLiteral("straighten"));
+        CHECK(qAbs(CropState::fromJson(legacy).straighten) < 1e-9);
+    }
+
+    // 9. Straighten geometry: a full-frame tilt keeps the oriented dimensions
+    //    (content is inset into a centred rect of the enlarged rotated canvas),
+    //    the frame centre stays covered, and the corners rotate away to the
+    //    transparent background.
+    {
+        Image red = solidRed(W, H);
+        CropState c;
+        c.straighten = 20.0; // full-frame rect (0,0,1,1)
+        Image out = applyCrop(red, c);
+        CHECK(out.width() == W && out.height() == H); // rect normalized to oriented frame
+        QImage q = out.toQImage();
+        CHECK(qAlpha(q.pixel(W / 2, H / 2)) > 200); // centre still covered by content
+        CHECK(qRed(q.pixel(W / 2, H / 2)) > 200);
+        CHECK(qAlpha(q.pixel(0, 0)) < 50);          // a corner rotated to background
     }
 
     std::printf("crop_test OK\n");
