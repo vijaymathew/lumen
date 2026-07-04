@@ -20,7 +20,7 @@ int main(int argc, char *argv[])
     // (used to remember the file dialogs' last-used directories).
     QCoreApplication::setOrganizationName(QStringLiteral("Lumen"));
     QCoreApplication::setApplicationName(QStringLiteral("Lumen"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+    QCoreApplication::setApplicationVersion(QStringLiteral(LUMEN_VERSION));
     // Window / taskbar icon (generated in code — see AppIcon).
     app.setWindowIcon(makeAppIcon());
 

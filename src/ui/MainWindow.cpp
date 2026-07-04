@@ -74,6 +74,12 @@
 
 #include <algorithm>
 
+// Supplied by the build (CMake PROJECT_VERSION). Fallback keeps non-CMake tooling
+// compiling and reads as an obvious dev build rather than a real release.
+#ifndef LUMEN_VERSION
+#define LUMEN_VERSION "0.0.0-dev"
+#endif
+
 namespace {
 
 // Name prefix that marks the Presets browser's dedicated full-coverage layer, so
@@ -386,7 +392,7 @@ private:
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("Lumen"));
+    updateTitle();
 
     // Seed the automatic-RAW configuration from the global preference; the first
     // RAW opened uses these (and each .lumen carries its own per-project copy).
@@ -1511,7 +1517,7 @@ void MainWindow::finishOpenImage(const OpenImageResult &r)
     if (m_layersPanel->isVisible())
         refreshLayersPanel();   // the reset dropped any selective layers
     reseedOpenPanels();         // re-sync open tools with the neutral defaults
-    setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(r.path).fileName()));
+    updateTitle(QFileInfo(r.path).fileName());
 }
 
 void MainWindow::redecodeCurrent()
@@ -1566,7 +1572,7 @@ void MainWindow::applySaveSuccess(const QString &path)
     deleteRecoveryFile();
     resetAutosaveBaseline();
     startAutosave();
-    setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(path).fileName()));
+    updateTitle(QFileInfo(path).fileName());
     showHint(QStringLiteral("Saved %1").arg(QFileInfo(path).fileName()));
 }
 
@@ -1885,7 +1891,7 @@ bool MainWindow::applyProjectResult(const OpenProjectResult &r)
     if (m_layersPanel->isVisible())
         refreshLayersPanel();
     reseedOpenPanels(); // re-sync any open adjustment tool with the restored layers
-    setWindowTitle(QStringLiteral("Lumen — %1").arg(QFileInfo(r.path).fileName()));
+    updateTitle(QFileInfo(r.path).fileName());
     showHint(QStringLiteral("Opened %1").arg(QFileInfo(r.path).fileName()));
     return true;
 }
@@ -2021,8 +2027,7 @@ bool MainWindow::restoreRecovery(const QString &path)
     m_recoveryPath = path;
     m_sourcePath = m_sourceName; // export naming from the original, not the temp file
     m_openDoc = QByteArray();    // sentinel: recovered work is treated as unsaved
-    setWindowTitle(
-        QStringLiteral("Lumen — %1 (recovered)").arg(QFileInfo(m_sourceName).fileName()));
+    updateTitle(QStringLiteral("%1 (recovered)").arg(QFileInfo(m_sourceName).fileName()));
     showHint(QStringLiteral("Restored unsaved work — save it to keep a copy"));
     return true;
 }
@@ -2996,6 +3001,14 @@ void MainWindow::closeVignetteTool()
     m_graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
+}
+
+void MainWindow::updateTitle(const QString &document)
+{
+    if (document.isEmpty())
+        setWindowTitle(QStringLiteral("Lumen %1").arg(QStringLiteral(LUMEN_VERSION)));
+    else
+        setWindowTitle(QStringLiteral("Lumen — %1").arg(document));
 }
 
 double MainWindow::sourceAspect() const

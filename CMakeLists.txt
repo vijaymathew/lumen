@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(lumen
-    VERSION 0.1.0
+    VERSION 0.0.1
     DESCRIPTION "An immersive, command-palette-driven photo editor"
     LANGUAGES CXX)
 
@@ -264,6 +264,10 @@ endif()
 
 # Treat warnings seriously in our own code (not in deps).
 target_compile_options(lumen PRIVATE ${LUMEN_WARNINGS})
+
+# Single source of truth for the app version: the project() version above, handed
+# to the code as a string so main.cpp and the window title never drift from it.
+target_compile_definitions(lumen PRIVATE LUMEN_VERSION="${PROJECT_VERSION}")
 
 # --- Install --------------------------------------------------------------
 # `cmake --install build` (or install.sh) drops the binary into the prefix:
