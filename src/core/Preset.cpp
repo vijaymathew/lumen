@@ -104,9 +104,13 @@ bool applyToGraph(const QJsonObject &preset, EditGraph &graph)
         return false;
     // The vignette is a graph-level (post-composite) stage, so it applies here
     // rather than in applyToLayer, which only touches a layer's node chain.
-    graph.setVignette(
-        VignetteParams::fromJson(preset.value(QStringLiteral("vignette")).toObject()));
+    graph.setVignette(vignetteOf(preset));
     return true;
+}
+
+VignetteParams vignetteOf(const QJsonObject &preset)
+{
+    return VignetteParams::fromJson(preset.value(QStringLiteral("vignette")).toObject());
 }
 
 bool save(const QString &path, const QJsonObject &preset, QString *error)

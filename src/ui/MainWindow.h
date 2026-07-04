@@ -206,6 +206,10 @@ private:
     void setPresetAmount(int amountPct); // live-updates the active preset layer's opacity
     Layer &addPresetLayer(const QString &name); // full-coverage adjustment layer
     int presetLayerIndex() const;               // the active preset layer, or -1
+    // Blends the graph vignette from the pre-preset baseline toward the active
+    // preset's vignette by amount% (the vignette can't ride the layer opacity, so
+    // Amount scales it here instead — keeping it part of the "whole look" blend).
+    void applyPresetVignette(int amountPct);
     void openMonoTool();
     void closeMonoTool();
     void openColorGradeTool();
@@ -329,6 +333,13 @@ private:
     PresetsPanel *m_presetsPanel = nullptr;
     int m_presetAmount = 100;   // Presets browser Amount slider [0,100]
     QString m_activePresetId;   // id of the preset on the current preset layer, if any
+    // Vignette isn't a layer node, so Amount can't blend it via layer opacity.
+    // We snapshot the graph vignette that existed before a preset was applied
+    // (the "baseline") and the active preset's own vignette, then interpolate
+    // between them by Amount — so at 0% the original vignette is restored and at
+    // 100% the preset's is fully in.
+    VignetteParams m_presetBaselineVignette;
+    VignetteParams m_presetVignette;
     MonoPanel *m_monoPanel = nullptr;
     ColorMixerPanel *m_colorMixerPanel = nullptr;
     ColorGradePanel *m_colorGradePanel = nullptr;

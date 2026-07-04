@@ -78,6 +78,34 @@ namespace {
 // it can be found/replaced across applies. Shown in the Layers panel too.
 const QString kPresetLayerPrefix = QStringLiteral("Preset: ");
 
+// Interpolates a vignette between `base` and `target` by t∈[0,1], so a preset's
+// vignette can fade in with the Amount slider. A disabled side contributes no
+// darkening (amount 0) and borrows the other side's falloff shape, so fading from
+// "no vignette" to a preset's vignette is a smooth deepening rather than a jump.
+VignetteParams blendVignette(VignetteParams base, VignetteParams target, float t)
+{
+    if (!base.enabled) {
+        base.amount = 0.0f;
+        base.midpoint = target.midpoint;
+        base.roundness = target.roundness;
+        base.feather = target.feather;
+    }
+    if (!target.enabled) {
+        target.amount = 0.0f;
+        target.midpoint = base.midpoint;
+        target.roundness = base.roundness;
+        target.feather = base.feather;
+    }
+    const auto mix = [t](float a, float b) { return a + (b - a) * t; };
+    VignetteParams r;
+    r.amount = mix(base.amount, target.amount);
+    r.midpoint = mix(base.midpoint, target.midpoint);
+    r.roundness = mix(base.roundness, target.roundness);
+    r.feather = mix(base.feather, target.feather);
+    r.enabled = (base.enabled || target.enabled) && std::abs(r.amount) > 1e-3f;
+    return r;
+}
+
 // Snapshot a TuneNode's tonal state for seeding the Tone panel. Centralised so
 // the (positional) ToneValues aggregate has one definition to keep in sync.
 ToneValues toneValuesOf(const TuneNode *t)
@@ -2530,6 +2558,9 @@ void MainWindow::refreshPresetThumbnails()
     if (presetIdx >= 0)
         m_graph.layer(presetIdx).setOpacity(0.0f);
     const int savedActive = m_graph.activeLayerIndex();
+    // The vignette is graph-global; swap in each preset's own so the thumbnail
+    // shows the full look (vignette included), then restore the real one after.
+    const VignetteParams savedVignette = m_graph.vignette();
     constexpr int kThumbDim = 200;
 
     for (const preset::Builtin &b : presets) {
@@ -2538,8 +2569,9 @@ void MainWindow::refreshPresetThumbnails()
         if (haveSource) {
             Layer &temp = addPresetLayer(QStringLiteral("__thumb"));
             const int tempIdx = m_graph.activeLayerIndex();
-            preset::applyToLayer(b.data, temp);
+            preset::applyToLayer(b.data, temp); // tone/colour/grain onto the layer
             temp.setOpacity(1.0f);
+            m_graph.setVignette(preset::vignetteOf(b.data)); // and its vignette
             const QImage img = m_graph.resultDownsampled(kThumbDim).toQImage();
             if (!img.isNull())
                 item.thumb = QPixmap::fromImage(img);
@@ -2549,6 +2581,7 @@ void MainWindow::refreshPresetThumbnails()
     }
 
     m_graph.setActiveLayer(savedActive);
+    m_graph.setVignette(savedVignette);
     if (presetIdx >= 0)
         m_graph.layer(presetIdx).setOpacity(savedOpacity);
 
@@ -2566,7 +2599,8 @@ int MainWindow::presetLayerIndex() const
 Layer &MainWindow::addPresetLayer(const QString &name)
 {
     // Full-coverage (None mask) adjustment layer, so its opacity blends the whole
-    // preset look uniformly. Same creative node set as a masked adjustment layer.
+    // preset look uniformly. Carries every creative node the preset can drive —
+    // including grain, so grain rides the same opacity blend as the tone/colour.
     Layer &layer = m_graph.addLayer(name);
     m_graph.addNode(std::make_unique<TuneNode>());
     m_graph.addNode(std::make_unique<ColorMixerNode>());
@@ -2574,6 +2608,7 @@ Layer &MainWindow::addPresetLayer(const QString &name)
     m_graph.addNode(std::make_unique<ColorGradeNode>());
     m_graph.addNode(std::make_unique<LutNode>());
     m_graph.addNode(std::make_unique<MonoNode>());
+    m_graph.addNode(std::make_unique<GrainNode>());
     return layer;
 }
 
@@ -2584,7 +2619,12 @@ void MainWindow::applyPresetLook(const preset::Builtin &b, int amountPct)
         return;
     }
     // Replace any existing preset layer with a fresh one carrying this preset.
+    // Snapshot the pre-preset vignette as the blend baseline, but only when no
+    // preset is currently applied — when swapping one preset for another the graph
+    // vignette is already the outgoing preset's blend, not the user's original.
     const int existing = presetLayerIndex();
+    if (existing < 0)
+        m_presetBaselineVignette = m_graph.vignette();
     if (existing >= 0)
         m_graph.removeLayer(existing);
     Layer &layer = addPresetLayer(kPresetLayerPrefix + b.name);
@@ -2594,6 +2634,8 @@ void MainWindow::applyPresetLook(const preset::Builtin &b, int amountPct)
 
     m_activePresetId = b.id;
     m_presetAmount = amountPct;
+    m_presetVignette = preset::vignetteOf(b.data);
+    applyPresetVignette(amountPct); // fold the preset's vignette into the blend
     m_graph.commit();
     afterHistoryChange();     // rebuild the preview + reseed open tools
     refreshLayersPanel();     // the new preset layer shows in the stack
@@ -2608,9 +2650,23 @@ void MainWindow::setPresetAmount(int amountPct)
     if (idx < 0)
         return; // no preset applied yet; the value seeds the next apply
     m_graph.layer(idx).setOpacity(std::clamp(amountPct, 0, 100) / 100.0f);
+    applyPresetVignette(amountPct); // keep the vignette in step with the blend
     updatePreview(); // live; one undo step is committed when the tool closes
     if (m_layersPanel->isVisible())
         refreshLayersPanel();
+}
+
+void MainWindow::applyPresetVignette(int amountPct)
+{
+    // Only steer the vignette when a preset was applied this session — otherwise
+    // the baseline/preset snapshots are empty and we'd wipe a vignette that was
+    // loaded with a project (whose preset context isn't restored).
+    if (m_activePresetId.isEmpty())
+        return;
+    const float t = std::clamp(amountPct, 0, 100) / 100.0f;
+    const VignetteParams v = blendVignette(m_presetBaselineVignette, m_presetVignette, t);
+    m_graph.setVignette(v);
+    m_canvas->setVignette(v); // present-pass op; no base re-bake needed
 }
 
 void MainWindow::openMonoTool()

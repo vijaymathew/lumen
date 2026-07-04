@@ -239,6 +239,30 @@ int main(int /*argc*/, char **argv)
         CHECK(satHalf < sat0 && satHalf > sat1);  // amount 50 → between the two
     }
 
+    // --- Grain & vignette travel with the look ------------------------------
+    // The Presets browser folds grain onto the preset layer (so it rides the
+    // Amount/opacity blend) and applies the vignette as a separate graph stage.
+    // `bw` is the first B&W built-in (High Contrast), which carries both.
+    {
+        const VignetteParams vig = preset::vignetteOf(bw->data);
+        CHECK(vig.enabled);      // the preset carries a real vignette...
+        CHECK(vig.amount < 0.0f); // ...a darkening one
+
+        // A layer that carries a grain node receives the preset's grain, so the
+        // preset layer's opacity can blend it like the rest of the look.
+        EditGraph gg;
+        gg.setSource(Image::black(16, 16));
+        Layer &pl = gg.addLayer(QStringLiteral("preset"));
+        gg.addNode(std::make_unique<TuneNode>());
+        gg.addNode(std::make_unique<MonoNode>());
+        gg.addNode(std::make_unique<GrainNode>());
+        CHECK(preset::applyToLayer(bw->data, pl));
+        auto *grain = static_cast<GrainNode *>(pl.nodeOfType(QStringLiteral("grain")));
+        CHECK(grain != nullptr);
+        CHECK(grain->values().enabled);
+        CHECK(grain->values().amount > 0.0f);
+    }
+
     QDir(home).removeRecursively(); // tidy up the scratch home
     std::printf("OK: %d built-in + %d user presets\n", static_cast<int>(builtins.size()),
                 static_cast<int>(users.size()));
