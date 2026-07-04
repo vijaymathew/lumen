@@ -26,6 +26,7 @@ public:
         QString category;         // section header text
         QPixmap thumb;            // may be null (renders a placeholder)
         bool userEditable = false; // true for user presets → right-click rename/delete
+        bool active = false;       // the preset currently applied → highlighted card
     };
 
     // Rebuilds the list. Items are shown in order, with a header inserted each

@@ -6,6 +6,7 @@
 #include <QImage>
 #include <QJsonObject>
 #include <QMainWindow>
+#include <QPixmap>
 #include <QPointF>
 
 #include <atomic>
@@ -202,6 +203,8 @@ private:
     void closePresetsTool();
     // Renders a thumbnail of the current photo with each built-in preset applied.
     void refreshPresetThumbnails();
+    // Drops any cached preset thumbnails, forcing a re-render on the next refresh.
+    void invalidatePresetThumbCache();
     // Applies a preset as a full-coverage adjustment layer at opacity = amount%,
     // replacing any prior preset layer. The Amount slider blends the whole look.
     void applyPresetLook(const preset::Builtin &b, int amountPct);
@@ -353,6 +356,14 @@ private:
     // blend as the vignette (applied to the Base structure node, re-baked).
     StructureNode::Values m_presetBaselineStructure;
     StructureNode::Values m_presetStructure;
+    // Thumbnail cache: rendering every preset over the current photo is O(library)
+    // and runs on open/apply. Thumbnails only depend on the source + Base edits +
+    // crop (the preset layer is suppressed during the render), so we cache the
+    // pixmaps keyed by that signature and re-render only when it changes. Bumped on
+    // a new source; user-preset edits clear the cache explicitly.
+    QByteArray m_thumbCacheSig;
+    QHash<QString, QPixmap> m_thumbCache;
+    quint64 m_sourceGeneration = 0;
     MonoPanel *m_monoPanel = nullptr;
     ColorMixerPanel *m_colorMixerPanel = nullptr;
     ColorGradePanel *m_colorGradePanel = nullptr;

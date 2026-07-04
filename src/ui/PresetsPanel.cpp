@@ -91,6 +91,9 @@ PresetsPanel::PresetsPanel(QWidget *parent)
             border-radius: 8px; padding: 6px; font-size: 12px; text-align: center;
         }
         QToolButton#presetCard:hover { background: #2e2e34; border-color: #4a4a52; }
+        QToolButton#presetCard[active="true"] {
+            border: 2px solid #5a8dee; background: #26303f; color: #ffffff;
+        }
     )"));
 
     hide();
@@ -124,6 +127,9 @@ void PresetsPanel::setItems(const QVector<Item> &items)
         if (!item.thumb.isNull())
             card->setIcon(QIcon(item.thumb));
         card->setFixedWidth(kPanelWidth - 32);
+        // Highlight the applied preset. A dynamic property drives the [active]
+        // stylesheet selector below.
+        card->setProperty("active", item.active);
         const QString id = item.id;
         connect(card, &QToolButton::clicked, this, [this, id] { emit applyRequested(id); });
 

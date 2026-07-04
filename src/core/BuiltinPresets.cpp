@@ -15,6 +15,7 @@
 #include <QJsonArray>
 
 #include <algorithm>
+#include <cmath>
 
 namespace preset {
 namespace {
@@ -30,6 +31,29 @@ QJsonObject entry(const EditNode &n)
     e[QStringLiteral("state")] = n.saveState();
     return e;
 }
+
+// A colour-grade wheel puck placed at a deliberate hue. The wheel's axes are red
+// at 90°, green at 210°, blue at 330° (see ColorGradeNode::chromaPush), so e.g.
+// 120° is a clean warm orange (+R −B) and 270° a cyan-teal (−R +G +B). Radius is
+// the chroma [0,1]. Setting pucks this way keeps the named look honest — the
+// earlier hand-picked x/y pairs drifted toward magenta rather than true orange.
+struct WheelPuck { float x, y; };
+WheelPuck wheel(double hueDeg, double radius)
+{
+    const double a = hueDeg * M_PI / 180.0;
+    return {static_cast<float>(radius * std::cos(a)),
+            static_cast<float>(radius * std::sin(a))};
+}
+
+// Named hues on the grade wheel, for readable presets.
+namespace hue {
+constexpr double kOrange = 120.0; // warm skin/highlight orange
+constexpr double kAmber = 132.0;  // warmer, more golden
+constexpr double kTeal = 268.0;   // cinematic cyan-teal
+constexpr double kGreenTeal = 250.0;
+constexpr double kSteelBlue = 300.0; // cool, slightly magenta-blue
+constexpr double kBlue = 330.0;
+} // namespace hue
 
 // Wraps a configured node set + vignette into a preset::fromGraph-format document.
 QJsonObject assemble(const QString &name, const TuneNode &tune, const CurvesNode &curves,
@@ -157,10 +181,12 @@ Builtin colorWarmPortrait()
     ColorGradeNode grade;
     ColorGradeValues gv;
     gv.enabled = true;
-    gv.gainX = 0.12f; // warm highlights
-    gv.gainY = 0.05f;
-    gv.liftX = -0.06f; // slightly cool shadows
-    gv.liftY = -0.04f;
+    const WheelPuck warmHi = wheel(hue::kOrange, 0.13);   // warm highlights
+    const WheelPuck warmMid = wheel(hue::kAmber, 0.05);   // faintly warm skin midtones
+    const WheelPuck coolLow = wheel(hue::kSteelBlue, 0.12); // cool shadows for separation
+    gv.gainX = warmHi.x;  gv.gainY = warmHi.y;
+    gv.gammaX = warmMid.x; gv.gammaY = warmMid.y;
+    gv.liftX = coolLow.x;  gv.liftY = coolLow.y;
     grade.setValues(gv);
 
     VignetteParams vig;
@@ -190,10 +216,10 @@ Builtin colorFadedFilm()
     ColorGradeNode grade;
     ColorGradeValues gv;
     gv.enabled = true;
-    gv.liftX = -0.05f; // green/teal shadows
-    gv.liftY = 0.06f;
-    gv.gainX = 0.06f; // warm highlights
-    gv.gainY = 0.03f;
+    const WheelPuck greenLow = wheel(hue::kGreenTeal, 0.14); // green-teal shadows
+    const WheelPuck warmHi = wheel(hue::kAmber, 0.07);       // gently warm highlights
+    gv.liftX = greenLow.x; gv.liftY = greenLow.y;
+    gv.gainX = warmHi.x;   gv.gainY = warmHi.y;
     gv.gammaMaster = 0.02f;
     grade.setValues(gv);
 
@@ -360,10 +386,12 @@ Builtin colorTealOrange()
     ColorGradeNode grade;
     ColorGradeValues gv;
     gv.enabled = true;
-    gv.liftX = -0.08f; // cool teal shadows
-    gv.liftY = 0.04f;
-    gv.gainX = 0.12f; // warm orange highlights
-    gv.gainY = 0.05f;
+    const WheelPuck tealLow = wheel(hue::kTeal, 0.20);   // deep teal shadows
+    const WheelPuck tealMid = wheel(hue::kTeal, 0.06);   // carry a touch into midtones
+    const WheelPuck orangeHi = wheel(hue::kOrange, 0.20); // punchy orange highlights
+    gv.liftX = tealLow.x;  gv.liftY = tealLow.y;
+    gv.gammaX = tealMid.x; gv.gammaY = tealMid.y;
+    gv.gainX = orangeHi.x; gv.gainY = orangeHi.y;
     grade.setValues(gv);
 
     StructureNode structure;
@@ -399,12 +427,12 @@ Builtin colorGoldenHour()
     ColorGradeNode grade;
     ColorGradeValues gv;
     gv.enabled = true;
-    gv.gainX = 0.14f; // warm highlights
-    gv.gainY = 0.07f;
-    gv.gammaX = 0.05f; // warm midtones
-    gv.gammaY = 0.02f;
-    gv.liftX = 0.02f;
-    gv.liftY = 0.01f;
+    const WheelPuck goldHi = wheel(hue::kAmber, 0.16);  // golden highlights
+    const WheelPuck goldMid = wheel(hue::kAmber, 0.06); // warm midtones
+    const WheelPuck warmLow = wheel(hue::kOrange, 0.04); // keep shadows from going cold
+    gv.gainX = goldHi.x;   gv.gainY = goldHi.y;
+    gv.gammaX = goldMid.x; gv.gammaY = goldMid.y;
+    gv.liftX = warmLow.x;  gv.liftY = warmLow.y;
     grade.setValues(gv);
 
     StructureNode structure;
@@ -442,9 +470,10 @@ Builtin colorBleachBypass()
     ColorGradeNode grade;
     ColorGradeValues gv;
     gv.enabled = true;
-    gv.liftX = -0.03f; // cool shadows
-    gv.liftY = -0.02f;
-    gv.gainX = -0.02f;
+    const WheelPuck steelLow = wheel(hue::kSteelBlue, 0.10); // cool steel shadows
+    const WheelPuck steelHi = wheel(hue::kBlue, 0.05);       // faint cool highlights
+    gv.liftX = steelLow.x; gv.liftY = steelLow.y;
+    gv.gainX = steelHi.x;  gv.gainY = steelHi.y;
     grade.setValues(gv);
 
     GrainNode grain;

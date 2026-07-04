@@ -535,6 +535,7 @@ MainWindow::MainWindow(QWidget *parent)
             return;
         if (QFile::remove(path)) {
             showHint(QStringLiteral("Deleted preset"));
+            invalidatePresetThumbCache(); // the id may be reused by a later save
             refreshPresetThumbnails();
         } else {
             showHint(QStringLiteral("Could not delete the preset file"));
@@ -874,6 +875,7 @@ MainWindow::MainWindow(QWidget *parent)
             return;
         }
         m_graph.setSource(r.image);
+        ++m_sourceGeneration; // new pixels → preset thumbnails must re-render
         // Keep the current WB temperature (don't reseed to as-shot).
         applyCameraProfile(r.meta.color, /*seedKelvin=*/false);
         refreshWorkingSource();  // rebuild the corrected source + display QImage
@@ -1170,6 +1172,12 @@ MainWindow::MainWindow(QWidget *parent)
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+Q")), this, [this] { close(); });
     new QShortcut(QKeySequence(Qt::Key_F11), this, [this] { toggleFullScreen(); });
     new QShortcut(QKeySequence(QStringLiteral("Ctrl+0")), this, [this] { m_canvas->resetView(); });
+    new QShortcut(QKeySequence(QStringLiteral("Ctrl+P")), this, [this] {
+        if (m_presetsPanel->isVisible())
+            closePresetsTool();
+        else
+            openPresetsTool();
+    });
     new QShortcut(QKeySequence::Undo, this, [this] { doUndo(); });
     new QShortcut(QKeySequence::Redo, this, [this] { doRedo(); });
 
@@ -1267,7 +1275,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("vignette"), QStringLiteral("Vignette"), effects},
         {QStringLiteral("selective"), QStringLiteral("Selective adjustment"), selective},
         {QStringLiteral("layers"), QStringLiteral("Layers"), selective},
-        {QStringLiteral("presets-browser"), QStringLiteral("Presets browser (looks)"), presets},
+        {QStringLiteral("presets-browser"), QStringLiteral("Presets browser (looks)  ·  Ctrl+P"), presets},
         {QStringLiteral("copy-settings"), QStringLiteral("Copy edit settings"), presets},
         {QStringLiteral("paste-settings"), QStringLiteral("Paste edit settings"), presets},
         {QStringLiteral("save-preset"), QStringLiteral("Save preset…"), presets},
@@ -1439,6 +1447,7 @@ void MainWindow::finishOpenImage(const OpenImageResult &r)
     m_graph.restoreState(m_defaultGraphState);
 
     m_graph.setSource(r.source); // full-res original; the lens node corrects on top
+    ++m_sourceGeneration;        // new pixels → preset thumbnails must re-render
     // Seed the lens node: a RAW carries EXIF identity for automatic correction;
     // anything else starts neutral (manual perspective still available).
     LensCorrectionNode::Params lp; // defaults: corrections on, perspective neutral
@@ -1823,6 +1832,7 @@ bool MainWindow::applyProjectResult(const OpenProjectResult &r)
     m_sourceBytes = r.sourceBytes;
     m_sourceName = r.sourceName;
     m_graph.setSource(r.source);
+    ++m_sourceGeneration;              // new pixels → preset thumbnails must re-render
     m_graph.loadProjectState(r.graph); // restores the lens node's params too
     // Refresh the camera profile from the actual decode, keeping the restored
     // WB temperature (don't reseed to as-shot).
@@ -1918,6 +1928,7 @@ void MainWindow::savePreset()
         return;
     }
     rememberDir(QStringLiteral("preset"), path);
+    invalidatePresetThumbCache(); // may overwrite an existing id with new settings
     if (m_presetsPanel->isVisible())
         refreshPresetThumbnails(); // surface the new preset in the open browser
     showHint(QStringLiteral("Saved preset “%1”").arg(name));
@@ -2593,11 +2604,34 @@ void MainWindow::closePresetsTool()
     m_canvas->setFocus();
 }
 
+void MainWindow::invalidatePresetThumbCache()
+{
+    m_thumbCache.clear();
+    m_thumbCacheSig.clear();
+}
+
 void MainWindow::refreshPresetThumbnails()
 {
     const QVector<preset::Builtin> presets = preset::library();
     QVector<PresetsPanel::Item> items;
     items.reserve(presets.size());
+
+    // Thumbnails depend only on the source, the Base-layer edits and the crop (the
+    // active preset layer is suppressed during the render and each preset swaps in
+    // its own vignette/structure). Build a signature from exactly those inputs; when
+    // it matches the last render we reuse cached pixmaps and only render presets the
+    // cache is missing (e.g. a newly-saved user preset).
+    const QByteArray signature = [this] {
+        QJsonObject sig;
+        sig.insert(QStringLiteral("src"), QString::number(m_sourceGeneration));
+        sig.insert(QStringLiteral("base"), m_graph.baseLayer().saveState());
+        sig.insert(QStringLiteral("crop"), m_graph.crop().toJson());
+        return QJsonDocument(sig).toJson(QJsonDocument::Compact);
+    }();
+    if (signature != m_thumbCacheSig) {
+        m_thumbCache.clear();
+        m_thumbCacheSig = signature;
+    }
 
     // Render each preset exactly as applying it would: on a temporary full-coverage
     // layer at 100% over the current photo (tone/colour/grain), plus the preset's
@@ -2620,19 +2654,27 @@ void MainWindow::refreshPresetThumbnails()
 
     for (const preset::Builtin &b : presets) {
         PresetsPanel::Item item{b.id, b.name, b.category, {},
-                                b.id.startsWith(QStringLiteral("user:"))};
+                                b.id.startsWith(QStringLiteral("user:")),
+                                b.id == m_activePresetId};
         if (haveSource) {
-            Layer &temp = addPresetLayer(QStringLiteral("__thumb"));
-            const int tempIdx = m_graph.activeLayerIndex();
-            preset::applyToLayer(b.data, temp); // tone/colour/grain onto the layer
-            temp.setOpacity(1.0f);
-            m_graph.setVignette(preset::vignetteOf(b.data)); // and its vignette
-            if (m_structure)
-                m_structure->setValues(structureFromPreset(b.data)); // and its structure
-            const QImage img = m_graph.resultDownsampled(kThumbDim).toQImage();
-            if (!img.isNull())
-                item.thumb = QPixmap::fromImage(img);
-            m_graph.removeLayer(tempIdx);
+            auto cached = m_thumbCache.constFind(b.id);
+            if (cached != m_thumbCache.constEnd()) {
+                item.thumb = cached.value();
+            } else {
+                Layer &temp = addPresetLayer(QStringLiteral("__thumb"));
+                const int tempIdx = m_graph.activeLayerIndex();
+                preset::applyToLayer(b.data, temp); // tone/colour/grain onto the layer
+                temp.setOpacity(1.0f);
+                m_graph.setVignette(preset::vignetteOf(b.data)); // and its vignette
+                if (m_structure)
+                    m_structure->setValues(structureFromPreset(b.data)); // and its structure
+                const QImage img = m_graph.resultDownsampled(kThumbDim).toQImage();
+                if (!img.isNull()) {
+                    item.thumb = QPixmap::fromImage(img);
+                    m_thumbCache.insert(b.id, item.thumb);
+                }
+                m_graph.removeLayer(tempIdx);
+            }
         }
         items.push_back(item);
     }
