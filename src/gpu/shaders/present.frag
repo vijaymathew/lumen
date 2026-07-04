@@ -17,6 +17,14 @@ layout(binding = 1) uniform sampler2D tex; // the composited offscreen result
 
 void main()
 {
+    // A straighten tilt maps the frame corners outside the source [0,1] range;
+    // show those as empty (transparent) rather than smeared edge pixels. For an
+    // untilted view texcoords stay in [0,1], so this never triggers.
+    if (any(lessThan(v_texcoord, vec2(0.0))) || any(greaterThan(v_texcoord, vec2(1.0)))) {
+        fragColor = vec4(0.0);
+        return;
+    }
+
     vec4 c = texture(tex, v_texcoord);
 
     // Creative vignette — mirrors core/Vignette.cpp's applyVignette() (see

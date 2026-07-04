@@ -648,13 +648,26 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_cropPanel = new CropPanel(this);
     connect(m_cropPanel, &CropPanel::aspectChanged, this, [this](double aspect) {
+        m_cropAspect = aspect;
         if (m_cropGizmo)
             m_cropGizmo->setAspect(aspect);
+        // A straightened crop must re-inset to the new aspect to stay off the
+        // tilt's transparent corners.
+        CropState c = m_graph.crop();
+        if (std::abs(c.straighten) > 1e-6) {
+            c.rect = straightenSafeCropRect(c);
+            m_graph.setCrop(c);
+            if (m_cropGizmo)
+                m_cropGizmo->setRect(c.rect);
+            updateCropView();
+            updatePreview();
+        }
     });
     connect(m_cropPanel, &CropPanel::rotateRequested, this, [this](int deltaCW) {
         CropState c = m_graph.crop();
         c.rotation = ((c.rotation + deltaCW) % 360 + 360) % 360;
-        c.rect = QRectF(0.0, 0.0, 1.0, 1.0); // a re-orient resets the rectangle
+        // A re-orient resets the rectangle (re-inset if a straighten is active).
+        c.rect = straightenSafeCropRect(c);
         m_graph.setCrop(c);
         if (m_cropGizmo)
             m_cropGizmo->setRect(c.rect);
@@ -671,10 +684,26 @@ MainWindow::MainWindow(QWidget *parent)
         updateCropView();
         updatePreview();
     });
+    connect(m_cropPanel, &CropPanel::straightenChanged, this, [this](double deg) {
+        CropState c = m_graph.crop();
+        c.straighten = deg;
+        // Keep the crop clear of the tilt's transparent corners. (The whole crop
+        // session is a single undo step, committed in closeCropTool.)
+        c.rect = straightenSafeCropRect(c);
+        m_graph.setCrop(c);
+        if (m_cropGizmo) {
+            m_cropGizmo->setStraighten(deg);
+            m_cropGizmo->setRect(c.rect);
+        }
+        updateCropView();
+        updatePreview();
+    });
     connect(m_cropPanel, &CropPanel::resetRequested, this, [this] {
         m_graph.setCrop(CropState{});
-        if (m_cropGizmo)
+        if (m_cropGizmo) {
+            m_cropGizmo->setStraighten(0.0);
             m_cropGizmo->setRect(QRectF(0.0, 0.0, 1.0, 1.0));
+        }
         if (m_cropPanel->isVisible())
             m_cropPanel->reveal(m_graph.crop(), sourceAspect());
         updateCropView();
@@ -2077,7 +2106,7 @@ void MainWindow::exportImage()
         showHint(QStringLiteral("Open an image before exporting"));
         return;
     }
-    if (m_exportWatcher.isRunning()) {
+    if (m_exportWatcher.isRunning() || m_exportPending) {
         showHint(QStringLiteral("An export is already in progress"));
         return;
     }
@@ -2111,33 +2140,42 @@ void MainWindow::exportImage()
     if (QFileInfo(path).suffix().isEmpty())
         path += QStringLiteral(".") + m_exportExt;
 
-    // 3. Walk the graph and write at full resolution OFF the UI thread: a full-res
-    //    libvips encode is slow, and with an active heal mask result() runs the
-    //    inpaint inline (HealNode::apply is eager) — either would freeze the app.
-    //    The busy badge shows progress; re-entry is blocked above. The finished
-    //    handler reports success/failure.
-    const bool healActive =
-        m_heal && m_heal->isEnabled() && !m_heal->healMask().isEmpty();
-    // For the non-heal case the pipeline is lazy, so snapshot it on the UI thread
-    // (race-free) and only materialise on the worker; with heal active, build it
-    // on the worker so the eager inpaint never blocks the UI.
-    const Image snapshot = healActive ? Image() : m_graph.result();
+    // 3. Show the "Exporting…" badge now, then defer the graph snapshot and the
+    //    worker launch to the next event-loop tick. Returning first lets the Save
+    //    dialog actually close and the badge paint before we touch the graph —
+    //    otherwise, on large files, the dialog appears to hang over the window.
+    //    m_exportPending guards the (single-tick) window before the worker starts.
     auto *badge = static_cast<BusyBadge *>(m_healBusy);
     badge->setLabel(QStringLiteral("Exporting…"));
     badge->start();
     layoutOverlays();
-    m_exportWatcher.setFuture(QtConcurrent::run(
-        [this, path, exportOpts, healActive, snapshot]() -> ExportResult {
-            ExportResult r;
-            r.path = path;
-            const Image result = healActive ? m_graph.result() : snapshot;
-            if (result.isNull()) {
-                r.error = QStringLiteral("nothing to export");
+    m_exportPending = true;
+
+    const bool healActive =
+        m_heal && m_heal->isEnabled() && !m_heal->healMask().isEmpty();
+    QTimer::singleShot(0, this, [this, path, exportOpts, healActive]() {
+        // Walk the graph and write at full resolution OFF the UI thread: a
+        // full-res libvips encode is slow, and with an active heal mask result()
+        // runs the inpaint inline (HealNode::apply is eager) — either would
+        // freeze the app. For the non-heal case the pipeline is lazy, so snapshot
+        // it here on the UI thread (race-free) and only materialise on the
+        // worker; with heal active, build it on the worker instead. The finished
+        // handler reports success/failure.
+        const Image snapshot = healActive ? Image() : m_graph.result();
+        m_exportPending = false;
+        m_exportWatcher.setFuture(QtConcurrent::run(
+            [this, path, exportOpts, healActive, snapshot]() -> ExportResult {
+                ExportResult r;
+                r.path = path;
+                const Image result = healActive ? m_graph.result() : snapshot;
+                if (result.isNull()) {
+                    r.error = QStringLiteral("nothing to export");
+                    return r;
+                }
+                r.ok = result.saveToFile(path, exportOpts, &r.error);
                 return r;
-            }
-            r.ok = result.saveToFile(path, exportOpts, &r.error);
-            return r;
-        }));
+            }));
+    });
 }
 
 void MainWindow::toggleFullScreen()
@@ -2968,6 +3006,18 @@ double MainWindow::sourceAspect() const
            / static_cast<double>(m_sourceQImage.height());
 }
 
+QRectF MainWindow::straightenSafeCropRect(const CropState &c) const
+{
+    if (std::abs(c.straighten) < 1e-6)
+        return QRectF(0.0, 0.0, 1.0, 1.0);
+    const bool swap = (c.rotation == 90 || c.rotation == 270);
+    const double sw = m_sourceQImage.width();
+    const double sh = m_sourceQImage.height();
+    const double ow = swap ? sh : sw; // oriented frame dims (pre-straighten)
+    const double oh = swap ? sw : sh;
+    return straightenSafeRect(c.straighten, ow, oh, m_cropAspect);
+}
+
 void MainWindow::openCropTool()
 {
     m_input.setMode(InputController::Mode::ToolActive);
@@ -2975,7 +3025,9 @@ void MainWindow::openCropTool()
     const int margin = 18;
     m_cropPanel->move(width() - m_cropPanel->width() - margin, margin);
     m_cropPanel->reveal(m_graph.crop(), sourceAspect());
+    m_cropAspect = 0.0;
     m_cropGizmo->setAspect(0.0); // free until the user picks a preset
+    m_cropGizmo->setStraighten(m_graph.crop().straighten);
     m_cropGizmo->setRect(m_graph.crop().rect);
     updateCropView(); // switches the canvas into Editing (full-frame) mode
     m_canvas->setFitZoom(0.85f); // pull the frame in so the handles clear the edges

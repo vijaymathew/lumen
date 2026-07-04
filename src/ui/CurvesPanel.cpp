@@ -207,15 +207,28 @@ void CurvesPanel::paintEvent(QPaintEvent *)
     p.setPen(QColor(0x8a, 0x8a, 0x90));
     p.drawText(QRect(kMargin, pr.bottom() + 4, pr.width(), 18),
                Qt::AlignHCenter | Qt::AlignVCenter,
-               QStringLiteral("click add · drag move · drag out / Del remove"));
+               QStringLiteral("click add · drag move · right-click / Del remove"));
 }
 
 void CurvesPanel::mousePressEvent(QMouseEvent *event)
 {
+    const QPointF pos = event->position();
+
+    // Right-click directly on a (non-endpoint) point deletes it in place — faster
+    // and steadier than dragging it out of the plot. Ignored elsewhere.
+    if (event->button() == Qt::RightButton) {
+        const int hit = pointAt(pos);
+        if (hit >= 0 && !isEndpoint(hit)) {
+            m_points[m_channel].erase(m_points[m_channel].begin() + hit);
+            m_selected = -1;
+            emitCurves();
+            update();
+        }
+        return;
+    }
+
     if (event->button() != Qt::LeftButton)
         return;
-
-    const QPointF pos = event->position();
 
     // Channel tabs.
     if (pos.y() >= kTitleHeight && pos.y() < kPlotTop) {
