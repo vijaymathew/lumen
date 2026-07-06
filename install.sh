@@ -139,14 +139,16 @@ fetch_qt_with_aqt() {
     # aqtinstall needs Python 3 + pip. If they're missing, fetching Qt can't
     # proceed — fail early with a clear pointer to the --qt-dir escape hatch
     # rather than a cryptic error from deep inside pip.
+    # NOTE: all log/warn calls use >&2 so stdout stays clean for the caller
+    # that captures this function's output via $(...).
     if ! command -v python3 >/dev/null 2>&1 || ! python3 -m pip --version >/dev/null 2>&1; then
-        warn "No Qt 6.7+ found on this system, and Python 3 + pip (needed to fetch"
-        warn "Qt automatically via aqtinstall) are not available."
-        warn ""
-        warn "Do one of the following, then re-run:"
-        warn "  * install python3 and pip (e.g. 'apt-get install python3-pip'); or"
-        warn "  * install Qt 6.7+ yourself and pass it in:"
-        warn "        ./install.sh --qt-dir /path/to/Qt/${QT_VERSION}/gcc_64"
+        warn "No Qt 6.7+ found on this system, and Python 3 + pip (needed to fetch" >&2
+        warn "Qt automatically via aqtinstall) are not available." >&2
+        warn "" >&2
+        warn "Do one of the following, then re-run:" >&2
+        warn "  * install python3 and pip (e.g. 'apt-get install python3-pip'); or" >&2
+        warn "  * install Qt 6.7+ yourself and pass it in:" >&2
+        warn "        ./install.sh --qt-dir /path/to/Qt/${QT_VERSION}/gcc_64" >&2
         exit 1
     fi
 
@@ -158,8 +160,16 @@ fetch_qt_with_aqt() {
     # aqt renamed the Linux arch id; fall back for older aqt.
     local dest="$ROOT/.qt"
     if [[ ! -d "$dest/$QT_VERSION" ]]; then
-        log "Fetching Qt $QT_VERSION via aqtinstall (one-time, into .qt/)"
-        python3 -m pip install --user --upgrade aqtinstall >/dev/null
+        log "Fetching Qt $QT_VERSION via aqtinstall (one-time, into .qt/)" >&2
+        # On Python 3.12+ (Ubuntu 24.04+) pip blocks --user installs for
+        # "externally managed" environments; try --break-system-packages as a
+        # fallback before giving up.
+        python3 -m pip install --user --upgrade aqtinstall >/dev/null 2>&1 \
+            || python3 -m pip install --user --upgrade --break-system-packages aqtinstall >/dev/null 2>&1 \
+            || { warn "Failed to install aqtinstall via pip. Install it manually:" >&2
+                 warn "  pip3 install --user aqtinstall" >&2
+                 warn "then re-run, or use --qt-dir to point at an existing Qt 6.7+ install." >&2
+                 exit 1; }
         python3 -m aqt install-qt "$host" desktop "$QT_VERSION" "$arch" \
             -m qtshadertools -O "$dest" \
             || python3 -m aqt install-qt "$host" desktop "$QT_VERSION" \
