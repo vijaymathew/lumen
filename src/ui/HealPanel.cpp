@@ -55,7 +55,9 @@ HealPanel::HealPanel(QWidget *parent)
     layout->addWidget(title);
     layout->addLayout(modeRow);
     m_size = addRow(QStringLiteral("Size"), 30, &m_sizeValue);
+    m_size->setToolTip(QStringLiteral("Hold S and scroll the wheel over the image"));
     m_hardness = addRow(QStringLiteral("Hardness"), 50, &m_hardnessValue);
+    m_hardness->setToolTip(QStringLiteral("Hold H and scroll the wheel over the image"));
 
     // Fill quality: Detailed (Criminisi exemplar) vs Fast (Telea diffusion).
     m_qualityButton = new QPushButton(QStringLiteral("Fill: Detailed"), this);
@@ -71,8 +73,10 @@ HealPanel::HealPanel(QWidget *parent)
     qualityRow->addStretch(1);
     layout->addLayout(qualityRow);
 
-    auto *hint = new QLabel(QStringLiteral("paint over a blemish · Ctrl+Z undoes a stroke"),
-                            this);
+    auto *hint = new QLabel(
+        QStringLiteral("paint over a blemish · S / H + scroll resize the brush · "
+                       "Ctrl+Z undoes a stroke"),
+        this);
     hint->setObjectName(QStringLiteral("section"));
     hint->setWordWrap(true);
     layout->addWidget(hint);

@@ -479,7 +479,7 @@ private:
     enum class BrushTarget { None, Selective, Heal };
     BrushTarget m_brushTarget = BrushTarget::None;
     MaskBuffer m_brushMask;
-    std::vector<float> m_strokeBaseMask;         // mask at the current stroke's start
+    MaskBuffer m_strokeMask;                     // current stroke's footprint (heal overlay)
     std::vector<std::vector<float>> m_brushUndo; // per-stroke snapshots
     int m_brushSize = 30;
     int m_brushHardness = 50;

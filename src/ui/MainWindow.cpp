@@ -2145,10 +2145,9 @@ void MainWindow::exportImage()
     if (QFileInfo(path).suffix().isEmpty())
         path += QStringLiteral(".") + m_exportExt;
 
-    // 3. Show the "Exporting…" badge now, then defer the graph snapshot and the
-    //    worker launch to the next event-loop tick. Returning first lets the Save
-    //    dialog actually close and the badge paint before we touch the graph —
-    //    otherwise, on large files, the dialog appears to hang over the window.
+    // 3. Show the "Exporting…" badge now, then defer the snapshot and the worker
+    //    launch to the next event-loop tick. Returning first lets the Save dialog
+    //    actually close and the badge paint before we do any work.
     //    m_exportPending guards the (single-tick) window before the worker starts.
     auto *badge = static_cast<BusyBadge *>(m_healBusy);
     badge->setLabel(QStringLiteral("Exporting…"));
@@ -2156,23 +2155,28 @@ void MainWindow::exportImage()
     layoutOverlays();
     m_exportPending = true;
 
-    const bool healActive =
-        m_heal && m_heal->isEnabled() && !m_heal->healMask().isEmpty();
-    QTimer::singleShot(0, this, [this, path, exportOpts, healActive]() {
-        // Walk the graph and write at full resolution OFF the UI thread: a
-        // full-res libvips encode is slow, and with an active heal mask result()
-        // runs the inpaint inline (HealNode::apply is eager) — either would
-        // freeze the app. For the non-heal case the pipeline is lazy, so snapshot
-        // it here on the UI thread (race-free) and only materialise on the
-        // worker; with heal active, build it on the worker instead. The finished
-        // handler reports success/failure.
-        const Image snapshot = healActive ? Image() : m_graph.result();
+    QTimer::singleShot(0, this, [this, path, exportOpts]() {
+        // Do EVERYTHING heavy on the worker thread — both the full-resolution
+        // composite and the encode. Every node's apply() is eager (it materialises
+        // pixels via vips_image_write_to_memory), so m_graph.result() at full res
+        // is a multi-second block; running it on the UI thread froze the whole app
+        // (the badge animation included). Instead snapshot the graph as JSON (cheap:
+        // node params plus PNG-encoded masks) and take a ref to the source, then
+        // rebuild an independent EditGraph on the worker and composite there. The
+        // worker never touches m_graph's mutable node cache, so the export stays
+        // race-free even if the user keeps editing. The finished handler reports
+        // success/failure.
+        const QJsonObject graphState = m_graph.saveState();
+        const Image source = m_graph.source();
         m_exportPending = false;
         m_exportWatcher.setFuture(QtConcurrent::run(
-            [this, path, exportOpts, healActive, snapshot]() -> ExportResult {
+            [path, exportOpts, graphState, source]() -> ExportResult {
                 ExportResult r;
                 r.path = path;
-                const Image result = healActive ? m_graph.result() : snapshot;
+                EditGraph graph;
+                graph.setSource(source);
+                graph.rebuildFromState(graphState); // independent copy of the stack
+                const Image result = graph.result();
                 if (result.isNull()) {
                     r.error = QStringLiteral("nothing to export");
                     return r;
@@ -3846,7 +3850,11 @@ void MainWindow::beginBrushStroke()
     m_brushUndo.push_back(m_brushMask.data); // snapshot for session undo
     if (m_brushUndo.size() > 50)
         m_brushUndo.erase(m_brushUndo.begin());
-    m_strokeBaseMask = m_brushMask.data; // for the heal overlay (current stroke only)
+    // Fresh, empty footprint for this stroke — the heal overlay tints wherever the
+    // brush touches this stroke, independent of what earlier strokes already healed.
+    m_strokeMask.width = m_brushMask.width;
+    m_strokeMask.height = m_brushMask.height;
+    m_strokeMask.data.assign(m_brushMask.data.size(), 0.0f);
     m_brushHasLast = false;
 }
 
@@ -3860,6 +3868,17 @@ void MainWindow::brushAt(const QPointF &norm)
     const float cy = static_cast<float>(norm.y()) * (h - 1);
     const float radius = std::max(1.0f, (m_brushSize / 100.0f) * 0.3f * std::min(w, h));
     const float hardness = m_brushHardness / 100.0f;
+    const bool heal = (m_brushTarget == BrushTarget::Heal);
+
+    // Stamp into the mask being painted, and (for heal) mirror the footprint into
+    // m_strokeMask. The footprint is always additive, so it records every spot the
+    // brush touched this stroke — even ones a previous stroke already healed, which
+    // is what makes the overlay tint them (a brushMask-minus-base delta would not).
+    const auto stamp = [&](float px, float py) {
+        stampBrush(m_brushMask, px, py, radius, hardness, m_brushAdd);
+        if (heal)
+            stampBrush(m_strokeMask, px, py, radius, hardness, /*add=*/true);
+    };
 
     if (m_brushHasLast) {
         // Stamp along the segment so fast drags don't leave gaps.
@@ -3870,28 +3889,28 @@ void MainWindow::brushAt(const QPointF &norm)
         const int steps = static_cast<int>(dist / step);
         for (int k = 1; k < steps; ++k) {
             const float t = k / float(steps);
-            stampBrush(m_brushMask, m_lastBrushPoint.x() + dx * t,
-                       m_lastBrushPoint.y() + dy * t, radius, hardness, m_brushAdd);
+            stamp(m_lastBrushPoint.x() + dx * t, m_lastBrushPoint.y() + dy * t);
         }
     }
-    stampBrush(m_brushMask, cx, cy, radius, hardness, m_brushAdd);
+    stamp(cx, cy);
     m_lastBrushPoint = QPointF(cx, cy);
     m_brushHasLast = true;
 
     // Live feedback. The selective brush shows the whole mask (you're building a
-    // selection). The heal brush shows only the CURRENT stroke as a red overlay
-    // (it inpaints on stroke end) — so already-healed spots aren't re-tinted.
-    if (m_brushTarget == BrushTarget::Heal) {
-        MaskBuffer strokeOnly;
-        strokeOnly.width = w;
-        strokeOnly.height = h;
-        strokeOnly.data.resize(m_brushMask.data.size());
-        for (size_t i = 0; i < strokeOnly.data.size(); ++i) {
-            const float base = i < m_strokeBaseMask.size() ? m_strokeBaseMask[i] : 0.0f;
-            strokeOnly.data[i] = std::clamp(m_brushMask.data[i] - base, 0.0f, 1.0f);
-        }
-        m_canvas->setSelectiveMask(strokeOnly);
+    // selection). The heal brush shows this stroke's footprint as a red overlay (it
+    // inpaints on stroke end) — including where it overlaps already-healed spots, so
+    // the brush always reads as "painting". Erasing un-marks, so it shows no tint.
+    if (heal) {
         m_healPainting = true;
+        if (m_brushAdd) {
+            m_canvas->setSelectiveMask(m_strokeMask);
+        } else {
+            MaskBuffer empty;
+            empty.width = w;
+            empty.height = h;
+            empty.data.assign(m_brushMask.data.size(), 0.0f);
+            m_canvas->setSelectiveMask(empty);
+        }
         updatePreview();
     } else {
         // Selective brush: the painted mask is the active layer's mask, so push

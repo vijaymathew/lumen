@@ -36,6 +36,22 @@ int main(int /*argc*/, char **argv)
     CHECK(!result.isNull());
     CHECK(result.width() == 16 && result.height() == 12);
 
+    // The export worker composites on an independent EditGraph rebuilt from a
+    // saveState() snapshot (so it never touches the live graph's node cache off
+    // the UI thread). That rebuilt graph must produce pixel-identical output — the
+    // whole point is the export matches what the user sees.
+    {
+        EditGraph clone;
+        clone.setSource(Image::black(16, 12));
+        clone.rebuildFromState(graph.saveState());
+        const QImage a = graph.result().toQImage();
+        const QImage b = clone.result().toQImage();
+        CHECK(a.size() == b.size());
+        for (int y = 0; y < a.height(); ++y)
+            for (int x = 0; x < a.width(); ++x)
+                CHECK(a.pixel(x, y) == b.pixel(x, y));
+    }
+
     const QString out = QDir::temp().filePath(QStringLiteral("lumen_export_test.png"));
     QFile::remove(out);
 

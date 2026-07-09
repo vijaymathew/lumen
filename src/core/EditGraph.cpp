@@ -147,6 +147,37 @@ void EditGraph::restoreState(const QJsonObject &state)
                      : VignetteParams{};
 }
 
+void EditGraph::rebuildFromState(const QJsonObject &state)
+{
+    const QJsonArray layers = state.value(QStringLiteral("layers")).toArray();
+    if (layers.isEmpty())
+        return; // malformed snapshot — leave the graph as-is
+
+    // Rebuild every layer structurally, Base included: the Base layer of a fresh
+    // EditGraph is empty (its node scaffold is normally added by the app), so we
+    // recreate each node from the factory by type rather than matching in place.
+    m_layers.clear();
+    for (const QJsonValue &v : layers) {
+        auto layer = std::make_unique<Layer>(QStringLiteral("Layer"));
+        layer->restoreStructure(v.toObject());
+        m_layers.push_back(std::move(layer));
+    }
+
+    m_activeLayer = state.value(QStringLiteral("active")).toInt(0);
+    if (m_activeLayer < 0 || m_activeLayer >= static_cast<int>(m_layers.size()))
+        m_activeLayer = 0;
+
+    for (auto &layer : m_layers)
+        layer->invalidateFrom(0); // recompute against the loaded source
+
+    m_crop = state.contains(QStringLiteral("crop"))
+                 ? CropState::fromJson(state.value(QStringLiteral("crop")).toObject())
+                 : CropState{};
+    m_vignette = state.contains(QStringLiteral("vignette"))
+                     ? VignetteParams::fromJson(state.value(QStringLiteral("vignette")).toObject())
+                     : VignetteParams{};
+}
+
 void EditGraph::loadProjectState(const QJsonObject &state)
 {
     const QJsonArray layers = state.value(QStringLiteral("layers")).toArray();

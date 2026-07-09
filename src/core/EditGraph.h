@@ -89,6 +89,12 @@ public:
 
     QJsonObject saveState() const;
     void restoreState(const QJsonObject &state);
+    // Rebuilds the entire layer stack from a saveState() snapshot, recreating
+    // every node (Base included) from the factory by type. Unlike restoreState /
+    // loadProjectState it needs no pre-existing Base scaffold, so it can populate a
+    // freshly constructed EditGraph — used to build a throwaway, independent graph
+    // on the export worker thread (call setSource() first).
+    void rebuildFromState(const QJsonObject &state);
     // Loads a project's layer stack (from project::Project::graph). Like
     // restoreState, but matches the Base layer's nodes by type rather than id,
     // since a project saved in another session has different node ids. Call
