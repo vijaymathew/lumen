@@ -2145,10 +2145,9 @@ void MainWindow::exportImage()
     if (QFileInfo(path).suffix().isEmpty())
         path += QStringLiteral(".") + m_exportExt;
 
-    // 3. Show the "Exporting…" badge now, then defer the graph snapshot and the
-    //    worker launch to the next event-loop tick. Returning first lets the Save
-    //    dialog actually close and the badge paint before we touch the graph —
-    //    otherwise, on large files, the dialog appears to hang over the window.
+    // 3. Show the "Exporting…" badge now, then defer the snapshot and the worker
+    //    launch to the next event-loop tick. Returning first lets the Save dialog
+    //    actually close and the badge paint before we do any work.
     //    m_exportPending guards the (single-tick) window before the worker starts.
     auto *badge = static_cast<BusyBadge *>(m_healBusy);
     badge->setLabel(QStringLiteral("Exporting…"));
@@ -2156,23 +2155,28 @@ void MainWindow::exportImage()
     layoutOverlays();
     m_exportPending = true;
 
-    const bool healActive =
-        m_heal && m_heal->isEnabled() && !m_heal->healMask().isEmpty();
-    QTimer::singleShot(0, this, [this, path, exportOpts, healActive]() {
-        // Walk the graph and write at full resolution OFF the UI thread: a
-        // full-res libvips encode is slow, and with an active heal mask result()
-        // runs the inpaint inline (HealNode::apply is eager) — either would
-        // freeze the app. For the non-heal case the pipeline is lazy, so snapshot
-        // it here on the UI thread (race-free) and only materialise on the
-        // worker; with heal active, build it on the worker instead. The finished
-        // handler reports success/failure.
-        const Image snapshot = healActive ? Image() : m_graph.result();
+    QTimer::singleShot(0, this, [this, path, exportOpts]() {
+        // Do EVERYTHING heavy on the worker thread — both the full-resolution
+        // composite and the encode. Every node's apply() is eager (it materialises
+        // pixels via vips_image_write_to_memory), so m_graph.result() at full res
+        // is a multi-second block; running it on the UI thread froze the whole app
+        // (the badge animation included). Instead snapshot the graph as JSON (cheap:
+        // node params plus PNG-encoded masks) and take a ref to the source, then
+        // rebuild an independent EditGraph on the worker and composite there. The
+        // worker never touches m_graph's mutable node cache, so the export stays
+        // race-free even if the user keeps editing. The finished handler reports
+        // success/failure.
+        const QJsonObject graphState = m_graph.saveState();
+        const Image source = m_graph.source();
         m_exportPending = false;
         m_exportWatcher.setFuture(QtConcurrent::run(
-            [this, path, exportOpts, healActive, snapshot]() -> ExportResult {
+            [path, exportOpts, graphState, source]() -> ExportResult {
                 ExportResult r;
                 r.path = path;
-                const Image result = healActive ? m_graph.result() : snapshot;
+                EditGraph graph;
+                graph.setSource(source);
+                graph.rebuildFromState(graphState); // independent copy of the stack
+                const Image result = graph.result();
                 if (result.isNull()) {
                     r.error = QStringLiteral("nothing to export");
                     return r;
