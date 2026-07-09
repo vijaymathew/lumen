@@ -51,9 +51,20 @@ jobs:
           modules: 'qtshadertools'
           cache: true
 
+      - name: Fetch ONNX Runtime (CPU)
+        # Microsoft's prebuilt CPU runtime — a single shared lib we bundle into
+        # the AppImage so AI demosaicing works without a system ORT install.
+        env:
+          ORT_VERSION: '1.20.1'
+        run: |
+          curl -fsSLO "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz"
+          tar xf "onnxruntime-linux-x64-${ORT_VERSION}.tgz"
+          echo "ONNXRUNTIME_ROOT=$PWD/onnxruntime-linux-x64-${ORT_VERSION}" >> "$GITHUB_ENV"
+
       - name: Build
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DLUMEN_AI_DEMOSAIC=ON -DONNXRUNTIME_ROOT="$ONNXRUNTIME_ROOT"
           cmake --build build --parallel
 
       - name: Install into AppDir
@@ -77,12 +88,31 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: '1'
           OUTPUT: Lumen-${{ steps.version.outputs.version }}-x86_64.AppImage
         run: |
+          # linuxdeploy follows the binary's NEEDED libs; libonnxruntime.so is in
+          # AppDir/usr/lib (installed above) and on LD_LIBRARY_PATH so it resolves.
+          export LD_LIBRARY_PATH="$ONNXRUNTIME_ROOT/lib:${LD_LIBRARY_PATH:-}"
           ./linuxdeploy-x86_64.AppImage \
             --appdir AppDir \
             --plugin qt \
             --icon-file lumen.png \
             --desktop-file AppDir/usr/share/applications/lumen.desktop \
             --output appimage
+
+      - name: Verify ONNX Runtime is bundled
+        # A flag-on build that shipped without libonnxruntime would crash the
+        # first time a user picked "AI" demosaic. Extract the AppImage (built-in,
+        # no FUSE needed) and fail the release loudly if the lib is missing.
+        run: |
+          out="Lumen-${{ steps.version.outputs.version }}-x86_64.AppImage"
+          ./"$out" --appimage-extract >/dev/null
+          if find squashfs-root -name 'libonnxruntime.so*' | grep -q .; then
+            echo "libonnxruntime bundled:"
+            find squashfs-root -name 'libonnxruntime.so*'
+          else
+            echo "::error::libonnxruntime.so not found in the AppImage — AI demosaicing would fail at runtime"
+            exit 1
+          fi
+          rm -rf squashfs-root
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -140,9 +170,20 @@ jobs:
           modules: 'qtshadertools'
           cache: true
 
+      - name: Fetch ONNX Runtime (CPU)
+        # universal2 build so the dylib matches whatever arch the .app is built
+        # for. macdeployqt bundles it into the .app (see -libpath below).
+        env:
+          ORT_VERSION: '1.20.1'
+        run: |
+          curl -fsSLO "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-universal2-${ORT_VERSION}.tgz"
+          tar xf "onnxruntime-osx-universal2-${ORT_VERSION}.tgz"
+          echo "ONNXRUNTIME_ROOT=$PWD/onnxruntime-osx-universal2-${ORT_VERSION}" >> "$GITHUB_ENV"
+
       - name: Build
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DLUMEN_AI_DEMOSAIC=ON -DONNXRUNTIME_ROOT="$ONNXRUNTIME_ROOT"
           cmake --build build --parallel
 
       - name: Install .app
@@ -151,8 +192,10 @@ jobs:
       - name: Bundle dependencies + build DMG
         # macdeployqt copies the Qt frameworks and the Homebrew imaging dylibs
         # into the bundle and rewrites their load paths, then packs the .dmg.
+        # -libpath lets it resolve and bundle libonnxruntime.dylib too.
         run: |
-          "$QT_ROOT_DIR/bin/macdeployqt" dist/lumen.app -dmg
+          "$QT_ROOT_DIR/bin/macdeployqt" dist/lumen.app -dmg \
+            "-libpath=$ONNXRUNTIME_ROOT/lib"
           mv dist/lumen.dmg "Lumen-${VERSION}.dmg"
 
       - name: Upload artifact

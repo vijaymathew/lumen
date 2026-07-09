@@ -1,11 +1,14 @@
 #include "core/RawLoader.h"
 
+#include "core/AiDemosaic.h"
+
 #include <QFileInfo>
 #include <QImage>
 #include <QTransform>
 
 #include <libraw/libraw.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -57,6 +60,46 @@ void fillColorProfile(LibRaw &raw, raw::LensMetadata *meta)
     p.valid = hasMatrix && p.asShotMul[1] > 0.0;
 }
 
+// Builds a demosaic-ready mosaic from an unpacked RAW for the AI path: one
+// black-subtracted, grey-balanced sample per pixel plus its CFA colour. Valid
+// only after raw.unpack(). `bayer` stays false for X-Trans/Foveon/no-CFA
+// sources, which the neural model does not handle. Uses LibRaw's own black-level
+// and active-area logic (raw2image + subtract_black) rather than reimplementing
+// per-camera cblack quirks.
+raw::MosaicInput extractMosaic(LibRaw &raw)
+{
+    raw::MosaicInput m;
+    const unsigned filters = raw.imgdata.idata.filters;
+    if (filters == 0 || filters == 9) // 0 = no Bayer CFA, 9 = X-Trans
+        return m;                      // bayer stays false → caller falls back
+    m.bayer = true;
+
+    raw.raw2image();   // populate imgdata.image (4ch, one CFA colour per pixel)
+    raw.subtract_black(); // apply per-channel black levels in place
+
+    const auto &S = raw.imgdata.sizes;
+    m.width = S.iwidth;
+    m.height = S.iheight;
+    const float white = static_cast<float>(raw.imgdata.color.maximum);
+    const float *wb = raw.imgdata.color.cam_mul; // as-shot multipliers, green≈1
+    const float scale = 1.0f / std::max(1.0f, white);
+    const float wbG = (wb[1] > 0.0f) ? wb[1] : 1.0f;
+
+    m.mono.resize(static_cast<size_t>(m.width) * m.height);
+    m.cfa.resize(m.mono.size());
+    const auto *img = raw.imgdata.image; // ushort (*)[4]
+    for (int y = 0; y < m.height; ++y) {
+        for (int x = 0; x < m.width; ++x) {
+            const size_t i = static_cast<size_t>(y) * m.width + x;
+            const int c = raw.COLOR(y, x);      // 0..3 CFA colour at this site
+            const float v = static_cast<float>(img[i][c]) * scale;
+            m.mono[i] = std::clamp(v * (wb[c] / wbG), 0.0f, 1.0f); // pre-WB to grey
+            m.cfa[i] = static_cast<uint8_t>(c == 3 ? 1 : c); // fold second green
+        }
+    }
+    return m;
+}
+
 // Configure LibRaw for a viewable 16-bit sRGB result, then demosaic and hand back
 // an Image. `opts` drives the automatic decode-time adjustments. Assumes the
 // file/buffer is already opened.
@@ -85,6 +128,30 @@ Image processToImage(LibRaw &raw, QString *error, raw::LensMetadata *meta,
                          .arg(QString::fromUtf8(LibRaw::strerror(e)));
         return Image();
     }
+
+    // AI demosaic takes over the pipeline from here: it bypasses dcraw_process
+    // and does its own colour transform. On any miss (build without the model,
+    // non-Bayer sensor, inference failure) it falls back to AHD below.
+    if (opts.demosaic == raw::RawDecodeOptions::AiDemosaic) {
+        // rgb_cam/cam_xyz are populated at identify time, so the profile is
+        // valid here even though dcraw_process (which normally fills it) is skipped.
+        fillColorProfile(raw, meta);
+        const raw::MosaicInput mosaic = extractMosaic(raw);
+        if (mosaic.bayer) {
+            std::vector<float> rgba = raw::runAiDemosaic(
+                mosaic, meta ? meta->color : raw::ColorProfile{}, error);
+            if (!rgba.empty()) {
+                if (error)
+                    error->clear();
+                const int w = (mosaic.width / 2) * 2, h = (mosaic.height / 2) * 2;
+                return Image::fromInterleavedFloat(rgba.data(), w, h, 4);
+            }
+        }
+        p.user_qual = 3; // fall back to AHD (non-Bayer, no model, or failure)
+    } else if (p.user_qual > 4) {
+        p.user_qual = 3; // guard any out-of-range value (e.g. AI in a stub build)
+    }
+
     if (const int e = raw.dcraw_process()) {
         if (error)
             *error = QStringLiteral("RAW process failed: %1")

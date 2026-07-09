@@ -20,11 +20,17 @@ namespace raw {
 struct RawDecodeOptions {
     enum Wb { Camera = 0, Auto = 1, None = 2 }; // as-shot / auto-grey-world / neutral
 
+    // `demosaic` values 0..4 map to LibRaw's user_qual; AiDemosaic is a Lumen
+    // extension that bypasses LibRaw's interpolation for a neural demosaicker
+    // (Bayer-only, export-oriented). It falls back to AHD when the AI path is
+    // unavailable (build without LUMEN_AI_DEMOSAIC, no model, or non-Bayer CFA).
+    static constexpr int AiDemosaic = 5;
+
     bool autoBright = true;           // LibRaw no_auto_bright = !autoBright
     float autoBrightThreshold = 0.01f; // auto_bright_thr (fraction clipped to white)
     int highlight = 0;                // LibRaw `highlight`: 0 clip, 2 blend, 3 reconstruct
     int wb = Camera;                  // white-balance source
-    int demosaic = 3;                 // user_qual: 0 linear,1 VNG,2 PPG,3 AHD,4 DCB
+    int demosaic = 3;                 // user_qual: 0 linear,1 VNG,2 PPG,3 AHD,4 DCB,5 AI
 
     friend bool operator==(const RawDecodeOptions &, const RawDecodeOptions &) = default;
 

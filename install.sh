@@ -7,6 +7,7 @@
 #   ./install.sh --no-deps       # skip dependency install (deps already present)
 #   ./install.sh --no-install    # configure + build only, don't install
 #   ./install.sh --qt-dir /path/to/Qt/6.7.2/gcc_64
+#   ./install.sh --onnxruntime-root /path/to/onnxruntime  # enable AI demosaicing
 #
 # It installs the imaging libraries + toolchain (apt or Homebrew), makes sure a
 # Qt 6.7+ is available (using it if the system has one, otherwise fetching it
@@ -23,6 +24,10 @@ INSTALL_DEPS=1
 DO_INSTALL=1
 QT_DIR="${QT_DIR:-}"
 QT_VERSION="6.7.2"
+# Optional: a prebuilt ONNX Runtime SDK (<root>/{include,lib}). When set, the
+# build enables AI demosaicing and bundles the ORT shared library alongside the
+# binary. Models themselves are downloaded from within the app on first use.
+ONNXRUNTIME_ROOT="${ONNXRUNTIME_ROOT:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -32,10 +37,12 @@ while [[ $# -gt 0 ]]; do
         --build-dir)   BUILD_DIR="$2"; shift 2 ;;
         --qt-dir)      QT_DIR="$2"; shift 2 ;;
         --qt-dir=*)    QT_DIR="${1#*=}"; shift ;;
+        --onnxruntime-root)   ONNXRUNTIME_ROOT="$2"; shift 2 ;;
+        --onnxruntime-root=*) ONNXRUNTIME_ROOT="${1#*=}"; shift ;;
         --no-deps)     INSTALL_DEPS=0; shift ;;
         --no-install)  DO_INSTALL=0; shift ;;
         -h|--help)
-            sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -195,10 +202,16 @@ fi
 # --- 3. Configure, build, install -----------------------------------------
 
 log "Configuring ($BUILD_TYPE) → $BUILD_DIR"
-cmake -S . -B "$BUILD_DIR" -G Ninja \
-    -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-    -DCMAKE_PREFIX_PATH="$QT_DIR" \
+CMAKE_ARGS=(
+    -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+    -DCMAKE_PREFIX_PATH="$QT_DIR"
     -DCMAKE_INSTALL_PREFIX="$PREFIX"
+)
+if [[ -n "$ONNXRUNTIME_ROOT" ]]; then
+    log "AI demosaicing enabled (ONNX Runtime at $ONNXRUNTIME_ROOT)"
+    CMAKE_ARGS+=(-DLUMEN_AI_DEMOSAIC=ON -DONNXRUNTIME_ROOT="$ONNXRUNTIME_ROOT")
+fi
+cmake -S . -B "$BUILD_DIR" -G Ninja "${CMAKE_ARGS[@]}"
 
 log "Building"
 cmake --build "$BUILD_DIR" --parallel

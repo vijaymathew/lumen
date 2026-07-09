@@ -64,6 +64,48 @@ else()
     message(STATUS "lcms2 not found — export limited to sRGB")
 endif()
 
+# AI (neural) demosaicing via ONNX Runtime. OFF by default: it's a heavy native
+# dependency and needs a model asset, so it's an opt-in build. When OFF the code
+# compiles to a stub and the RAW loader falls back to classic LibRaw demosaic.
+#
+# Two ways to supply ONNX Runtime:
+#   * a CMake package (vcpkg / distro) — found automatically; or
+#   * a prebuilt SDK (Microsoft's release .tgz, laid out as <root>/{include,lib})
+#     pointed to by -DONNXRUNTIME_ROOT=... (or the ONNXRUNTIME_ROOT env var). The
+#     release workflow uses this, since the .tgz ships no CMake config.
+# The resolved shared library is bundled into the AppImage/.app at install time
+# (see the install rules below) so a flag-on build runs without ORT installed.
+option(LUMEN_AI_DEMOSAIC "Enable AI (ONNX Runtime) demosaicing" OFF)
+set(LUMEN_ORT_LIBDIR "") # set when using a prebuilt SDK → drives the install rule
+if(LUMEN_AI_DEMOSAIC)
+    find_package(onnxruntime CONFIG QUIET)
+    if(onnxruntime_FOUND)
+        message(STATUS "ONNX Runtime: using CMake package — AI demosaicing enabled")
+    else()
+        set(_ort_root "${ONNXRUNTIME_ROOT}")
+        if(NOT _ort_root)
+            set(_ort_root "$ENV{ONNXRUNTIME_ROOT}")
+        endif()
+        if(NOT _ort_root)
+            message(FATAL_ERROR
+                "LUMEN_AI_DEMOSAIC=ON but ONNX Runtime was not found. Install a "
+                "CMake package (e.g. via vcpkg) or set ONNXRUNTIME_ROOT to a "
+                "prebuilt SDK directory containing include/ and lib/.")
+        endif()
+        find_path(ORT_INCLUDE_DIR onnxruntime_cxx_api.h
+            PATHS "${_ort_root}/include" "${_ort_root}/include/onnxruntime"
+            NO_DEFAULT_PATH REQUIRED)
+        find_library(ORT_LIBRARY NAMES onnxruntime
+            PATHS "${_ort_root}/lib" NO_DEFAULT_PATH REQUIRED)
+        add_library(onnxruntime::onnxruntime SHARED IMPORTED)
+        set_target_properties(onnxruntime::onnxruntime PROPERTIES
+            IMPORTED_LOCATION "${ORT_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${ORT_INCLUDE_DIR}")
+        set(LUMEN_ORT_LIBDIR "${_ort_root}/lib")
+        message(STATUS "ONNX Runtime: using prebuilt SDK at ${_ort_root} — AI demosaicing enabled")
+    endif()
+endif()
+
 if(MSVC)
     set(LUMEN_WARNINGS /W3)
 else()
@@ -122,6 +164,10 @@ add_library(lumen_core STATIC
     src/core/Autosave.cpp
     src/core/RawLoader.h
     src/core/RawLoader.cpp
+    src/core/AiDemosaic.h
+    src/core/AiDemosaic.cpp
+    src/core/AiModelStore.h
+    src/core/AiModelStore.cpp
     src/core/GuidedFilter.h
     src/core/GuidedFilter.cpp
     src/core/SelectiveMask.h
@@ -154,6 +200,10 @@ endif()
 if(LCMS2_FOUND)
     target_link_libraries(lumen_core PUBLIC PkgConfig::LCMS2)
     target_compile_definitions(lumen_core PUBLIC LUMEN_HAVE_LCMS)
+endif()
+if(LUMEN_AI_DEMOSAIC)
+    target_link_libraries(lumen_core PUBLIC onnxruntime::onnxruntime)
+    target_compile_definitions(lumen_core PUBLIC LUMEN_AI_DEMOSAIC)
 endif()
 target_compile_options(lumen_core PRIVATE ${LUMEN_WARNINGS})
 
@@ -277,6 +327,30 @@ include(GNUInstallDirs)
 install(TARGETS lumen
     BUNDLE  DESTINATION .
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# Bundle the ONNX Runtime shared library so a flag-on build runs on machines
+# without ORT installed. On Linux it goes next to the binary in lib/ (matching
+# the "$ORIGIN/../lib" RPATH set below); the AppImage tooling then pulls it into
+# the image. On macOS we leave it to macdeployqt (run with -libpath pointing at
+# the SDK's lib/), the same way the Homebrew imaging dylibs are bundled — so we
+# only add the @loader_path/../Frameworks RPATH it relies on.
+if(LUMEN_AI_DEMOSAIC AND NOT APPLE)
+    if(LUMEN_ORT_LIBDIR)
+        # Prebuilt SDK: install the versioned .so alongside its symlink so the
+        # SONAME the binary needs (e.g. libonnxruntime.so.1) is present, not just
+        # the dev symlink. Fixed "lib" destination to match the RPATH below.
+        install(DIRECTORY "${LUMEN_ORT_LIBDIR}/"
+            DESTINATION lib
+            FILES_MATCHING PATTERN "libonnxruntime.so*")
+    else()
+        # CMake-package ORT (e.g. vcpkg): let CMake install the imported artifact.
+        install(IMPORTED_RUNTIME_ARTIFACTS onnxruntime::onnxruntime
+            LIBRARY DESTINATION lib)
+    endif()
+endif()
+if(LUMEN_AI_DEMOSAIC AND APPLE)
+    set_property(TARGET lumen APPEND PROPERTY INSTALL_RPATH "@loader_path/../Frameworks")
+endif()
 
 # The app may link a Qt from a non-system prefix (e.g. one install.sh fetched
 # into .qt/). Add that Qt's lib dir to the installed binary's RPATH so it
@@ -447,6 +521,20 @@ if(BUILD_TESTING)
     target_link_libraries(rawoptions_test PRIVATE lumen_core)
     target_compile_options(rawoptions_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME rawoptions_test COMMAND rawoptions_test)
+
+    add_executable(aimodelstore_test tests/aimodelstore_test.cpp)
+    target_link_libraries(aimodelstore_test PRIVATE lumen_core)
+    target_compile_options(aimodelstore_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME aimodelstore_test COMMAND aimodelstore_test)
+
+    # Verifies the "AI" demosaic button's visible/enabled state on the offscreen
+    # platform.
+    qt_add_executable(raw_ai_button_smoke
+        tests/raw_ai_button_smoke.cpp
+        src/ui/RawSettingsPanel.h
+        src/ui/RawSettingsPanel.cpp)
+    target_link_libraries(raw_ai_button_smoke PRIVATE lumen_core Qt6::Widgets)
+    add_test(NAME raw_ai_button_smoke COMMAND raw_ai_button_smoke)
 
     add_executable(autosave_test tests/autosave_test.cpp)
     target_link_libraries(autosave_test PRIVATE lumen_core)

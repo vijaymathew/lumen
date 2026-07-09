@@ -183,6 +183,8 @@ fallback needs `python3` and `pip`, or you can point at an existing Qt with
 - **LibRaw** (`libraw`)
 - Optional: **Lensfun** (automatic lens correction) and **lcms2** (wide-gamut
   export colour management) — features degrade gracefully when absent.
+- Optional: **ONNX Runtime** for AI demosaicing — off by default and opt-in at
+  build time (see [AI demosaicing](#ai-demosaicing-optional) below).
 
 ### Manual build — Linux
 
@@ -216,6 +218,44 @@ cmake --build build --parallel
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) builds both Linux and
 macOS on every push.
+
+### AI demosaicing (optional)
+
+Lumen can demosaic RAW files with a neural network instead of the classic LibRaw
+algorithms. It is **off by default** — a heavier build that needs
+[ONNX Runtime](https://onnxruntime.ai/) — so stock builds omit it and fall back
+to AHD. Enable it by pointing the build at a prebuilt ONNX Runtime SDK (or a
+CMake package such as vcpkg's `onnxruntime`).
+
+Grab the CPU runtime and build into a **separate directory**, so your normal
+`build/` stays untouched (on macOS use `onnxruntime-osx-universal2-1.20.1`):
+
+```bash
+curl -fsSLO https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-linux-x64-1.20.1.tgz
+tar xf onnxruntime-linux-x64-1.20.1.tgz
+ORT="$PWD/onnxruntime-linux-x64-1.20.1"
+
+# one command (adds -DLUMEN_AI_DEMOSAIC=ON for you):
+./install.sh --onnxruntime-root "$ORT" --no-install
+
+# …or manually, into build-ai/ (leaves build/ as-is):
+cmake -S . -B build-ai -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      -DLUMEN_AI_DEMOSAIC=ON -DONNXRUNTIME_ROOT="$ORT"
+cmake --build build-ai --parallel
+```
+
+`build/` and `build-ai/` are independent — each stores `LUMEN_AI_DEMOSAIC` in its
+own cache, so after configuring once, `cmake --build <dir>` uses that dir's
+settings. The ONNX Runtime shared library is bundled next to the binary at
+install time, so the release AppImage/DMG carry it — a downloaded Lumen needs no
+separate ORT install.
+
+With AI compiled in, the RAW-defaults panel shows a **Choose AI model…** button:
+point it at a local `.onnx` file and the **AI** demosaic option becomes
+selectable (Bayer sensors only). The chosen path is remembered across sessions;
+`LUMEN_DEMOSAIC_MODEL=/path/to/model.onnx` overrides it. Lumen does not ship a
+model — supply your own, exported to its I/O contract (input `[1,4,H/2,W/2]`
+RGGB-packed, output `[1,3,H,W]` linear camera RGB).
 
 ### Tests
 

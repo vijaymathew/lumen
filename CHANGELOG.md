@@ -5,6 +5,18 @@ All notable changes to Lumen are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **AI demosaicing (optional).** RAW files can be demosaiced with a neural
+  network as an alternative to the classic LibRaw algorithms (Bayer sensors
+  only). It is an opt-in build (`-DLUMEN_AI_DEMOSAIC=ON`, needs ONNX Runtime);
+  the release AppImage/DMG bundle the runtime, so no separate install is
+  required. **Lumen does not ship a model** — choose a local `.onnx` file via
+  *RAW Defaults → Choose AI model…* (or set `LUMEN_DEMOSAIC_MODEL`). The **AI**
+  demosaic option stays disabled until a model is selected, and the panel shows
+  a hint pointing you to the picker.
+
 ## [0.0.1] — 2026-07-04
 
 First public release of Lumen — a fast, non-destructive RAW and photo editor for

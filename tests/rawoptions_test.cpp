@@ -48,6 +48,16 @@ int main()
         CHECK(!(back == RawDecodeOptions{})); // genuinely different from defaults
     }
 
+    // 4. The AI demosaic option (Lumen extension beyond LibRaw's user_qual)
+    //    round-trips like any other demosaic value.
+    {
+        CHECK(RawDecodeOptions::AiDemosaic == 5);
+        RawDecodeOptions o;
+        o.demosaic = RawDecodeOptions::AiDemosaic;
+        RawDecodeOptions back = RawDecodeOptions::fromJson(o.toJson());
+        CHECK(back.demosaic == RawDecodeOptions::AiDemosaic);
+    }
+
     std::printf("rawoptions_test OK\n");
     return 0;
 }

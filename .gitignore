@@ -66,6 +66,10 @@ vcpkg_installed/
 /Qt/
 /.qt/
 
+# Locally fetched ONNX Runtime SDK (AI demosaicing) — a build dependency, not source
+/.ort/
+onnxruntime-*/
+
 # debug information files
 *.dwo
 
