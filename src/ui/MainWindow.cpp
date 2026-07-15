@@ -65,6 +65,7 @@
 #include <cmath>
 #include <QLabel>
 #include <QMessageBox>
+#include <QTabBar>
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QSettings>
@@ -392,48 +393,42 @@ private:
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
-    , m_activeDoc(std::make_unique<Document>())
 {
+    // Start with a single empty document (tab 0). Never zero documents.
+    m_docs.push_back(std::make_unique<Document>());
+    m_activeTab = 0;
+
     updateTitle();
 
     // Seed the automatic-RAW configuration from the global preference; the first
     // RAW opened uses these (and each .lumen carries its own per-project copy).
     loadRawDefaults(doc().rawOptions, m_rawLensDefaults);
 
-    // The graph owns the nodes; we keep raw pointers to drive them. The "baked"
-    // group runs first in libvips and is rendered into the preview base texture:
-    // lens (warps geometry) -> heal (edits pixels) -> denoise -> defringe ->
-    // sharpen -> structure (neighbourhood ops; denoise before sharpen so noise
-    // isn't amplified, structure after sharpen so local contrast builds on the
-    // detail). Then the pointwise/LUT ops the shader replicates: tune ->
-    // colormixer -> curves -> colorgrade -> lut -> mono. Selective adjustments are
-    // masked layers above the Base.
-    doc().lens =
-        static_cast<LensCorrectionNode *>(doc().graph.addNode(std::make_unique<LensCorrectionNode>()));
-    doc().heal = static_cast<HealNode *>(doc().graph.addNode(std::make_unique<HealNode>()));
-    doc().denoise = static_cast<DenoiseNode *>(doc().graph.addNode(std::make_unique<DenoiseNode>()));
-    doc().defringe = static_cast<DefringeNode *>(doc().graph.addNode(std::make_unique<DefringeNode>()));
-    doc().sharpen = static_cast<SharpenNode *>(doc().graph.addNode(std::make_unique<SharpenNode>()));
-    doc().structure =
-        static_cast<StructureNode *>(doc().graph.addNode(std::make_unique<StructureNode>()));
-    doc().tune = static_cast<TuneNode *>(doc().graph.addNode(std::make_unique<TuneNode>()));
-    doc().colorMixer =
-        static_cast<ColorMixerNode *>(doc().graph.addNode(std::make_unique<ColorMixerNode>()));
-    doc().curves = static_cast<CurvesNode *>(doc().graph.addNode(std::make_unique<CurvesNode>()));
-    doc().colorGrade =
-        static_cast<ColorGradeNode *>(doc().graph.addNode(std::make_unique<ColorGradeNode>()));
-    doc().lut = static_cast<LutNode *>(doc().graph.addNode(std::make_unique<LutNode>()));
-    doc().mono = static_cast<MonoNode *>(doc().graph.addNode(std::make_unique<MonoNode>()));
-    // Film grain is the final finishing step (after mono), applied over the
-    // whole image. A pointwise-in-shader op, so it bakes nothing.
-    doc().grain = static_cast<GrainNode *>(doc().graph.addNode(std::make_unique<GrainNode>()));
-
-    // Remember the pristine graph (neutral Base nodes, no selective layers) so
-    // openPath() can reset to it for each newly opened image.
-    doc().defaultGraphState = doc().graph.saveState();
+    // Build the initial document's Base graph (each tab/document has its own).
+    doc().buildBaseGraph();
 
     m_canvas = new CanvasWidget(this);
     setCentralWidget(m_canvas);
+
+    // Tab strip for multiple open documents. A MainWindow child overlaid on the
+    // top edge of the canvas (like the other overlays), shown only when more than
+    // one document is open so a single image stays fully immersive. Positioned in
+    // layoutOverlays().
+    m_tabBar = new QTabBar(this);
+    m_tabBar->setDrawBase(false);
+    m_tabBar->setExpanding(false);
+    m_tabBar->setTabsClosable(true);
+    m_tabBar->setElideMode(Qt::ElideRight);
+    m_tabBar->setUsesScrollButtons(true);
+    m_tabBar->setFocusPolicy(Qt::NoFocus);
+    m_tabBar->setAutoFillBackground(true);
+    m_tabBar->addTab(documentLabel(doc())); // tab for the initial document
+    m_tabBar->hide();
+    connect(m_tabBar, &QTabBar::currentChanged, this, [this](int index) {
+        if (!m_inTabOp && index >= 0 && index != m_activeTab)
+            switchToTab(index);
+    });
+    connect(m_tabBar, &QTabBar::tabCloseRequested, this, &MainWindow::closeTab);
 
     // Brush cursor ring overlay (a MainWindow child over the canvas, like the
     // scrim, so it composites reliably above the RHI content).
@@ -896,9 +891,10 @@ MainWindow::MainWindow(QWidget *parent)
         static_cast<BusyBadge *>(m_healBusy)->stop();
         if (!m_openImageWatcher.future().isValid())
             return;
-        if (!docById(m_openJobDoc))
-            return; // the tab this open was for was closed mid-decode; drop it
-        finishOpenImage(m_openImageWatcher.result());
+        if (docById(m_openJobDoc))
+            finishOpenImage(m_openImageWatcher.result());
+        // else: the tab this open was for was closed mid-decode; drop it.
+        dequeueNextOpen(); // open the next queued file (if any) as its own tab
     });
 
     // Background project open finished: install the decoded document.
@@ -906,20 +902,19 @@ MainWindow::MainWindow(QWidget *parent)
         static_cast<BusyBadge *>(m_healBusy)->stop();
         if (!m_openProjectWatcher.future().isValid())
             return;
-        if (!docById(m_openJobDoc))
-            return; // the tab this open was for was closed mid-decode; drop it
-        const OpenProjectResult r = m_openProjectWatcher.result();
-        if (!r.loaded) {
-            QMessageBox::warning(this, QStringLiteral("Lumen"), r.error);
-            return;
+        // Skip if the requesting tab was closed mid-decode; otherwise install it.
+        if (docById(m_openJobDoc)) {
+            const OpenProjectResult r = m_openProjectWatcher.result();
+            if (!r.loaded)
+                QMessageBox::warning(this, QStringLiteral("Lumen"), r.error);
+            else if (r.source.isNull())
+                QMessageBox::warning(
+                    this, QStringLiteral("Lumen"),
+                    QStringLiteral("Could not decode the embedded image: %1").arg(r.error));
+            else
+                applyProjectResult(r);
         }
-        if (r.source.isNull()) {
-            QMessageBox::warning(
-                this, QStringLiteral("Lumen"),
-                QStringLiteral("Could not decode the embedded image: %1").arg(r.error));
-            return;
-        }
-        applyProjectResult(r);
+        dequeueNextOpen(); // open the next queued file (if any) as its own tab
     });
 
     // Background RAW re-decode finished: install the new source and rebuild the
@@ -1284,9 +1279,13 @@ MainWindow::~MainWindow()
     // Make sure no background pipeline task (heal/denoise/defringe/sharpen bake
     // or the histogram compute) is still touching libvips when this window's
     // cached images are freed — and before main() calls vips_shutdown().
-    ++doc().healGen; // signal in-flight tasks to bail at their next checkpoint
-    ++doc().histGen;
-    ++doc().decodeGen;
+    // Signal in-flight tasks to bail at their next checkpoint. Bump every
+    // document's counters — the single shared watchers may hold a job for any tab.
+    for (const auto &d : m_docs) {
+        ++d->healGen;
+        ++d->histGen;
+        ++d->decodeGen;
+    }
     if (m_healWatcher.isRunning())
         m_healWatcher.waitForFinished();
     if (m_histWatcher.isRunning())
@@ -1311,17 +1310,27 @@ bool MainWindow::openBusy() const
         || m_decodeWatcher.isRunning();
 }
 
+void MainWindow::dequeueNextOpen()
+{
+    if (m_openQueue.isEmpty() || openBusy())
+        return;
+    const QString path = m_openQueue.takeFirst();
+    openPath(path); // routes .lumen to the project loader; each lands in its own tab
+}
+
 Document *MainWindow::docById(quint64 id) const
 {
-    // One document today; Stage 4 scans the open-tabs vector. Never matches 0.
-    if (id != 0 && m_activeDoc && m_activeDoc->id == id)
-        return m_activeDoc.get();
+    if (id == 0)
+        return nullptr;
+    for (const auto &d : m_docs)
+        if (d->id == id)
+            return d.get();
     return nullptr;
 }
 
 bool MainWindow::docIsActive(quint64 id) const
 {
-    return id != 0 && m_activeDoc && m_activeDoc->id == id;
+    return id != 0 && doc().id == id;
 }
 
 void MainWindow::buildCommands()
@@ -1373,6 +1382,9 @@ void MainWindow::buildCommands()
         {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)"), view},
         {QStringLiteral("clipping"), QStringLiteral("Clipping warnings (toggle)"), view},
         {QStringLiteral("adjustments"), QStringLiteral("Adjustments (history)"), view},
+        {QStringLiteral("next-tab"), QStringLiteral("Next tab  ·  Ctrl+Tab"), view},
+        {QStringLiteral("prev-tab"), QStringLiteral("Previous tab  ·  Ctrl+Shift+Tab"), view},
+        {QStringLiteral("close-tab"), QStringLiteral("Close tab  ·  Ctrl+W"), view},
         {QStringLiteral("reset-view"), QStringLiteral("Reset view"), view},
         {QStringLiteral("fullscreen"), QStringLiteral("Toggle fullscreen"), view},
         {QStringLiteral("quit"), QStringLiteral("Quit Lumen"), app},
@@ -1451,6 +1463,14 @@ void MainWindow::runCommand(const QString &id)
         doUndo();
     } else if (id == QLatin1String("redo")) {
         doRedo();
+    } else if (id == QLatin1String("next-tab")) {
+        if (tabCount() > 1)
+            switchToTab((m_activeTab + 1) % tabCount());
+    } else if (id == QLatin1String("prev-tab")) {
+        if (tabCount() > 1)
+            switchToTab((m_activeTab - 1 + tabCount()) % tabCount());
+    } else if (id == QLatin1String("close-tab")) {
+        closeTab(m_activeTab);
     } else if (id == QLatin1String("reset-view")) {
         m_canvas->resetView();
     } else if (id == QLatin1String("fullscreen")) {
@@ -1487,15 +1507,16 @@ MainWindow::OpenImageResult MainWindow::decodeImageFile(const QString &path,
 
 bool MainWindow::openPath(const QString &path)
 {
-    if (!maybeSaveBeforeDiscard()) // guard unsaved work on the current document
-        return false;
+    // Opening no longer discards the current document — it opens in a new tab (or
+    // reuses the empty placeholder), so there's nothing to guard here. The
+    // unsaved-work prompt lives on tab close / quit.
     if (path.endsWith(QStringLiteral(".lumen"), Qt::CaseInsensitive)) {
         loadProjectFile(path); // a project, not a raw image (async)
         return true;
     }
     if (openBusy()) {
-        showHint(QStringLiteral("Already opening a file"));
-        return false;
+        m_openQueue.append(path); // open this next, as its own tab
+        return true;
     }
 
     // Decode off the UI thread so the app stays responsive and the "Opening…"
@@ -1509,6 +1530,172 @@ bool MainWindow::openPath(const QString &path)
     m_openImageWatcher.setFuture(
         QtConcurrent::run([path, opts] { return decodeImageFile(path, opts); }));
     return true;
+}
+
+QString MainWindow::documentLabel(const Document &d) const
+{
+    if (!d.projectPath.isEmpty())
+        return QFileInfo(d.projectPath).fileName();
+    if (!d.sourceName.isEmpty())
+        return d.sourceName;
+    return QStringLiteral("Untitled");
+}
+
+bool MainWindow::documentIsEmpty(const Document &d) const
+{
+    return d.graph.source().isNull();
+}
+
+void MainWindow::snapshotActiveView()
+{
+    if (documentIsEmpty(doc()))
+        return;
+    const CanvasWidget::ViewState v = m_canvas->viewState();
+    doc().viewZoom = v.zoom;
+    doc().viewPan = v.pan;
+    doc().viewValid = true;
+}
+
+int MainWindow::addDocumentTab()
+{
+    auto d = std::make_unique<Document>();
+    d->buildBaseGraph();
+    m_docs.push_back(std::move(d));
+    const int index = static_cast<int>(m_docs.size()) - 1;
+    QSignalBlocker block(m_tabBar);
+    m_tabBar->addTab(documentLabel(*m_docs[index]));
+    return index;
+}
+
+void MainWindow::beginOpenIntoTab()
+{
+    if (documentIsEmpty(doc()))
+        return; // reuse the empty placeholder document (and its tab)
+    snapshotActiveView();
+    const int index = addDocumentTab();
+    m_activeTab = index;
+    QSignalBlocker block(m_tabBar);
+    m_tabBar->setCurrentIndex(index);
+}
+
+void MainWindow::reflectActiveDocument()
+{
+    // Tab-switch reflect: rebuild every shell surface from the active document
+    // WITHOUT resetting its undo history or autosave baseline (bindDocument does
+    // that for a fresh open).
+    m_brushTarget = BrushTarget::None;
+    m_brushUndo.clear();
+    m_brushMask = MaskBuffer();
+
+    refreshWorkingSource();
+    refreshBaseImage(false); // fits to window; the saved view is restored below
+    recomputeSelectiveMask();
+    updateCropView();        // a switched-to document may carry a crop/orientation
+    updatePreview();
+    if (m_layersPanel->isVisible())
+        refreshLayersPanel();
+    reseedOpenPanels();
+    syncViewToggles();
+    updateTitle(documentIsEmpty(doc()) ? QString() : documentLabel(doc()));
+
+    // Restore this tab's zoom/pan (refreshBaseImage fit it to window).
+    if (doc().viewValid)
+        m_canvas->setViewState({doc().viewZoom, doc().viewPan});
+}
+
+void MainWindow::switchToTab(int index)
+{
+    if (index < 0 || index >= tabCount() || index == m_activeTab) {
+        QSignalBlocker block(m_tabBar); // keep the bar in sync even on a no-op
+        m_tabBar->setCurrentIndex(m_activeTab);
+        return;
+    }
+    snapshotActiveView();
+    closeActiveTool(); // a tool/gizmo is tied to the outgoing document
+
+    m_activeTab = index;
+    {
+        QSignalBlocker block(m_tabBar);
+        m_tabBar->setCurrentIndex(index);
+    }
+    reflectActiveDocument();
+}
+
+void MainWindow::closeTab(int index)
+{
+    if (index < 0 || index >= tabCount())
+        return;
+    // TODO(Stage 5): prompt to save unsaved work before discarding this document.
+    Document *d = m_docs[index].get();
+    const quint64 id = d->id;
+
+    // A document must not be destroyed while it still has in-flight async work.
+    // Signal its workers to bail, then drain any shared watcher whose current job
+    // targets it (its finish handler will then drop the result — the doc is gone).
+    ++d->healGen;
+    ++d->histGen;
+    ++d->decodeGen;
+    const auto drainIfTargets = [&](auto &watcher, quint64 jobDoc) {
+        if (jobDoc == id && watcher.isRunning())
+            watcher.waitForFinished();
+    };
+    drainIfTargets(m_healWatcher, m_healJobDoc);
+    drainIfTargets(m_histWatcher, m_histJobDoc);
+    drainIfTargets(m_decodeWatcher, m_decodeJobDoc);
+    drainIfTargets(m_exportWatcher, m_exportJobDoc);
+    drainIfTargets(m_saveWatcher, m_saveJobDoc);
+    drainIfTargets(m_openImageWatcher, m_openJobDoc);
+    drainIfTargets(m_openProjectWatcher, m_openJobDoc);
+    drainIfTargets(m_autosaveWatcher, m_autosaveJobDoc);
+
+    const bool wasActive = (index == m_activeTab);
+    if (wasActive)
+        closeActiveTool();
+
+    m_docs.erase(m_docs.begin() + index);
+    {
+        QSignalBlocker block(m_tabBar);
+        m_tabBar->removeTab(index);
+    }
+
+    // Never leave zero documents: recreate a fresh empty placeholder.
+    if (m_docs.empty()) {
+        auto nd = std::make_unique<Document>();
+        nd->buildBaseGraph();
+        m_docs.push_back(std::move(nd));
+        m_activeTab = 0;
+        QSignalBlocker block(m_tabBar);
+        m_tabBar->addTab(documentLabel(doc()));
+        m_tabBar->setCurrentIndex(0);
+        block.unblock();
+        reflectActiveDocument();
+        syncTabBar();
+        return;
+    }
+
+    if (m_activeTab > index)
+        --m_activeTab;
+    else if (m_activeTab == index)
+        m_activeTab = std::min(index, tabCount() - 1);
+    {
+        QSignalBlocker block(m_tabBar);
+        m_tabBar->setCurrentIndex(m_activeTab);
+    }
+    if (wasActive)
+        reflectActiveDocument();
+    syncTabBar();
+}
+
+void MainWindow::syncTabBar()
+{
+    {
+        QSignalBlocker block(m_tabBar);
+        for (int i = 0; i < tabCount(); ++i)
+            m_tabBar->setTabText(i, documentLabel(*m_docs[i]));
+        m_tabBar->setCurrentIndex(m_activeTab);
+    }
+    m_tabBar->setVisible(tabCount() > 1);
+    layoutOverlays();
 }
 
 void MainWindow::bindDocument(const BindOptions &opts)
@@ -1526,6 +1713,7 @@ void MainWindow::bindDocument(const BindOptions &opts)
         updateCropView();    // push a restored crop/orientation to the canvas
     updatePreview();         // apply any existing edits
     doc().graph.resetHistory(); // fresh undo timeline for this document
+    doc().viewValid = false;    // a freshly opened image starts fit-to-window
 
     // Fresh document session: baseline the just-loaded state (so an unedited open
     // won't autosave) and arm the autosave timer.
@@ -1535,6 +1723,7 @@ void MainWindow::bindDocument(const BindOptions &opts)
         refreshLayersPanel();   // the load may have changed the selective layers
     reseedOpenPanels();         // re-sync open tools with the document's values
     updateTitle(opts.title);
+    syncTabBar();               // reflect the new label + show the bar if >1 tab
     if (!opts.hint.isEmpty())
         showHint(opts.hint);
 }
@@ -1549,6 +1738,7 @@ void MainWindow::finishOpenImage(const OpenImageResult &r)
         return;
     }
 
+    beginOpenIntoTab(); // reuse the empty placeholder or open a new tab
     doc().initFromImage(r.source, r.bytes, r.path, r.isRaw, r.meta, m_rawLensDefaults);
     BindOptions opts;
     opts.title = QFileInfo(r.path).fileName();
@@ -1863,10 +2053,8 @@ void MainWindow::openProject()
         QStringLiteral("Lumen project (*.lumen)"));
     if (path.isEmpty())
         return;
-    if (!maybeSaveBeforeDiscard()) // don't lose unsaved work on the current doc
-        return;
     rememberDir(QStringLiteral("openProject"), path);
-    loadProjectFile(path);
+    loadProjectFile(path); // opens in a new tab (or reuses the empty placeholder)
 }
 
 MainWindow::OpenProjectResult MainWindow::decodeProjectFile(const QString &path)
@@ -1898,6 +2086,7 @@ bool MainWindow::applyProjectResult(const OpenProjectResult &r)
     if (!r.loaded || r.source.isNull())
         return false;
 
+    beginOpenIntoTab(); // reuse the empty placeholder or open a new tab
     doc().initFromProject(r.source, r.sourceBytes, r.sourceName, r.path, r.graph,
                           r.rawOptions, r.isRaw, r.meta.color);
     BindOptions opts;
@@ -4198,8 +4387,17 @@ void MainWindow::layoutOverlays()
     m_scrim->setGeometry(rect());
     m_brushRing->setGeometry(rect());
 
-    // Busy badge: top-centre of the canvas.
-    m_healBusy->move((width() - m_healBusy->width()) / 2, 16);
+    // Tab strip along the top edge (only shown when >1 document is open).
+    int topInset = 0;
+    if (m_tabBar && m_tabBar->isVisible()) {
+        const int h = m_tabBar->sizeHint().height();
+        m_tabBar->setGeometry(0, 0, width(), h);
+        m_tabBar->raise();
+        topInset = h;
+    }
+
+    // Busy badge: top-centre of the canvas, clear of the tab strip.
+    m_healBusy->move((width() - m_healBusy->width()) / 2, 16 + topInset);
     if (m_healBusy->isVisible())
         m_healBusy->raise();
 
@@ -4339,6 +4537,25 @@ void MainWindow::openCommandPalette()
 
 void MainWindow::keyPressEvent(QKeyEvent *e)
 {
+    // Tab navigation: Ctrl+Tab / Ctrl+Shift+Tab cycle documents; Ctrl+W closes
+    // the active one. (Qt emits Key_Backtab for Shift+Tab.)
+    if (e->modifiers() & Qt::ControlModifier) {
+        if (e->key() == Qt::Key_Tab) {
+            if (tabCount() > 1)
+                switchToTab((m_activeTab + 1) % tabCount());
+            return;
+        }
+        if (e->key() == Qt::Key_Backtab) {
+            if (tabCount() > 1)
+                switchToTab((m_activeTab - 1 + tabCount()) % tabCount());
+            return;
+        }
+        if (e->key() == Qt::Key_W) {
+            closeTab(m_activeTab);
+            return;
+        }
+    }
+
     // Hold s / h and use the wheel to change brush size / hardness — works
     // whenever a brush is active (the mask brush runs in Browse mode).
     if (m_brushTarget != BrushTarget::None && !e->isAutoRepeat()

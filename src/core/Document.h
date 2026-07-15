@@ -7,6 +7,7 @@
 #include <QImage>
 #include <QJsonObject>
 #include <QPixmap>
+#include <QPointF>
 #include <QString>
 
 #include "core/EditGraph.h"
@@ -66,6 +67,15 @@ public:
     // graph, decoded pixels). Move-only would come later if tabs need it.
     Document(const Document &) = delete;
     Document &operator=(const Document &) = delete;
+
+    // Builds the Base layer's fixed node chain (lens -> heal -> denoise ->
+    // defringe -> sharpen -> structure -> tune -> colorMixer -> curves ->
+    // colorGrade -> lut -> mono -> grain), caches the raw node pointers, and
+    // snapshots the pristine graph into defaultGraphState. Call once, right after
+    // construction, before installing any source. Every document (each tab) needs
+    // its own built graph; restoreState/loadProjectState then restore the Base
+    // nodes in place, keeping these pointers valid.
+    void buildBaseGraph();
 
     // --- Population (pure state; no shell/UI) -----------------------------
     // Populate this document for a freshly opened image: reset the graph to its
@@ -142,6 +152,15 @@ public:
     int maskView = 0;            // selective mask overlay
     bool showClipping = false;   // on-canvas clipping warnings ("blinkies")
     bool overlaysHidden = false; // user hid the on-canvas gizmo geometry
+
+    // Canvas zoom/pan for this tab, snapshotted on switch-away and restored on
+    // switch-back (mirrors CanvasWidget::ViewState; kept as primitives so core
+    // doesn't depend on the GPU layer). viewValid stays false until the tab has
+    // been shown once, so a never-shown tab fits-to-window instead of restoring
+    // a meaningless default.
+    float viewZoom = 1.0f;
+    QPointF viewPan{0.0, 0.0};
+    bool viewValid = false;
 
     // --- RAW decode options ----------------------------------------------
     // Decode-time (baked, stored per-project in the .lumen). Seeded from the

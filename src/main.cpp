@@ -30,7 +30,8 @@ int main(int argc, char *argv[])
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addPositionalArgument(QStringLiteral("image"),
-                                 QStringLiteral("Image file to open on launch"));
+                                 QStringLiteral("Image file(s) to open on launch"),
+                                 QStringLiteral("[image...]"));
     parser.process(app);
 
     // Scope the window so it (and the libvips-backed images its edit graph
@@ -41,14 +42,18 @@ int main(int argc, char *argv[])
         MainWindow window;
         window.show();
 
-        // An image named on the command line is an explicit choice and wins over
+        // Images named on the command line are an explicit choice and win over
         // crash recovery; otherwise offer to restore work from a session that
-        // didn't shut down cleanly.
+        // didn't shut down cleanly. Each path opens as its own tab (the first
+        // reuses the empty launch document); opens past the first are queued and
+        // drained as each decode completes.
         const QStringList args = parser.positionalArguments();
-        if (!args.isEmpty())
-            window.openPath(args.first());
-        else
+        if (!args.isEmpty()) {
+            for (const QString &path : args)
+                window.openPath(path);
+        } else {
             window.offerCrashRecovery();
+        }
 
         rc = app.exec();
     }

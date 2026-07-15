@@ -8,6 +8,7 @@
 #include <QMainWindow>
 #include <QPixmap>
 #include <QPointF>
+#include <QStringList>
 
 #include <atomic>
 
@@ -64,6 +65,7 @@ class StructurePanel;
 class TonePanel;
 class QLabel;
 class QPushButton;
+class QTabBar;
 class QTimer;
 
 // MainWindow is the immersive shell: a fullscreen canvas with a "/"-triggered
@@ -195,10 +197,38 @@ private:
     };
     void bindDocument(const BindOptions &opts);
 
+    // --- Tabs (multiple open documents) -----------------------------------
+    // Rebuilds every shell surface from the active document WITHOUT resetting its
+    // undo history or autosave baseline — the tab-switch counterpart to
+    // bindDocument (which is the fresh-open path). Restores the tab's saved view.
+    void reflectActiveDocument();
+    // Human-readable label for a document: its file name, or "Untitled" when no
+    // image is loaded yet. Used for the window title and tab text.
+    QString documentLabel(const Document &d) const;
+    bool documentIsEmpty(const Document &d) const; // no source loaded
+    int addDocumentTab();          // append an empty document + tab; returns its index
+    void snapshotActiveView();     // save the active tab's zoom/pan into its Document
+    // Chooses where an open lands: reuses the active document when it's still an
+    // empty placeholder, otherwise opens a new tab and makes it active. After this
+    // returns, doc() is the document to populate.
+    void beginOpenIntoTab();
+    void switchToTab(int index);   // make tab `index` active (snapshot/restore view)
+    void closeTab(int index);      // drain + remove; never leaves zero documents
+    void syncTabBar();             // refresh labels, current index, and visibility
+    int tabCount() const { return static_cast<int>(m_docs.size()); }
+    // Paths waiting to open while a decode is already in flight (opening several
+    // files at once — CLI args, later drag-drop — each becomes its own tab). The
+    // open-finish handlers drain this one at a time.
+    QStringList m_openQueue;
+    void dequeueNextOpen();
+    // True while a programmatic tab-bar change is in progress, so the bar's
+    // currentChanged/close signals don't re-enter the switch/close logic.
+    bool m_inTabOp = false;
+
     // The document currently bound into the shell. Today there is exactly one;
     // when tabs land, this returns the front tab's document. All per-image state
     // migrates behind this accessor (see the tabs plan / Document.h).
-    Document *activeDoc() const { return m_activeDoc.get(); }
+    Document *activeDoc() const { return m_docs[m_activeTab].get(); }
 
     // The active layer's tone/curves/look/mono nodes (tools edit the active layer).
     TuneNode *activeTune() const;
@@ -356,6 +386,7 @@ private:
 
     InputController m_input;
     CanvasWidget *m_canvas = nullptr;
+    QTabBar *m_tabBar = nullptr;     // top overlay; shown only when >1 document is open
     QWidget *m_scrim = nullptr;     // dims the image behind the command palette
     QWidget *m_brushRing = nullptr; // on-canvas brush size/hardness cursor
     QWidget *m_healBusy = nullptr;  // animated badge during async base re-bake (heal/denoise/sharpen)
@@ -404,13 +435,14 @@ private:
     // Per-panel "✕" close buttons, repositioned to the top-right on panel resize.
     QHash<QWidget *, QPushButton *> m_panelClose;
 
-    // The single open document. Owns the per-image state that has migrated off
-    // MainWindow so far (the edit graph + Base-layer node pointers); more moves
-    // in over the following stages. Once tabs land, MainWindow holds a vector of
-    // these and binds one at a time. doc() is the access point for that state.
-    std::unique_ptr<Document> m_activeDoc;
-    Document &doc() { return *m_activeDoc; }
-    const Document &doc() const { return *m_activeDoc; }
+    // Open documents, one per tab, in tab order. Never empty: there is always at
+    // least one document (an empty placeholder at launch / after the last tab is
+    // closed). m_activeTab indexes the document currently bound into the shell;
+    // doc() is the access point for that document's per-image state.
+    std::vector<std::unique_ptr<Document>> m_docs;
+    int m_activeTab = 0;
+    Document &doc() { return *m_docs[m_activeTab]; }
+    const Document &doc() const { return *m_docs[m_activeTab]; }
 
     // Shared across all open documents (a look copied from one image can be
     // pasted onto another), so it stays on the shell rather than the Document.
