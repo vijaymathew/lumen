@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 #include <QByteArray>
 #include <QHash>
 #include <QImage>
@@ -41,6 +43,24 @@ class Document {
 public:
     Document();
     ~Document();
+
+    // Stable identity for the document's whole lifetime, unique across all
+    // documents in the session. Async jobs are tagged with this so a result can
+    // be routed back to the document that started it even after the user has
+    // switched tabs, and dropped if that document has since been closed. Never 0
+    // (0 means "no document").
+    const quint64 id;
+
+    // Per-document "latest wins" generation counters for the async preview
+    // pipelines. A new request bumps the counter; in-flight workers read it and
+    // bail when superseded. Per-document (not global) so a bake on one tab never
+    // cancels a bake on another. Atomic: bumped on the UI thread, read on the
+    // worker. INVARIANT: a Document must not be destroyed while it still has
+    // in-flight work — its watchers are drained first (see MainWindow teardown /
+    // tab close), so a worker's read of these is always valid.
+    std::atomic<quint64> healGen{0};
+    std::atomic<quint64> histGen{0};
+    std::atomic<quint64> decodeGen{0};
 
     // Non-copyable: a Document owns heavy, unique per-image state (the edit
     // graph, decoded pixels). Move-only would come later if tabs need it.

@@ -455,15 +455,32 @@ private:
     bool m_selectivePainting = false; // a selective-mask stroke is in progress (forces the overlay)
     bool m_adjustHardness = false;    // s/h + wheel target: false=size, true=hardness
 
+    // Async job routing. Every background job (heal/hist/decode/export/save/
+    // autosave/open) is tagged at launch with the id of the document it targets,
+    // so its finish handler can (a) drop the result if that document has since
+    // been closed and (b) only touch the shell (canvas, badge, title) when that
+    // document is still the active tab. docById returns the open document with
+    // that id, or nullptr; docIsActive is the "still the front tab?" test. The
+    // per-op ids below are each set at launch (one watcher per op → one in flight
+    // → one id each); 0 means no job is in flight. The "latest wins" generation
+    // counters live on the Document (per-tab), not here.
+    Document *docById(quint64 id) const;
+    bool docIsActive(quint64 id) const;
+    quint64 m_healJobDoc = 0;
+    quint64 m_histJobDoc = 0;
+    quint64 m_decodeJobDoc = 0;
+    quint64 m_exportJobDoc = 0;
+    quint64 m_saveJobDoc = 0;
+    quint64 m_openJobDoc = 0;     // shared by open-image + open-project (mutually exclusive)
+    quint64 m_autosaveJobDoc = 0;
+
     // The heal (inpaint) preview runs off the UI thread so Detailed mode never
     // freezes the app; only the latest request's result is applied.
     QFutureWatcher<QImage> m_healWatcher;
-    std::atomic<quint64> m_healGen{0};
 
     // The histogram consumes the full-res composite, so it too is computed off
     // the UI thread; the latest request wins.
     QFutureWatcher<HistogramData> m_histWatcher;
-    std::atomic<quint64> m_histGen{0};
 
     // RAW re-decode (a full demosaic) also runs off the UI thread so the app
     // stays responsive and the busy badge can animate; the latest request wins.
@@ -473,7 +490,6 @@ private:
         QString error;
     };
     QFutureWatcher<DecodeResult> m_decodeWatcher;
-    std::atomic<quint64> m_decodeGen{0};
 
     // Export runs the full-res graph walk + libvips encode off the UI thread (a
     // heal mask makes result() eager, and encoding a large image is slow either

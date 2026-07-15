@@ -5,7 +5,14 @@
 #include "core/LensCorrectionNode.h"
 #include "core/TuneNode.h"
 
-Document::Document() = default;
+namespace {
+// Hands out unique, monotonically increasing document ids. Starts at 1 so 0 can
+// mean "no document". Atomic: documents may be created from any thread in
+// principle, and it's cheap insurance.
+std::atomic<quint64> g_nextDocId{1};
+} // namespace
+
+Document::Document() : id(g_nextDocId.fetch_add(1, std::memory_order_relaxed)) {}
 Document::~Document() = default;
 
 void Document::applyCameraProfile(const raw::ColorProfile &profile, bool seedKelvin)

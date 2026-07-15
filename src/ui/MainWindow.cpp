@@ -801,6 +801,8 @@ MainWindow::MainWindow(QWidget *parent)
         if (!m_histWatcher.future().isValid())
             return;
         const HistogramData h = m_histWatcher.result();
+        if (!docIsActive(m_histJobDoc))
+            return; // computed for a tab that's no longer showing; drop it
         if (h.valid && m_histogram->isVisible())
             m_histogram->setData(h);
     });
@@ -832,10 +834,16 @@ MainWindow::MainWindow(QWidget *parent)
     // Background heal preview finished: apply the result (the watcher only
     // delivers the latest request's future).
     connect(&m_healWatcher, &QFutureWatcher<QImage>::finished, this, [this] {
-        static_cast<BusyBadge *>(m_healBusy)->stop();
+        // The badge, canvas and histogram all belong to the active tab, so only
+        // touch them when this bake's document is still the one on screen.
+        const bool active = docIsActive(m_healJobDoc);
+        if (active)
+            static_cast<BusyBadge *>(m_healBusy)->stop();
         if (!m_healWatcher.future().isValid())
             return;
         const QImage healed = m_healWatcher.result();
+        if (!active)
+            return; // baked for a background tab; drop (re-baked on return)
         if (!healed.isNull())
             m_canvas->setImage(healed, /*keepView=*/true); // preserve zoom/pan
         // The histogram defers itself while a bake runs; recompute now (debounced).
@@ -845,7 +853,10 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Background export finished: stop the badge and report the outcome.
     connect(&m_exportWatcher, &QFutureWatcher<ExportResult>::finished, this, [this] {
-        static_cast<BusyBadge *>(m_healBusy)->stop();
+        // The badge is the active tab's; the outcome (a written file) is reported
+        // regardless of which tab is showing now.
+        if (docIsActive(m_exportJobDoc))
+            static_cast<BusyBadge *>(m_healBusy)->stop();
         if (!m_exportWatcher.future().isValid())
             return;
         const ExportResult r = m_exportWatcher.result();
@@ -860,7 +871,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Background project save finished: report the outcome and adopt the file.
     connect(&m_saveWatcher, &QFutureWatcher<SaveResult>::finished, this, [this] {
-        static_cast<BusyBadge *>(m_healBusy)->stop();
+        const bool active = docIsActive(m_saveJobDoc);
+        if (active)
+            static_cast<BusyBadge *>(m_healBusy)->stop();
         if (!m_saveWatcher.future().isValid())
             return;
         const SaveResult r = m_saveWatcher.result();
@@ -869,7 +882,13 @@ MainWindow::MainWindow(QWidget *parent)
                                  QStringLiteral("Could not save project: %1").arg(r.error));
             return;
         }
-        applySaveSuccess(r.path);
+        // applySaveSuccess updates the document's in-memory save state (path,
+        // autosave baseline) via the active document, so only run it when the
+        // saved document is still active. The file itself is already written; a
+        // background-tab save reconciles its bookkeeping when it next becomes
+        // active (Stage 5 makes this bookkeeping document-targeted).
+        if (active)
+            applySaveSuccess(r.path);
     });
 
     // Background image open finished: install the decoded source + rebuild.
@@ -877,6 +896,8 @@ MainWindow::MainWindow(QWidget *parent)
         static_cast<BusyBadge *>(m_healBusy)->stop();
         if (!m_openImageWatcher.future().isValid())
             return;
+        if (!docById(m_openJobDoc))
+            return; // the tab this open was for was closed mid-decode; drop it
         finishOpenImage(m_openImageWatcher.result());
     });
 
@@ -885,6 +906,8 @@ MainWindow::MainWindow(QWidget *parent)
         static_cast<BusyBadge *>(m_healBusy)->stop();
         if (!m_openProjectWatcher.future().isValid())
             return;
+        if (!docById(m_openJobDoc))
+            return; // the tab this open was for was closed mid-decode; drop it
         const OpenProjectResult r = m_openProjectWatcher.result();
         if (!r.loaded) {
             QMessageBox::warning(this, QStringLiteral("Lumen"), r.error);
@@ -902,23 +925,35 @@ MainWindow::MainWindow(QWidget *parent)
     // Background RAW re-decode finished: install the new source and rebuild the
     // pipeline (the watcher only delivers the latest request's future).
     connect(&m_decodeWatcher, &QFutureWatcher<DecodeResult>::finished, this, [this] {
-        static_cast<BusyBadge *>(m_healBusy)->stop();
+        const bool active = docIsActive(m_decodeJobDoc);
+        if (active)
+            static_cast<BusyBadge *>(m_healBusy)->stop();
         if (!m_decodeWatcher.future().isValid())
             return;
+        Document *d = docById(m_decodeJobDoc);
+        if (!d)
+            return; // the tab this re-decode was for was closed; drop it
         const DecodeResult r = m_decodeWatcher.result();
         if (r.image.isNull()) {
-            if (!r.error.isEmpty())
+            if (active && !r.error.isEmpty())
                 showHint(QStringLiteral("Could not re-decode RAW: %1").arg(r.error));
             return;
         }
-        doc().graph.setSource(r.image);
-        ++doc().sourceGeneration; // new pixels → preset thumbnails must re-render
+        // Install the new pixels on the target document (safe whether or not it's
+        // the active tab).
+        d->graph.setSource(r.image);
+        ++d->sourceGeneration; // new pixels → preset thumbnails must re-render
         // Keep the current WB temperature (don't reseed to as-shot).
-        doc().applyCameraProfile(r.meta.color, /*seedKelvin=*/false);
-        refreshWorkingSource();  // rebuild the corrected source + display QImage
-        refreshBaseImage(true);  // keep zoom/pan (itself async if a bake is active)
-        recomputeSelectiveMask();
-        updatePreview();
+        d->applyCameraProfile(r.meta.color, /*seedKelvin=*/false);
+        // The preview stages read the active document; only rebuild them when the
+        // re-decoded document is on screen. A background tab picks up the new
+        // source when it's next bound (tab switch → bindDocument, Stage 4).
+        if (active) {
+            refreshWorkingSource();  // rebuild the corrected source + display QImage
+            refreshBaseImage(true);  // keep zoom/pan (itself async if a bake is active)
+            recomputeSelectiveMask();
+            updatePreview();
+        }
     });
 
     m_healPanel = new HealPanel(this);
@@ -1227,12 +1262,15 @@ MainWindow::MainWindow(QWidget *parent)
     m_autosaveTimer->setInterval(intervalSec * 1000);
     connect(m_autosaveTimer, &QTimer::timeout, this, &MainWindow::performAutosave);
     connect(&m_autosaveWatcher, &QFutureWatcher<bool>::finished, this, [this] {
-        doc().autosaveInFlight = false;
+        Document *d = docById(m_autosaveJobDoc);
+        if (!d)
+            return; // the tab being autosaved was closed; nothing to reconcile
+        d->autosaveInFlight = false;
         if (m_autosaveWatcher.result())
-            doc().lastAutosaveDoc = doc().pendingAutosaveDoc; // committed; skip identical writes
-        else
+            d->lastAutosaveDoc = d->pendingAutosaveDoc; // committed; skip identical writes
+        else if (docIsActive(m_autosaveJobDoc))
             showHint(QStringLiteral("Autosave failed — your work is not yet saved"));
-        doc().pendingAutosaveDoc.clear();
+        d->pendingAutosaveDoc.clear();
     });
 
     // Sweep stale crash-recovery files from past sessions on every launch.
@@ -1246,9 +1284,9 @@ MainWindow::~MainWindow()
     // Make sure no background pipeline task (heal/denoise/defringe/sharpen bake
     // or the histogram compute) is still touching libvips when this window's
     // cached images are freed — and before main() calls vips_shutdown().
-    ++m_healGen; // signal in-flight tasks to bail at their next checkpoint
-    ++m_histGen;
-    ++m_decodeGen;
+    ++doc().healGen; // signal in-flight tasks to bail at their next checkpoint
+    ++doc().histGen;
+    ++doc().decodeGen;
     if (m_healWatcher.isRunning())
         m_healWatcher.waitForFinished();
     if (m_histWatcher.isRunning())
@@ -1271,6 +1309,19 @@ bool MainWindow::openBusy() const
 {
     return m_openImageWatcher.isRunning() || m_openProjectWatcher.isRunning()
         || m_decodeWatcher.isRunning();
+}
+
+Document *MainWindow::docById(quint64 id) const
+{
+    // One document today; Stage 4 scans the open-tabs vector. Never matches 0.
+    if (id != 0 && m_activeDoc && m_activeDoc->id == id)
+        return m_activeDoc.get();
+    return nullptr;
+}
+
+bool MainWindow::docIsActive(quint64 id) const
+{
+    return id != 0 && m_activeDoc && m_activeDoc->id == id;
 }
 
 void MainWindow::buildCommands()
@@ -1453,6 +1504,7 @@ bool MainWindow::openPath(const QString &path)
     badge->setLabel(QStringLiteral("Opening…"));
     badge->start();
     layoutOverlays();
+    m_openJobDoc = doc().id; // the document this decode will populate on completion
     const raw::RawDecodeOptions opts = doc().rawOptions;
     m_openImageWatcher.setFuture(
         QtConcurrent::run([path, opts] { return decodeImageFile(path, opts); }));
@@ -1510,8 +1562,10 @@ void MainWindow::redecodeCurrent()
         return;
 
     // Run the demosaic off the UI thread so the app stays responsive and the busy
-    // badge animates; the latest request wins (m_decodeGen guards stale results).
-    const quint64 gen = ++m_decodeGen;
+    // badge animates; the latest request wins (decodeGen guards stale results).
+    Document *d = &doc();
+    m_decodeJobDoc = d->id;
+    const quint64 gen = ++d->decodeGen;
     auto *badge = static_cast<BusyBadge *>(m_healBusy);
     badge->setLabel(QStringLiteral("Decoding…"));
     badge->start();
@@ -1519,8 +1573,8 @@ void MainWindow::redecodeCurrent()
 
     const QByteArray bytes = doc().sourceBytes;
     const raw::RawDecodeOptions opts = doc().rawOptions;
-    m_decodeWatcher.setFuture(QtConcurrent::run([this, gen, bytes, opts]() -> DecodeResult {
-        if (gen != m_decodeGen)
+    m_decodeWatcher.setFuture(QtConcurrent::run([d, gen, bytes, opts]() -> DecodeResult {
+        if (gen != d->decodeGen)
             return {}; // superseded before we even started
         DecodeResult r;
         r.image = raw::decodeBytes(bytes.constData(), bytes.size(), &r.error, &r.meta, opts);
@@ -1602,6 +1656,7 @@ void MainWindow::writeProjectAsync(const QString &path)
     const QByteArray bytes = sourceForSave(&name);
     const QJsonObject graph = buildDocGraph();
 
+    m_saveJobDoc = doc().id; // the document whose save-state the finish handler updates
     auto *badge = static_cast<BusyBadge *>(m_healBusy);
     badge->setLabel(QStringLiteral("Saving…"));
     badge->start();
@@ -1720,6 +1775,7 @@ void MainWindow::performAutosave()
     const QJsonObject graph = buildDocGraph();
     doc().pendingAutosaveDoc = docBytes;
     doc().autosaveInFlight = true;
+    m_autosaveJobDoc = doc().id; // the document whose baseline the finish handler updates
     // Write off the UI thread: embedding the full source can be tens of MB. The
     // snapshot args are value copies, so the worker touches nothing the UI mutates.
     m_autosaveWatcher.setFuture(QtConcurrent::run([target, graph, bytes, name] {
@@ -1864,6 +1920,7 @@ void MainWindow::loadProjectFile(const QString &path)
     badge->setLabel(QStringLiteral("Opening…"));
     badge->start();
     layoutOverlays();
+    m_openJobDoc = doc().id; // the document this decode will populate on completion
     m_openProjectWatcher.setFuture(
         QtConcurrent::run([path] { return decodeProjectFile(path); }));
 }
@@ -2125,6 +2182,7 @@ void MainWindow::exportImage()
         const QJsonObject graphState = doc().graph.saveState();
         const Image source = doc().graph.source();
         m_exportPending = false;
+        m_exportJobDoc = doc().id; // the document being exported
         m_exportWatcher.setFuture(QtConcurrent::run(
             [path, exportOpts, graphState, source]() -> ExportResult {
                 ExportResult r;
@@ -3203,7 +3261,9 @@ void MainWindow::updateHistogram()
     if (m_healWatcher.isRunning() || m_decodeWatcher.isRunning())
         return;
 
-    const quint64 gen = ++m_histGen;
+    Document *d = &doc();
+    m_histJobDoc = d->id;
+    const quint64 gen = ++d->histGen;
     const bool healActive =
         doc().heal && doc().heal->isEnabled() && !doc().heal->healMask().isEmpty();
     if (healActive) {
@@ -3212,11 +3272,11 @@ void MainWindow::updateHistogram()
         // thread (that froze the app when toggling the histogram mid-heal). Build
         // and materialise it on a worker. No bake is in flight (guarded above), so
         // the graph is quiescent for the snapshot.
-        m_histWatcher.setFuture(QtConcurrent::run([this, gen]() -> HistogramData {
-            if (gen != m_histGen)
+        m_histWatcher.setFuture(QtConcurrent::run([d, gen]() -> HistogramData {
+            if (gen != d->histGen)
                 return HistogramData{};
-            const Image result = doc().graph.result();
-            if (result.isNull() || gen != m_histGen)
+            const Image result = d->graph.result();
+            if (result.isNull() || gen != d->histGen)
                 return HistogramData{};
             return computeHistogram(result);
         }));
@@ -3227,8 +3287,8 @@ void MainWindow::updateHistogram()
         const Image result = doc().graph.resultDownsampled(kHistogramMaxDim);
         if (result.isNull())
             return;
-        m_histWatcher.setFuture(QtConcurrent::run([this, gen, result]() -> HistogramData {
-            if (gen != m_histGen)
+        m_histWatcher.setFuture(QtConcurrent::run([d, gen, result]() -> HistogramData {
+            if (gen != d->histGen)
                 return HistogramData{}; // superseded
             return computeHistogram(result, kHistogramMaxDim);
         }));
@@ -3619,9 +3679,11 @@ void MainWindow::refreshBaseImage(bool keepView)
     }
 
     // These passes (esp. Detailed/Criminisi heal) are expensive, so run them off
-    // the UI thread; the latest request wins (m_healGen guards stale results, and
-    // the watcher only delivers its current future).
-    const quint64 gen = ++m_healGen;
+    // the UI thread; the latest request wins (the document's healGen guards stale
+    // results, and the watcher only delivers its current future).
+    Document *d = &doc();
+    m_healJobDoc = d->id;
+    const quint64 gen = ++d->healGen;
     // Baked ops run on top of the lens-corrected source (geometry already baked
     // into doc().workingSource), so painted spots track the corrected image.
     const Image src = doc().workingSource.isNull() ? doc().graph.source() : doc().workingSource;
@@ -3654,8 +3716,8 @@ void MainWindow::refreshBaseImage(bool keepView)
     }
 
     m_healWatcher.setFuture(
-        QtConcurrent::run([this, gen, src, mask, hq, dv, fv, sv, stv]() -> QImage {
-            if (gen != m_healGen)
+        QtConcurrent::run([d, gen, src, mask, hq, dv, fv, sv, stv]() -> QImage {
+            if (gen != d->healGen)
                 return QImage(); // superseded before we even started
             Image img = src;
             if (!mask.isEmpty()) {
