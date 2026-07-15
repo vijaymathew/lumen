@@ -182,10 +182,18 @@ private:
     void setOverlayGeometryVisible(bool visible);
     void updateMaskEditing();  // enable/disable the canvas brush for a Brush mask
     void endMaskBrushSession(); // commit in-progress mask-brush strokes
-    // Installs the RAW camera colour profile on every layer's TuneNode so white
-    // balance is camera-accurate. `seedKelvin` moves the slider to the as-shot
-    // temperature (opening a fresh RAW) vs keeping the restored value (projects).
-    void applyCameraProfile(const raw::ColorProfile &profile, bool seedKelvin);
+
+    // Reflects the active document (already populated via Document::initFrom*)
+    // into the shell: resets the paint scratch, rebuilds every preview stage,
+    // resets the undo timeline, arms autosave, and re-syncs the panels/title.
+    // The single "install a document into the UI" path — open-image, open-project
+    // (and, once tabs land, a tab switch) all funnel through here.
+    struct BindOptions {
+        QString title;             // window title / tab label (usually the file name)
+        QString hint;              // optional transient hint after binding
+        bool pushCropView = false; // restore a saved crop/orientation (projects)
+    };
+    void bindDocument(const BindOptions &opts);
 
     // The document currently bound into the shell. Today there is exactly one;
     // when tabs land, this returns the front tab's document. All per-image state

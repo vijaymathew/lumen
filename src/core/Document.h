@@ -47,6 +47,33 @@ public:
     Document(const Document &) = delete;
     Document &operator=(const Document &) = delete;
 
+    // --- Population (pure state; no shell/UI) -----------------------------
+    // Populate this document for a freshly opened image: reset the graph to its
+    // pristine state, install the source, seed the lens node from EXIF (RAW) and
+    // the caller's RAW lens defaults, and install the camera colour profile
+    // (seeding the WB slider to as-shot for a RAW). Callers reflect the result
+    // into the shell via MainWindow::bindDocument().
+    void initFromImage(const Image &source, const QByteArray &bytes,
+                       const QString &imagePath, bool isRaw,
+                       const raw::LensMetadata &meta,
+                       const raw::RawLensDefaults &lensDefaults);
+
+    // Populate this document from a loaded .lumen project: adopt its decode
+    // options, install the embedded source, restore the saved edit graph (which
+    // carries the lens params), and refresh the camera profile from the decode
+    // while keeping the restored WB temperature.
+    void initFromProject(const Image &source, const QByteArray &bytes,
+                         const QString &sourceFileName,
+                         const QString &projectFilePath,
+                         const QJsonObject &graphState,
+                         const raw::RawDecodeOptions &opts, bool isRaw,
+                         const raw::ColorProfile &color);
+
+    // Installs the RAW camera colour profile on every layer's TuneNode so white
+    // balance is camera-accurate. `seedKelvin` moves the slider to the as-shot
+    // temperature (opening a fresh RAW) vs keeping the restored value (projects).
+    void applyCameraProfile(const raw::ColorProfile &profile, bool seedKelvin);
+
     // --- Edit graph -------------------------------------------------------
     // The non-destructive edit graph. The GPU preview reads the tune node's
     // exposure live; Export walks the graph at full resolution via libvips.

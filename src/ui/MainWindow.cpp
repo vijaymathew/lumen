@@ -914,7 +914,7 @@ MainWindow::MainWindow(QWidget *parent)
         doc().graph.setSource(r.image);
         ++doc().sourceGeneration; // new pixels → preset thumbnails must re-render
         // Keep the current WB temperature (don't reseed to as-shot).
-        applyCameraProfile(r.meta.color, /*seedKelvin=*/false);
+        doc().applyCameraProfile(r.meta.color, /*seedKelvin=*/false);
         refreshWorkingSource();  // rebuild the corrected source + display QImage
         refreshBaseImage(true);  // keep zoom/pan (itself async if a bake is active)
         recomputeSelectiveMask();
@@ -1459,6 +1459,34 @@ bool MainWindow::openPath(const QString &path)
     return true;
 }
 
+void MainWindow::bindDocument(const BindOptions &opts)
+{
+    // The active canvas edits one document at a time; a fresh bind ends any
+    // in-progress paint scratch (it lives on the shell, not the Document).
+    m_brushTarget = BrushTarget::None;
+    m_brushUndo.clear();
+    m_brushMask = MaskBuffer();
+
+    refreshWorkingSource();  // build the corrected source + display QImage
+    refreshBaseImage(false); // fit the view (re-applies any heal mask)
+    recomputeSelectiveMask();
+    if (opts.pushCropView)
+        updateCropView();    // push a restored crop/orientation to the canvas
+    updatePreview();         // apply any existing edits
+    doc().graph.resetHistory(); // fresh undo timeline for this document
+
+    // Fresh document session: baseline the just-loaded state (so an unedited open
+    // won't autosave) and arm the autosave timer.
+    resetAutosaveBaseline();
+    startAutosave();
+    if (m_layersPanel->isVisible())
+        refreshLayersPanel();   // the load may have changed the selective layers
+    reseedOpenPanels();         // re-sync open tools with the document's values
+    updateTitle(opts.title);
+    if (!opts.hint.isEmpty())
+        showHint(opts.hint);
+}
+
 void MainWindow::finishOpenImage(const OpenImageResult &r)
 {
     if (r.source.isNull()) {
@@ -1469,57 +1497,10 @@ void MainWindow::finishOpenImage(const OpenImageResult &r)
         return;
     }
 
-    // Keep the original encoded bytes so we can embed them verbatim in a .lumen.
-    doc().sourceBytes = r.bytes;
-    doc().sourceName = QFileInfo(r.path).fileName();
-    doc().projectPath.clear(); // opening a raw image starts a new (unsaved) project
-
-    // A freshly opened image starts from a clean slate: clear any in-progress
-    // brush editing and reset the graph to its pristine state so the previous
-    // image's adjustments (and any selective layers) don't carry over.
-    m_brushTarget = BrushTarget::None;
-    doc().maskView = 0;
-    m_brushUndo.clear();
-    m_brushMask = MaskBuffer();
-    doc().graph.restoreState(doc().defaultGraphState);
-
-    doc().graph.setSource(r.source); // full-res original; the lens node corrects on top
-    ++doc().sourceGeneration;        // new pixels → preset thumbnails must re-render
-    // Seed the lens node: a RAW carries EXIF identity for automatic correction;
-    // anything else starts neutral (manual perspective still available).
-    LensCorrectionNode::Params lp; // defaults: corrections on, perspective neutral
-    if (r.isRaw) {
-        lp.cameraMaker = r.meta.cameraMaker;
-        lp.cameraModel = r.meta.cameraModel;
-        lp.lensModel = r.meta.lensModel;
-        lp.focalLength = r.meta.focalLength;
-        lp.aperture = r.meta.aperture;
-        lp.focusDistance = r.meta.focusDistance;
-        // Seed the automatic lens corrections from the user's RAW defaults.
-        lp.distortion = m_rawLensDefaults.distortion;
-        lp.tca = m_rawLensDefaults.tca;
-        lp.vignetting = m_rawLensDefaults.vignetting;
-    }
-    doc().lens->setParams(lp);
-    // Camera-accurate white balance: install the colour profile and seed the
-    // slider at the as-shot temperature (non-RAW keeps the sRGB defaults).
-    if (r.isRaw)
-        applyCameraProfile(r.meta.color, /*seedKelvin=*/true);
-    refreshWorkingSource();  // build the corrected source + display QImage
-    refreshBaseImage(false); // new image → fit the view
-    recomputeSelectiveMask();
-    updatePreview();        // apply any existing edits
-    doc().graph.resetHistory(); // fresh undo timeline for this image
-    doc().sourcePath = r.path;
-    // New unsaved document: clear any prior recovery file, baseline the pristine
-    // state (so an unedited open won't autosave), and arm the autosave timer.
-    doc().recoveryPath.clear();
-    resetAutosaveBaseline();
-    startAutosave();
-    if (m_layersPanel->isVisible())
-        refreshLayersPanel();   // the reset dropped any selective layers
-    reseedOpenPanels();         // re-sync open tools with the neutral defaults
-    updateTitle(QFileInfo(r.path).fileName());
+    doc().initFromImage(r.source, r.bytes, r.path, r.isRaw, r.meta, m_rawLensDefaults);
+    BindOptions opts;
+    opts.title = QFileInfo(r.path).fileName();
+    bindDocument(opts);
 }
 
 void MainWindow::redecodeCurrent()
@@ -1860,41 +1841,14 @@ bool MainWindow::applyProjectResult(const OpenProjectResult &r)
 {
     if (!r.loaded || r.source.isNull())
         return false;
-    doc().rawOptions = r.rawOptions; // adopt the project's decode options
 
-    // Reset any active editing state, then load the document.
-    m_brushTarget = BrushTarget::None;
-    doc().maskView = 0;
-    m_brushUndo.clear();
-    doc().sourceBytes = r.sourceBytes;
-    doc().sourceName = r.sourceName;
-    doc().graph.setSource(r.source);
-    ++doc().sourceGeneration;              // new pixels → preset thumbnails must re-render
-    doc().graph.loadProjectState(r.graph); // restores the lens node's params too
-    // Refresh the camera profile from the actual decode, keeping the restored
-    // WB temperature (don't reseed to as-shot).
-    if (r.isRaw)
-        applyCameraProfile(r.meta.color, /*seedKelvin=*/false);
-
-    refreshWorkingSource();  // rebuild the corrected source from the restored lens
-    refreshBaseImage(false); // re-applies the heal mask, fits the view
-    recomputeSelectiveMask();
-    updateCropView();        // push the restored crop/orientation to the canvas
-    updatePreview();
-    doc().graph.resetHistory();
-
-    doc().projectPath = r.path;
-    doc().sourcePath = r.path; // export defaults to "<project>-edited.<ext>"
-    // A fresh document session: autosave now targets this user file (no recovery
-    // file), and the baseline is the just-loaded state.
-    doc().recoveryPath.clear();
-    resetAutosaveBaseline();
-    startAutosave();
-    if (m_layersPanel->isVisible())
-        refreshLayersPanel();
-    reseedOpenPanels(); // re-sync any open adjustment tool with the restored layers
-    updateTitle(QFileInfo(r.path).fileName());
-    showHint(QStringLiteral("Opened %1").arg(QFileInfo(r.path).fileName()));
+    doc().initFromProject(r.source, r.sourceBytes, r.sourceName, r.path, r.graph,
+                          r.rawOptions, r.isRaw, r.meta.color);
+    BindOptions opts;
+    opts.pushCropView = true; // a project carries a saved crop/orientation
+    opts.title = QFileInfo(r.path).fileName();
+    opts.hint = QStringLiteral("Opened %1").arg(QFileInfo(r.path).fileName());
+    bindDocument(opts);
     return true;
 }
 
@@ -2291,18 +2245,6 @@ void MainWindow::updatePreview()
     // composite, so we don't want it on every drag tick).
     if (m_histogram && m_histogram->isVisible())
         m_histTimer->start();
-}
-
-void MainWindow::applyCameraProfile(const raw::ColorProfile &profile, bool seedKelvin)
-{
-    if (!profile.valid)
-        return;
-    for (int i = 0; i < doc().graph.layerCount(); ++i) {
-        if (auto *t = static_cast<TuneNode *>(
-                doc().graph.layer(i).nodeOfType(QStringLiteral("tune"))))
-            t->setCameraProfile(profile.camToRgb, profile.xyzToCam, profile.asShotMul,
-                                seedKelvin);
-    }
 }
 
 TuneNode *MainWindow::activeTune() const
