@@ -58,7 +58,10 @@
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QKeyEvent>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 
@@ -397,6 +400,8 @@ MainWindow::MainWindow(QWidget *parent)
     // Start with a single empty document (tab 0). Never zero documents.
     m_docs.push_back(std::make_unique<Document>());
     m_activeTab = 0;
+
+    setAcceptDrops(true); // drop image/project files to open them as tabs
 
     updateTitle();
 
@@ -1380,6 +1385,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("adjustments"), QStringLiteral("Adjustments (history)"), view},
         {QStringLiteral("next-tab"), QStringLiteral("Next tab  ·  Ctrl+Tab"), view},
         {QStringLiteral("prev-tab"), QStringLiteral("Previous tab  ·  Ctrl+Shift+Tab"), view},
+        {QStringLiteral("duplicate-tab"), QStringLiteral("Duplicate to a new tab"), view},
         {QStringLiteral("close-tab"), QStringLiteral("Close tab  ·  Ctrl+W"), view},
         {QStringLiteral("reset-view"), QStringLiteral("Reset view"), view},
         {QStringLiteral("fullscreen"), QStringLiteral("Toggle fullscreen"), view},
@@ -1465,6 +1471,8 @@ void MainWindow::runCommand(const QString &id)
     } else if (id == QLatin1String("prev-tab")) {
         if (tabCount() > 1)
             switchToTab((m_activeTab - 1 + tabCount()) % tabCount());
+    } else if (id == QLatin1String("duplicate-tab")) {
+        duplicateActiveTab();
     } else if (id == QLatin1String("close-tab")) {
         closeTab(m_activeTab);
     } else if (id == QLatin1String("reset-view")) {
@@ -1587,6 +1595,14 @@ void MainWindow::reflectActiveDocument()
     m_brushUndo.clear();
     m_brushMask = MaskBuffer();
 
+    // Empty placeholder (e.g. after closing the last tab): show the blank canvas
+    // rather than the previous document's stale image.
+    if (documentIsEmpty(doc())) {
+        m_canvas->clearImage();
+        updateTitle();
+        return;
+    }
+
     refreshWorkingSource();
     refreshBaseImage(false); // fits to window; the saved view is restored below
     recomputeSelectiveMask();
@@ -1595,6 +1611,8 @@ void MainWindow::reflectActiveDocument()
     if (m_layersPanel->isVisible())
         refreshLayersPanel();
     reseedOpenPanels();
+    if (m_presetsPanel && m_presetsPanel->isVisible())
+        refreshPresetThumbnails(); // re-render the browser against the new document
     syncViewToggles();
     updateTitle(documentIsEmpty(doc()) ? QString() : documentLabel(doc()));
 
@@ -1686,6 +1704,50 @@ void MainWindow::closeTab(int index)
     if (wasActive)
         reflectActiveDocument();
     syncTabBar();
+}
+
+void MainWindow::duplicateActiveTab()
+{
+    if (documentIsEmpty(doc())) {
+        showHint(QStringLiteral("Open an image before duplicating"));
+        return;
+    }
+    if (openBusy()) {
+        showHint(QStringLiteral("Busy — try again in a moment"));
+        return;
+    }
+    // Snapshot the active document as an in-memory "project" (source bytes + the
+    // current edit graph), then decode + install it as a new tab. Re-decoding is
+    // what keeps RAW white balance correct: the camera colour profile is a
+    // decode-time artefact, not part of the serialised graph.
+    QString name;
+    OpenProjectResult r;
+    r.loaded = true;
+    r.sourceBytes = sourceForSave(doc(), &name);
+    if (r.sourceBytes.isEmpty()) {
+        showHint(QStringLiteral("Nothing to duplicate"));
+        return;
+    }
+    r.sourceName = name;
+    r.isRaw = raw::isRawPath(name);
+    r.rawOptions = doc().rawOptions;
+    r.graph = buildDocGraph(doc());
+    r.path.clear(); // a duplicate is new, independent, unsaved work
+
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    QString err;
+    r.source = r.isRaw ? raw::decodeBytes(r.sourceBytes.constData(), r.sourceBytes.size(),
+                                          &err, &r.meta, r.rawOptions)
+                       : Image::fromBytes(r.sourceBytes.constData(), r.sourceBytes.size(), &err);
+    QGuiApplication::restoreOverrideCursor();
+    if (r.source.isNull()) {
+        showHint(QStringLiteral("Could not duplicate this image"));
+        return;
+    }
+    // Opens in a new tab (beginOpenIntoTab) with the edits + camera profile; r.path
+    // is empty so the copy stays unsaved and independent of the original's file.
+    applyProjectResult(r);
+    showHint(QStringLiteral("Duplicated to a new tab"));
 }
 
 void MainWindow::syncTabBar()
@@ -2080,13 +2142,44 @@ void MainWindow::closeEvent(QCloseEvent *e)
             return;
         }
     }
-    // Clean exit: drop each session recovery file so the next launch doesn't
-    // mistake it for a crash.
+    // Clean exit: remember the open files for next launch, then drop each session
+    // recovery file so the next launch doesn't mistake it for a crash.
     if (m_autosaveTimer)
         m_autosaveTimer->stop();
+    saveSession();
     for (const auto &d : m_docs)
         deleteRecoveryFile(*d);
     e->accept();
+}
+
+void MainWindow::saveSession()
+{
+    // Record a reopenable path per document: the .lumen for saved projects, else
+    // the original image. Only real, existing files (a recovered document's
+    // sourcePath is just a display name, not a path — filtered out here).
+    QStringList paths;
+    for (const auto &d : m_docs) {
+        if (d->graph.source().isNull())
+            continue;
+        const QString p = d->projectPath.isEmpty() ? d->sourcePath : d->projectPath;
+        if (!p.isEmpty() && QFileInfo::exists(p))
+            paths << p;
+    }
+    QSettings().setValue(QStringLiteral("session/openPaths"), paths);
+}
+
+bool MainWindow::restoreSession()
+{
+    const QStringList paths =
+        QSettings().value(QStringLiteral("session/openPaths")).toStringList();
+    bool any = false;
+    for (const QString &p : paths) {
+        if (QFileInfo::exists(p)) {
+            openPath(p); // first reuses the empty placeholder; the rest queue as tabs
+            any = true;
+        }
+    }
+    return any;
 }
 
 void MainWindow::openProject()
@@ -4705,6 +4798,36 @@ void MainWindow::keyReleaseEvent(QKeyEvent *e)
         return;
     }
     QMainWindow::keyReleaseEvent(e);
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent *e)
+{
+    // Accept a drag that carries at least one local file — each will open in a tab.
+    if (!e->mimeData()->hasUrls())
+        return;
+    for (const QUrl &url : e->mimeData()->urls()) {
+        if (url.isLocalFile()) {
+            e->acceptProposedAction();
+            return;
+        }
+    }
+}
+
+void MainWindow::dropEvent(QDropEvent *e)
+{
+    if (!e->mimeData()->hasUrls())
+        return;
+    // openPath opens the first file (reusing the empty placeholder) and queues the
+    // rest; each lands in its own tab.
+    bool any = false;
+    for (const QUrl &url : e->mimeData()->urls()) {
+        if (url.isLocalFile()) {
+            openPath(url.toLocalFile());
+            any = true;
+        }
+    }
+    if (any)
+        e->acceptProposedAction();
 }
 
 void MainWindow::adjustBrush(int steps)

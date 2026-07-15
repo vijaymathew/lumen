@@ -109,6 +109,18 @@ void CanvasWidget::setViewState(const ViewState &v)
     update();
 }
 
+void CanvasWidget::clearImage()
+{
+    m_pendingImage = QImage();
+    m_textureDirty = false;
+    // Drop the GPU texture; render() guards every draw on m_texture being non-null,
+    // so it falls back to the blank background until a new image is uploaded.
+    m_texture.reset();
+    m_srbDirty = true;
+    resetView();
+    update();
+}
+
 void CanvasWidget::setFitZoom(float zoom)
 {
     m_zoom = std::clamp(zoom, 0.05f, 40.0f);

@@ -67,6 +67,8 @@ class QLabel;
 class QPushButton;
 class QTabBar;
 class QTimer;
+class QDragEnterEvent;
+class QDropEvent;
 
 // MainWindow is the immersive shell: a fullscreen canvas with a "/"-triggered
 // command palette floating over it and a dismissible hint bar. It owns the
@@ -82,11 +84,16 @@ public:
     // Loads an image at startup (e.g. a path passed on the command line).
     bool openPath(const QString &path);
 
-    // Startup crash recovery: if ~/.lumen/projects holds an autosaved document
-    // from a session that didn't shut down cleanly, offer to restore the newest.
-    // Returns true if work was restored. Skipped when an image is opened from the
-    // command line (explicit intent wins). See main().
+    // Startup crash recovery: if ~/.lumen/projects holds autosaved documents from
+    // a session that didn't shut down cleanly, offer to restore them (each as a
+    // tab). Returns true if work was restored. Skipped when an image is opened
+    // from the command line (explicit intent wins). See main().
     bool offerCrashRecovery();
+
+    // Reopens the files that were open at the last clean quit, each as a tab.
+    // Returns true if anything was reopened. Called at launch only when there are
+    // no command-line files and nothing to crash-recover. See main().
+    bool restoreSession();
 
 protected:
     void resizeEvent(QResizeEvent *e) override;
@@ -97,6 +104,9 @@ protected:
     // widget has focus, so the active tool can always be closed.
     void keyPressEvent(QKeyEvent *e) override;
     void keyReleaseEvent(QKeyEvent *e) override;
+    // Drag-and-drop image/project files onto the window: each opens in a new tab.
+    void dragEnterEvent(QDragEnterEvent *e) override;
+    void dropEvent(QDropEvent *e) override;
     // Drag handling for the persistent overlays (histogram via its surface, the
     // view-toggle cluster via its grip). Once dragged, layoutOverlays() stops
     // auto-pinning that overlay and only clamps it back into view.
@@ -157,6 +167,8 @@ private:
     bool restoreRecovery(const QString &path);
     // Resets d's dirty baselines to its current state (called after open/save).
     void resetAutosaveBaseline(Document &d);
+    // Persists the open documents' file paths on a clean quit, for restoreSession.
+    void saveSession();
     void toggleFullScreen();
     // Overlays a small "✕" close button on a floating panel's top-right corner
     // and routes it to `onClose` — a pointer counterpart to the Esc/Enter close.
@@ -220,6 +232,10 @@ private:
     void beginOpenIntoTab();
     void switchToTab(int index);   // make tab `index` active (snapshot/restore view)
     void closeTab(int index);      // drain + remove; never leaves zero documents
+    // Opens a copy of the active document (same source + edits) in a new tab, as
+    // independent unsaved work. Re-decodes the source so RAW white balance stays
+    // correct (the camera profile is a decode-time artefact, not in the graph).
+    void duplicateActiveTab();
     void syncTabBar();             // refresh labels, current index, and visibility
     int tabCount() const { return static_cast<int>(m_docs.size()); }
     // Paths waiting to open while a decode is already in flight (opening several

@@ -61,6 +61,10 @@ public:
     // Resets zoom/pan so the image is fit-to-window and centred.
     void resetView();
 
+    // Drops the displayed image so the canvas shows the empty background again
+    // (used when the last tab is closed and only an empty placeholder remains).
+    void clearImage();
+
     // Opaque snapshot of the interactive zoom/pan transform, so a per-tab view can
     // be saved on switch-away and restored on switch-back. The values are relative
     // to fit-to-window, so they're only meaningful when restored onto the same

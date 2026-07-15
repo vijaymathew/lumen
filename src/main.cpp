@@ -51,8 +51,9 @@ int main(int argc, char *argv[])
         if (!args.isEmpty()) {
             for (const QString &path : args)
                 window.openPath(path);
-        } else {
-            window.offerCrashRecovery();
+        } else if (!window.offerCrashRecovery()) {
+            // No unsaved work to recover — reopen the last clean session's tabs.
+            window.restoreSession();
         }
 
         rc = app.exec();
