@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 
 #include "core/Autosave.h"
+#include "core/Document.h"
 #include "core/NodeFactory.h"
 #include "core/HealNode.h"
 #include "core/Image.h"
@@ -391,12 +392,13 @@ private:
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
+    , m_activeDoc(std::make_unique<Document>())
 {
     updateTitle();
 
     // Seed the automatic-RAW configuration from the global preference; the first
     // RAW opened uses these (and each .lumen carries its own per-project copy).
-    loadRawDefaults(m_rawOptions, m_rawLensDefaults);
+    loadRawDefaults(doc().rawOptions, m_rawLensDefaults);
 
     // The graph owns the nodes; we keep raw pointers to drive them. The "baked"
     // group runs first in libvips and is rendered into the preview base texture:
@@ -406,29 +408,29 @@ MainWindow::MainWindow(QWidget *parent)
     // detail). Then the pointwise/LUT ops the shader replicates: tune ->
     // colormixer -> curves -> colorgrade -> lut -> mono. Selective adjustments are
     // masked layers above the Base.
-    m_lens =
-        static_cast<LensCorrectionNode *>(m_graph.addNode(std::make_unique<LensCorrectionNode>()));
-    m_heal = static_cast<HealNode *>(m_graph.addNode(std::make_unique<HealNode>()));
-    m_denoise = static_cast<DenoiseNode *>(m_graph.addNode(std::make_unique<DenoiseNode>()));
-    m_defringe = static_cast<DefringeNode *>(m_graph.addNode(std::make_unique<DefringeNode>()));
-    m_sharpen = static_cast<SharpenNode *>(m_graph.addNode(std::make_unique<SharpenNode>()));
-    m_structure =
-        static_cast<StructureNode *>(m_graph.addNode(std::make_unique<StructureNode>()));
-    m_tune = static_cast<TuneNode *>(m_graph.addNode(std::make_unique<TuneNode>()));
-    m_colorMixer =
-        static_cast<ColorMixerNode *>(m_graph.addNode(std::make_unique<ColorMixerNode>()));
-    m_curves = static_cast<CurvesNode *>(m_graph.addNode(std::make_unique<CurvesNode>()));
-    m_colorGrade =
-        static_cast<ColorGradeNode *>(m_graph.addNode(std::make_unique<ColorGradeNode>()));
-    m_lutNode = static_cast<LutNode *>(m_graph.addNode(std::make_unique<LutNode>()));
-    m_mono = static_cast<MonoNode *>(m_graph.addNode(std::make_unique<MonoNode>()));
+    doc().lens =
+        static_cast<LensCorrectionNode *>(doc().graph.addNode(std::make_unique<LensCorrectionNode>()));
+    doc().heal = static_cast<HealNode *>(doc().graph.addNode(std::make_unique<HealNode>()));
+    doc().denoise = static_cast<DenoiseNode *>(doc().graph.addNode(std::make_unique<DenoiseNode>()));
+    doc().defringe = static_cast<DefringeNode *>(doc().graph.addNode(std::make_unique<DefringeNode>()));
+    doc().sharpen = static_cast<SharpenNode *>(doc().graph.addNode(std::make_unique<SharpenNode>()));
+    doc().structure =
+        static_cast<StructureNode *>(doc().graph.addNode(std::make_unique<StructureNode>()));
+    doc().tune = static_cast<TuneNode *>(doc().graph.addNode(std::make_unique<TuneNode>()));
+    doc().colorMixer =
+        static_cast<ColorMixerNode *>(doc().graph.addNode(std::make_unique<ColorMixerNode>()));
+    doc().curves = static_cast<CurvesNode *>(doc().graph.addNode(std::make_unique<CurvesNode>()));
+    doc().colorGrade =
+        static_cast<ColorGradeNode *>(doc().graph.addNode(std::make_unique<ColorGradeNode>()));
+    doc().lut = static_cast<LutNode *>(doc().graph.addNode(std::make_unique<LutNode>()));
+    doc().mono = static_cast<MonoNode *>(doc().graph.addNode(std::make_unique<MonoNode>()));
     // Film grain is the final finishing step (after mono), applied over the
     // whole image. A pointwise-in-shader op, so it bakes nothing.
-    m_grain = static_cast<GrainNode *>(m_graph.addNode(std::make_unique<GrainNode>()));
+    doc().grain = static_cast<GrainNode *>(doc().graph.addNode(std::make_unique<GrainNode>()));
 
     // Remember the pristine graph (neutral Base nodes, no selective layers) so
     // openPath() can reset to it for each newly opened image.
-    m_defaultGraphState = m_graph.saveState();
+    doc().defaultGraphState = doc().graph.saveState();
 
     m_canvas = new CanvasWidget(this);
     setCentralWidget(m_canvas);
@@ -598,9 +600,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_lensPanel = new LensPanel(this);
     connect(m_lensPanel, &LensPanel::paramsChanged, this,
             [this](const LensCorrectionNode::Params &p) {
-                if (!m_lens)
+                if (!doc().lens)
                     return;
-                m_lens->setParams(p);
+                doc().lens->setParams(p);
                 refreshWorkingSource();   // re-render the corrected base
                 refreshBaseImage();       // re-apply heal onto it, keep the view
                 updatePreview();
@@ -610,9 +612,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_sharpenPanel = new SharpenPanel(this);
     connect(m_sharpenPanel, &SharpenPanel::valuesChanged, this,
             [this](const SharpenNode::Values &v) {
-                if (!m_sharpen)
+                if (!doc().sharpen)
                     return;
-                m_sharpen->setValues(v);
+                doc().sharpen->setValues(v);
                 // Sharpen bakes into the base; coalesce drags so we don't kick a
                 // full-res pass per tick.
                 m_bakeOp = BakeOp::Sharpen;
@@ -623,9 +625,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_structurePanel = new StructurePanel(this);
     connect(m_structurePanel, &StructurePanel::valuesChanged, this,
             [this](const StructureNode::Values &v) {
-                if (!m_structure)
+                if (!doc().structure)
                     return;
-                m_structure->setValues(v);
+                doc().structure->setValues(v);
                 // Structure bakes into the base; coalesce drags so we don't kick a
                 // full-res pass per tick.
                 m_bakeOp = BakeOp::Structure;
@@ -636,9 +638,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_grainPanel = new GrainPanel(this);
     connect(m_grainPanel, &GrainPanel::valuesChanged, this,
             [this](const GrainNode::Values &v) {
-                if (!m_grain)
+                if (!doc().grain)
                     return;
-                m_grain->setValues(v);
+                doc().grain->setValues(v);
                 updatePreview(); // grain is a live GPU step (no base re-bake)
             });
     connect(m_grainPanel, &GrainPanel::closed, this, &MainWindow::closeGrainTool);
@@ -646,7 +648,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_vignettePanel = new VignettePanel(this);
     connect(m_vignettePanel, &VignettePanel::valuesChanged, this,
             [this](const VignetteParams &v) {
-                m_graph.setVignette(v);
+                doc().graph.setVignette(v);
                 m_canvas->setVignette(v);
                 updatePreview(); // vignette is a live present-pass op (no base re-bake)
             });
@@ -659,10 +661,10 @@ MainWindow::MainWindow(QWidget *parent)
             m_cropGizmo->setAspect(aspect);
         // A straightened crop must re-inset to the new aspect to stay off the
         // tilt's transparent corners.
-        CropState c = m_graph.crop();
+        CropState c = doc().graph.crop();
         if (std::abs(c.straighten) > 1e-6) {
             c.rect = straightenSafeCropRect(c);
-            m_graph.setCrop(c);
+            doc().graph.setCrop(c);
             if (m_cropGizmo)
                 m_cropGizmo->setRect(c.rect);
             updateCropView();
@@ -670,33 +672,33 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
     connect(m_cropPanel, &CropPanel::rotateRequested, this, [this](int deltaCW) {
-        CropState c = m_graph.crop();
+        CropState c = doc().graph.crop();
         c.rotation = ((c.rotation + deltaCW) % 360 + 360) % 360;
         // A re-orient resets the rectangle (re-inset if a straighten is active).
         c.rect = straightenSafeCropRect(c);
-        m_graph.setCrop(c);
+        doc().graph.setCrop(c);
         if (m_cropGizmo)
             m_cropGizmo->setRect(c.rect);
         updateCropView();
         updatePreview();
     });
     connect(m_cropPanel, &CropPanel::flipRequested, this, [this](bool horizontal) {
-        CropState c = m_graph.crop();
+        CropState c = doc().graph.crop();
         if (horizontal)
             c.flipH = !c.flipH;
         else
             c.flipV = !c.flipV;
-        m_graph.setCrop(c);
+        doc().graph.setCrop(c);
         updateCropView();
         updatePreview();
     });
     connect(m_cropPanel, &CropPanel::straightenChanged, this, [this](double deg) {
-        CropState c = m_graph.crop();
+        CropState c = doc().graph.crop();
         c.straighten = deg;
         // Keep the crop clear of the tilt's transparent corners. (The whole crop
         // session is a single undo step, committed in closeCropTool.)
         c.rect = straightenSafeCropRect(c);
-        m_graph.setCrop(c);
+        doc().graph.setCrop(c);
         if (m_cropGizmo) {
             m_cropGizmo->setStraighten(deg);
             m_cropGizmo->setRect(c.rect);
@@ -705,13 +707,13 @@ MainWindow::MainWindow(QWidget *parent)
         updatePreview();
     });
     connect(m_cropPanel, &CropPanel::resetRequested, this, [this] {
-        m_graph.setCrop(CropState{});
+        doc().graph.setCrop(CropState{});
         if (m_cropGizmo) {
             m_cropGizmo->setStraighten(0.0);
             m_cropGizmo->setRect(QRectF(0.0, 0.0, 1.0, 1.0));
         }
         if (m_cropPanel->isVisible())
-            m_cropPanel->reveal(m_graph.crop(), sourceAspect());
+            m_cropPanel->reveal(doc().graph.crop(), sourceAspect());
         updateCropView();
         updatePreview();
     });
@@ -720,9 +722,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_denoisePanel = new DenoisePanel(this);
     connect(m_denoisePanel, &DenoisePanel::valuesChanged, this,
             [this](const DenoiseNode::Values &v) {
-                if (!m_denoise)
+                if (!doc().denoise)
                     return;
-                m_denoise->setValues(v);
+                doc().denoise->setValues(v);
                 // Denoise bakes into the base; coalesce drags (it's a full-res
                 // LAB pass) just like sharpen.
                 m_bakeOp = BakeOp::Denoise;
@@ -733,9 +735,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_defringePanel = new DefringePanel(this);
     connect(m_defringePanel, &DefringePanel::valuesChanged, this,
             [this](const DefringeNode::Values &v) {
-                if (!m_defringe)
+                if (!doc().defringe)
                     return;
-                m_defringe->setValues(v);
+                doc().defringe->setValues(v);
                 // Defringe bakes into the base (a full-res LAB pass); coalesce
                 // drags like denoise/sharpen.
                 m_bakeOp = BakeOp::Defringe;
@@ -746,19 +748,19 @@ MainWindow::MainWindow(QWidget *parent)
     m_rawPanel = new RawSettingsPanel(this);
     connect(m_rawPanel, &RawSettingsPanel::valuesChanged, this,
             [this](const raw::RawDecodeOptions &opts, const raw::RawLensDefaults &lens) {
-                const bool decodeChanged = !(opts == m_rawOptions);
+                const bool decodeChanged = !(opts == doc().rawOptions);
                 const bool lensChanged = !(lens == m_rawLensDefaults);
-                m_rawOptions = opts;
+                doc().rawOptions = opts;
                 m_rawLensDefaults = lens;
-                saveRawDefaults(m_rawOptions, m_rawLensDefaults); // new global default
+                saveRawDefaults(doc().rawOptions, m_rawLensDefaults); // new global default
                 // Apply the lens-correction toggles to the open photo, preserving
                 // its perspective and other lens params.
-                if (lensChanged && m_lens) {
-                    LensCorrectionNode::Params p = m_lens->params();
+                if (lensChanged && doc().lens) {
+                    LensCorrectionNode::Params p = doc().lens->params();
                     p.distortion = lens.distortion;
                     p.tca = lens.tca;
                     p.vignetting = lens.vignetting;
-                    m_lens->setParams(p);
+                    doc().lens->setParams(p);
                 }
                 if (decodeChanged) {
                     m_redecodeTimer->start(); // debounced re-decode (also refreshes lens)
@@ -909,8 +911,8 @@ MainWindow::MainWindow(QWidget *parent)
                 showHint(QStringLiteral("Could not re-decode RAW: %1").arg(r.error));
             return;
         }
-        m_graph.setSource(r.image);
-        ++m_sourceGeneration; // new pixels → preset thumbnails must re-render
+        doc().graph.setSource(r.image);
+        ++doc().sourceGeneration; // new pixels → preset thumbnails must re-render
         // Keep the current WB temperature (don't reseed to as-shot).
         applyCameraProfile(r.meta.color, /*seedKelvin=*/false);
         refreshWorkingSource();  // rebuild the corrected source + display QImage
@@ -932,12 +934,12 @@ MainWindow::MainWindow(QWidget *parent)
             return;
         m_brushUndo.push_back(m_brushMask.data); // clear is undoable
         std::fill(m_brushMask.data.begin(), m_brushMask.data.end(), 0.0f);
-        m_heal->setHealMask(m_brushMask);
+        doc().heal->setHealMask(m_brushMask);
         refreshBaseImage();
         updatePreview();
     });
     connect(m_healPanel, &HealPanel::qualityChanged, this, [this](bool hq) {
-        m_heal->setHighQuality(hq);
+        doc().heal->setHighQuality(hq);
         refreshBaseImage(); // re-heal the current mask at the new quality
         updatePreview();
     });
@@ -957,70 +959,70 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_layersPanel, &LayersPanel::deleteRequested, this, &MainWindow::deleteActiveLayer);
     connect(m_layersPanel, &LayersPanel::layerSelected, this, &MainWindow::selectLayer);
     connect(m_layersPanel, &LayersPanel::renameRequested, this, [this](int i, const QString &name) {
-        if (i <= 0 || i >= m_graph.layerCount())
+        if (i <= 0 || i >= doc().graph.layerCount())
             return; // the Base layer (0) is not renamable
         const QString t = name.trimmed();
-        if (t.isEmpty() || t == m_graph.layer(i).name()) {
+        if (t.isEmpty() || t == doc().graph.layer(i).name()) {
             refreshLayersPanel(); // restore the row (rejects empty/unchanged)
             return;
         }
-        m_graph.layer(i).setName(t);
+        doc().graph.layer(i).setName(t);
         refreshLayersPanel();
-        m_graph.commit();
+        doc().graph.commit();
     });
     connect(m_layersPanel, &LayersPanel::visibilityToggled, this, [this](int i, bool on) {
-        if (i >= 0 && i < m_graph.layerCount()) {
-            m_graph.layer(i).setEnabled(on);
+        if (i >= 0 && i < doc().graph.layerCount()) {
+            doc().graph.layer(i).setEnabled(on);
             refreshLayersPanel();
             updatePreview();
-            m_graph.commit();
+            doc().graph.commit();
         }
     });
     connect(m_layersPanel, &LayersPanel::opacityChanged, this, [this](int percent) {
-        m_graph.activeLayer().setOpacity(percent / 100.0f);
+        doc().graph.activeLayer().setOpacity(percent / 100.0f);
         updatePreview();
     });
     connect(m_layersPanel, &LayersPanel::maskTypeChanged, this,
             &MainWindow::setActiveLayerMaskType);
     connect(m_layersPanel, &LayersPanel::maskFeatherChanged, this, [this](int percent) {
-        MaskSpec spec = m_graph.activeLayer().mask();
+        MaskSpec spec = doc().graph.activeLayer().mask();
         spec.feather = percent / 100.0f;
-        m_graph.activeLayer().setMask(spec);
+        doc().graph.activeLayer().setMask(spec);
         recomputeSelectiveMask();
         updatePreview();
-        m_graph.commit();
+        doc().graph.commit();
     });
     connect(m_layersPanel, &LayersPanel::maskInvertChanged, this, [this](bool on) {
-        MaskSpec spec = m_graph.activeLayer().mask();
+        MaskSpec spec = doc().graph.activeLayer().mask();
         spec.invert = on;
-        m_graph.activeLayer().setMask(spec);
+        doc().graph.activeLayer().setMask(spec);
         recomputeSelectiveMask();
         updatePreview();
-        m_graph.commit();
+        doc().graph.commit();
     });
     connect(m_layersPanel, &LayersPanel::maskRangeChanged, this, [this](int low, int high) {
-        MaskSpec spec = m_graph.activeLayer().mask();
+        MaskSpec spec = doc().graph.activeLayer().mask();
         spec.low = low / 100.0f;
         spec.high = high / 100.0f;
-        m_graph.activeLayer().setMask(spec);
+        doc().graph.activeLayer().setMask(spec);
         recomputeSelectiveMask();
         updatePreview();
-        m_graph.commit();
+        doc().graph.commit();
     });
     connect(m_layersPanel, &LayersPanel::maskColorRangeChanged, this, [this](int percent) {
-        MaskSpec spec = m_graph.activeLayer().mask();
+        MaskSpec spec = doc().graph.activeLayer().mask();
         spec.colorRange = percent / 100.0f;
-        m_graph.activeLayer().setMask(spec);
+        doc().graph.activeLayer().setMask(spec);
         recomputeSelectiveMask();
         updatePreview();
-        m_graph.commit();
+        doc().graph.commit();
     });
     connect(m_layersPanel, &LayersPanel::maskPickColorRequested, this, [this] {
         m_pickPurpose = PickPurpose::MaskColour;
         m_canvas->setColorPickMode(true);
     });
     connect(m_layersPanel, &LayersPanel::maskShowChanged, this, [this](int mode) {
-        m_maskView = mode;
+        doc().maskView = mode;
         recomputeSelectiveMask();
         updatePreview();
     });
@@ -1055,16 +1057,16 @@ MainWindow::MainWindow(QWidget *parent)
     m_zoneGizmo = new ZoneGizmo(m_canvas, this);
     m_zoneGizmo->setFallthrough(m_maskGizmo);
     const auto applyZones = [this](const std::vector<MaskZoneShape> &shapes, bool commit) {
-        if (m_graph.activeLayerIndex() == 0)
+        if (doc().graph.activeLayerIndex() == 0)
             return;
-        MaskSpec spec = m_graph.activeLayer().mask();
+        MaskSpec spec = doc().graph.activeLayer().mask();
         spec.zones = shapes;
-        m_graph.activeLayer().setMask(spec);
+        doc().graph.activeLayer().setMask(spec);
         m_layersPanel->setZoneCount(static_cast<int>(shapes.size()));
         recomputeSelectiveMask();
         updatePreview();
         if (commit)
-            m_graph.commit();
+            doc().graph.commit();
     };
     connect(m_zoneGizmo, &ZoneGizmo::changed, this,
             [applyZones](const std::vector<MaskZoneShape> &s) { applyZones(s, false); });
@@ -1078,23 +1080,23 @@ MainWindow::MainWindow(QWidget *parent)
     // On-canvas crop rectangle editor (only visible while the Crop tool is open).
     m_cropGizmo = new CropGizmo(m_canvas, this);
     connect(m_cropGizmo, &CropGizmo::changed, this, [this](const QRectF &r) {
-        CropState c = m_graph.crop();
+        CropState c = doc().graph.crop();
         c.rect = r;
-        m_graph.setCrop(c);
+        doc().graph.setCrop(c);
         // Live: don't commit yet (editFinished commits); the present pass stays in
         // Editing mode (full frame) so the gizmo keeps mapping 1:1.
     });
     connect(m_cropGizmo, &CropGizmo::editFinished, this, [this](const QRectF &r) {
-        CropState c = m_graph.crop();
+        CropState c = doc().graph.crop();
         c.rect = r;
-        m_graph.setCrop(c);
-        m_graph.commit();
+        doc().graph.setCrop(c);
+        doc().graph.commit();
     });
     connect(m_canvas, &CanvasWidget::viewChanged, m_cropGizmo, [this] { m_cropGizmo->update(); });
 
     connect(m_layersPanel, &LayersPanel::zoneToolChanged, this, [this](int tool) {
         // Engaging a tool implies you want to see the overlay: un-hide first.
-        if (m_overlaysHidden)
+        if (doc().overlaysHidden)
             setOverlayGeometryVisible(true);
         m_zoneGizmo->setTool(static_cast<ZoneGizmo::Tool>(tool));
         syncZoneGizmo(); // ensure it is shown while a tool is engaged
@@ -1104,28 +1106,28 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_layersPanel, &LayersPanel::zoneModeChanged, this,
             [this](bool subtract) { m_zoneGizmo->setSubtract(subtract); });
     connect(m_layersPanel, &LayersPanel::zoneFeatherChanged, this, [this](int percent) {
-        if (m_graph.activeLayerIndex() == 0)
+        if (doc().graph.activeLayerIndex() == 0)
             return;
-        MaskSpec spec = m_graph.activeLayer().mask();
+        MaskSpec spec = doc().graph.activeLayer().mask();
         spec.zoneFeather = percent / 100.0f;
-        m_graph.activeLayer().setMask(spec);
+        doc().graph.activeLayer().setMask(spec);
         recomputeSelectiveMask();
         updatePreview();
-        m_graph.commit();
+        doc().graph.commit();
     });
     connect(m_layersPanel, &LayersPanel::zoneClearRequested, this, [this] {
-        if (m_graph.activeLayerIndex() == 0)
+        if (doc().graph.activeLayerIndex() == 0)
             return;
-        MaskSpec spec = m_graph.activeLayer().mask();
+        MaskSpec spec = doc().graph.activeLayer().mask();
         if (spec.zones.empty())
             return;
         spec.zones.clear();
-        m_graph.activeLayer().setMask(spec);
+        doc().graph.activeLayer().setMask(spec);
         m_layersPanel->setZoneCount(0);
         syncZoneGizmo();
         recomputeSelectiveMask();
         updatePreview();
-        m_graph.commit();
+        doc().graph.commit();
     });
 
     // Dismissible hint bar, bottom-centre over the canvas.
@@ -1225,12 +1227,12 @@ MainWindow::MainWindow(QWidget *parent)
     m_autosaveTimer->setInterval(intervalSec * 1000);
     connect(m_autosaveTimer, &QTimer::timeout, this, &MainWindow::performAutosave);
     connect(&m_autosaveWatcher, &QFutureWatcher<bool>::finished, this, [this] {
-        m_autosaveInFlight = false;
+        doc().autosaveInFlight = false;
         if (m_autosaveWatcher.result())
-            m_lastAutosaveDoc = m_pendingAutosaveDoc; // committed; skip identical writes
+            doc().lastAutosaveDoc = doc().pendingAutosaveDoc; // committed; skip identical writes
         else
             showHint(QStringLiteral("Autosave failed — your work is not yet saved"));
-        m_pendingAutosaveDoc.clear();
+        doc().pendingAutosaveDoc.clear();
     });
 
     // Sweep stale crash-recovery files from past sessions on every launch.
@@ -1451,7 +1453,7 @@ bool MainWindow::openPath(const QString &path)
     badge->setLabel(QStringLiteral("Opening…"));
     badge->start();
     layoutOverlays();
-    const raw::RawDecodeOptions opts = m_rawOptions;
+    const raw::RawDecodeOptions opts = doc().rawOptions;
     m_openImageWatcher.setFuture(
         QtConcurrent::run([path, opts] { return decodeImageFile(path, opts); }));
     return true;
@@ -1468,21 +1470,21 @@ void MainWindow::finishOpenImage(const OpenImageResult &r)
     }
 
     // Keep the original encoded bytes so we can embed them verbatim in a .lumen.
-    m_sourceBytes = r.bytes;
-    m_sourceName = QFileInfo(r.path).fileName();
-    m_projectPath.clear(); // opening a raw image starts a new (unsaved) project
+    doc().sourceBytes = r.bytes;
+    doc().sourceName = QFileInfo(r.path).fileName();
+    doc().projectPath.clear(); // opening a raw image starts a new (unsaved) project
 
     // A freshly opened image starts from a clean slate: clear any in-progress
     // brush editing and reset the graph to its pristine state so the previous
     // image's adjustments (and any selective layers) don't carry over.
     m_brushTarget = BrushTarget::None;
-    m_maskView = 0;
+    doc().maskView = 0;
     m_brushUndo.clear();
     m_brushMask = MaskBuffer();
-    m_graph.restoreState(m_defaultGraphState);
+    doc().graph.restoreState(doc().defaultGraphState);
 
-    m_graph.setSource(r.source); // full-res original; the lens node corrects on top
-    ++m_sourceGeneration;        // new pixels → preset thumbnails must re-render
+    doc().graph.setSource(r.source); // full-res original; the lens node corrects on top
+    ++doc().sourceGeneration;        // new pixels → preset thumbnails must re-render
     // Seed the lens node: a RAW carries EXIF identity for automatic correction;
     // anything else starts neutral (manual perspective still available).
     LensCorrectionNode::Params lp; // defaults: corrections on, perspective neutral
@@ -1498,7 +1500,7 @@ void MainWindow::finishOpenImage(const OpenImageResult &r)
         lp.tca = m_rawLensDefaults.tca;
         lp.vignetting = m_rawLensDefaults.vignetting;
     }
-    m_lens->setParams(lp);
+    doc().lens->setParams(lp);
     // Camera-accurate white balance: install the colour profile and seed the
     // slider at the as-shot temperature (non-RAW keeps the sRGB defaults).
     if (r.isRaw)
@@ -1507,11 +1509,11 @@ void MainWindow::finishOpenImage(const OpenImageResult &r)
     refreshBaseImage(false); // new image → fit the view
     recomputeSelectiveMask();
     updatePreview();        // apply any existing edits
-    m_graph.resetHistory(); // fresh undo timeline for this image
-    m_sourcePath = r.path;
+    doc().graph.resetHistory(); // fresh undo timeline for this image
+    doc().sourcePath = r.path;
     // New unsaved document: clear any prior recovery file, baseline the pristine
     // state (so an unedited open won't autosave), and arm the autosave timer.
-    m_recoveryPath.clear();
+    doc().recoveryPath.clear();
     resetAutosaveBaseline();
     startAutosave();
     if (m_layersPanel->isVisible())
@@ -1523,7 +1525,7 @@ void MainWindow::finishOpenImage(const OpenImageResult &r)
 void MainWindow::redecodeCurrent()
 {
     // Only RAW sources can be re-decoded (others have no decode-time options).
-    if (m_sourceBytes.isEmpty() || !raw::isRawPath(m_sourceName))
+    if (doc().sourceBytes.isEmpty() || !raw::isRawPath(doc().sourceName))
         return;
 
     // Run the demosaic off the UI thread so the app stays responsive and the busy
@@ -1534,8 +1536,8 @@ void MainWindow::redecodeCurrent()
     badge->start();
     layoutOverlays(); // position the badge + dim
 
-    const QByteArray bytes = m_sourceBytes;
-    const raw::RawDecodeOptions opts = m_rawOptions;
+    const QByteArray bytes = doc().sourceBytes;
+    const raw::RawDecodeOptions opts = doc().rawOptions;
     m_decodeWatcher.setFuture(QtConcurrent::run([this, gen, bytes, opts]() -> DecodeResult {
         if (gen != m_decodeGen)
             return {}; // superseded before we even started
@@ -1549,7 +1551,7 @@ QString MainWindow::promptSaveProjectPath()
 {
     // Default name "<source>.lumen", in the last-used project folder (falling
     // back to next-to-the-source on first save).
-    const QFileInfo src(m_projectPath.isEmpty() ? m_sourcePath : m_projectPath);
+    const QFileInfo src(doc().projectPath.isEmpty() ? doc().sourcePath : doc().projectPath);
     const QString dir = lastDir(QStringLiteral("saveProject"), src.dir().path());
     const QString suggested =
         QDir(dir).filePath(src.completeBaseName() + QStringLiteral(".lumen"));
@@ -1565,7 +1567,7 @@ QString MainWindow::promptSaveProjectPath()
 
 void MainWindow::applySaveSuccess(const QString &path)
 {
-    m_projectPath = path;
+    doc().projectPath = path;
     rememberDir(QStringLiteral("saveProject"), path);
     // The work now lives in the user's file; autosave targets it from here on and
     // the transient recovery file is no longer needed.
@@ -1578,7 +1580,7 @@ void MainWindow::applySaveSuccess(const QString &path)
 
 void MainWindow::saveProject()
 {
-    if (m_graph.source().isNull()) {
+    if (doc().graph.source().isNull()) {
         showHint(QStringLiteral("Open an image before saving a project"));
         return;
     }
@@ -1588,7 +1590,7 @@ void MainWindow::saveProject()
     }
     // Re-save to the existing file silently; only a first ("fresh") save needs the
     // dialog. Use "Save as…" to write to a new location.
-    const QString path = m_projectPath.isEmpty() ? promptSaveProjectPath() : m_projectPath;
+    const QString path = doc().projectPath.isEmpty() ? promptSaveProjectPath() : doc().projectPath;
     if (path.isEmpty())
         return;
     writeProjectAsync(path);
@@ -1596,7 +1598,7 @@ void MainWindow::saveProject()
 
 void MainWindow::saveProjectAs()
 {
-    if (m_graph.source().isNull()) {
+    if (doc().graph.source().isNull()) {
         showHint(QStringLiteral("Open an image before saving a project"));
         return;
     }
@@ -1635,7 +1637,7 @@ bool MainWindow::saveProjectSync()
 {
     // The blocking save the quit/discard flow needs: it must complete before the
     // document can be discarded, so it can't go through the async path.
-    if (m_graph.source().isNull())
+    if (doc().graph.source().isNull())
         return true; // nothing to save
     const QString path = promptSaveProjectPath();
     if (path.isEmpty())
@@ -1663,8 +1665,8 @@ QJsonObject MainWindow::buildDocGraph() const
     // The edit graph plus the per-project RAW decode options — the exact document
     // a project file persists. (The graph stays decode-agnostic; loadProjectFile
     // reads the rawOptions key back.)
-    QJsonObject graph = m_graph.saveState();
-    graph[QStringLiteral("rawOptions")] = m_rawOptions.toJson();
+    QJsonObject graph = doc().graph.saveState();
+    graph[QStringLiteral("rawOptions")] = doc().rawOptions.toJson();
     return graph;
 }
 
@@ -1677,12 +1679,12 @@ QByteArray MainWindow::sourceForSave(QString *name) const
 {
     // Embed the original encoded bytes; fall back to a PNG of the source if they
     // aren't available (e.g. a source we only hold as a decoded QImage).
-    QByteArray bytes = m_sourceBytes;
-    QString outName = m_sourceName;
-    if (bytes.isEmpty() && !m_sourceQImage.isNull()) {
+    QByteArray bytes = doc().sourceBytes;
+    QString outName = doc().sourceName;
+    if (bytes.isEmpty() && !doc().sourceQImage.isNull()) {
         QBuffer buf(&bytes);
         buf.open(QIODevice::WriteOnly);
-        m_sourceQImage.save(&buf, "PNG");
+        doc().sourceQImage.save(&buf, "PNG");
         outName = QStringLiteral("source.png");
     }
     if (name)
@@ -1692,42 +1694,42 @@ QByteArray MainWindow::sourceForSave(QString *name) const
 
 void MainWindow::resetAutosaveBaseline()
 {
-    m_openDoc = m_lastAutosaveDoc = currentDocBytes();
+    doc().openDoc = doc().lastAutosaveDoc = currentDocBytes();
 }
 
 void MainWindow::startAutosave()
 {
-    if (!m_graph.source().isNull())
+    if (!doc().graph.source().isNull())
         m_autosaveTimer->start();
 }
 
 void MainWindow::deleteRecoveryFile()
 {
-    if (m_recoveryPath.isEmpty())
+    if (doc().recoveryPath.isEmpty())
         return;
-    QFile::remove(m_recoveryPath);
-    QFile::remove(m_recoveryPath + QStringLiteral(".tmp"));
-    m_recoveryPath.clear();
+    QFile::remove(doc().recoveryPath);
+    QFile::remove(doc().recoveryPath + QStringLiteral(".tmp"));
+    doc().recoveryPath.clear();
 }
 
 void MainWindow::performAutosave()
 {
     // Never persist a transient "show up to here" view — its disabled flags aren't
     // part of the real document.
-    if (m_graph.source().isNull() || m_autosaveInFlight || m_peeking)
+    if (doc().graph.source().isNull() || doc().autosaveInFlight || doc().peeking)
         return;
-    const QByteArray doc = currentDocBytes();
-    if (doc == m_lastAutosaveDoc)
+    const QByteArray docBytes = currentDocBytes();
+    if (docBytes == doc().lastAutosaveDoc)
         return; // nothing changed since the last write
-    if (m_projectPath.isEmpty() && doc == m_openDoc)
+    if (doc().projectPath.isEmpty() && docBytes == doc().openDoc)
         return; // opened but never edited — don't spawn a recovery file
 
-    QString target = m_projectPath;
+    QString target = doc().projectPath;
     if (target.isEmpty()) {
-        if (m_recoveryPath.isEmpty())
-            m_recoveryPath = autosave::newRecoveryPath(
-                autosave::projectsDir(), m_sourceName, QDateTime::currentDateTime());
-        target = m_recoveryPath;
+        if (doc().recoveryPath.isEmpty())
+            doc().recoveryPath = autosave::newRecoveryPath(
+                autosave::projectsDir(), doc().sourceName, QDateTime::currentDateTime());
+        target = doc().recoveryPath;
     }
     if (target.isEmpty())
         return; // no writable location (projectsDir failed)
@@ -1735,8 +1737,8 @@ void MainWindow::performAutosave()
     QString name;
     const QByteArray bytes = sourceForSave(&name);
     const QJsonObject graph = buildDocGraph();
-    m_pendingAutosaveDoc = doc;
-    m_autosaveInFlight = true;
+    doc().pendingAutosaveDoc = docBytes;
+    doc().autosaveInFlight = true;
     // Write off the UI thread: embedding the full source can be tens of MB. The
     // snapshot args are value copies, so the worker touches nothing the UI mutates.
     m_autosaveWatcher.setFuture(QtConcurrent::run([target, graph, bytes, name] {
@@ -1746,17 +1748,17 @@ void MainWindow::performAutosave()
 
 bool MainWindow::flushAutosaveSync()
 {
-    if (m_graph.source().isNull())
+    if (doc().graph.source().isNull())
         return true;
     // Don't race a background write to the same target.
     if (m_autosaveWatcher.isRunning())
         m_autosaveWatcher.waitForFinished();
-    m_autosaveInFlight = false;
+    doc().autosaveInFlight = false;
 
-    const QByteArray doc = currentDocBytes();
-    if (doc == m_lastAutosaveDoc)
+    const QByteArray docBytes = currentDocBytes();
+    if (docBytes == doc().lastAutosaveDoc)
         return true; // already persisted
-    QString target = m_projectPath.isEmpty() ? m_recoveryPath : m_projectPath;
+    QString target = doc().projectPath.isEmpty() ? doc().recoveryPath : doc().projectPath;
     if (target.isEmpty()) // unsaved & no recovery file yet → nothing to flush to
         return true;
     QString name;
@@ -1767,22 +1769,22 @@ bool MainWindow::flushAutosaveSync()
                              QStringLiteral("Could not save your work: %1").arg(error));
         return false;
     }
-    m_lastAutosaveDoc = doc;
+    doc().lastAutosaveDoc = docBytes;
     return true;
 }
 
 bool MainWindow::maybeSaveBeforeDiscard()
 {
     exitPeek(); // restore the real document before any save / serialise / discard
-    if (m_graph.source().isNull())
+    if (doc().graph.source().isNull())
         return true;
-    if (!m_projectPath.isEmpty()) {
+    if (!doc().projectPath.isEmpty()) {
         // A saved document is continuously autosaved to the user's file: flush the
         // latest edits and discard silently (no prompt). On a write failure, fall
         // through to the prompt so the user can choose another location.
         if (flushAutosaveSync())
             return true;
-    } else if (currentDocBytes() == m_openDoc) {
+    } else if (currentDocBytes() == doc().openDoc) {
         return true; // opened but never edited — nothing to lose
     }
 
@@ -1858,17 +1860,17 @@ bool MainWindow::applyProjectResult(const OpenProjectResult &r)
 {
     if (!r.loaded || r.source.isNull())
         return false;
-    m_rawOptions = r.rawOptions; // adopt the project's decode options
+    doc().rawOptions = r.rawOptions; // adopt the project's decode options
 
     // Reset any active editing state, then load the document.
     m_brushTarget = BrushTarget::None;
-    m_maskView = 0;
+    doc().maskView = 0;
     m_brushUndo.clear();
-    m_sourceBytes = r.sourceBytes;
-    m_sourceName = r.sourceName;
-    m_graph.setSource(r.source);
-    ++m_sourceGeneration;              // new pixels → preset thumbnails must re-render
-    m_graph.loadProjectState(r.graph); // restores the lens node's params too
+    doc().sourceBytes = r.sourceBytes;
+    doc().sourceName = r.sourceName;
+    doc().graph.setSource(r.source);
+    ++doc().sourceGeneration;              // new pixels → preset thumbnails must re-render
+    doc().graph.loadProjectState(r.graph); // restores the lens node's params too
     // Refresh the camera profile from the actual decode, keeping the restored
     // WB temperature (don't reseed to as-shot).
     if (r.isRaw)
@@ -1879,13 +1881,13 @@ bool MainWindow::applyProjectResult(const OpenProjectResult &r)
     recomputeSelectiveMask();
     updateCropView();        // push the restored crop/orientation to the canvas
     updatePreview();
-    m_graph.resetHistory();
+    doc().graph.resetHistory();
 
-    m_projectPath = r.path;
-    m_sourcePath = r.path; // export defaults to "<project>-edited.<ext>"
+    doc().projectPath = r.path;
+    doc().sourcePath = r.path; // export defaults to "<project>-edited.<ext>"
     // A fresh document session: autosave now targets this user file (no recovery
     // file), and the baseline is the just-loaded state.
-    m_recoveryPath.clear();
+    doc().recoveryPath.clear();
     resetAutosaveBaseline();
     startAutosave();
     if (m_layersPanel->isVisible())
@@ -1916,11 +1918,11 @@ void MainWindow::loadProjectFile(const QString &path)
 
 void MainWindow::copySettings()
 {
-    if (m_graph.source().isNull()) {
+    if (doc().graph.source().isNull()) {
         showHint(QStringLiteral("Open an image before copying settings"));
         return;
     }
-    m_copiedSettings = preset::fromGraph(m_graph);
+    m_copiedSettings = preset::fromGraph(doc().graph);
     showHint(QStringLiteral("Copied edit settings"));
 }
 
@@ -1935,11 +1937,11 @@ void MainWindow::pasteSettings()
 
 void MainWindow::savePreset()
 {
-    if (m_graph.source().isNull()) {
+    if (doc().graph.source().isNull()) {
         showHint(QStringLiteral("Open an image before saving a preset"));
         return;
     }
-    const QFileInfo src(m_sourcePath);
+    const QFileInfo src(doc().sourcePath);
     // Default into the user presets folder so a saved preset immediately shows up
     // in the Presets browser (the user can still navigate elsewhere in the dialog).
     const QString presetsDir = preset::userPresetsDir();
@@ -1957,7 +1959,7 @@ void MainWindow::savePreset()
 
     const QString name = QFileInfo(path).completeBaseName();
     QString error;
-    if (!preset::save(path, preset::fromGraph(m_graph, name), &error)) {
+    if (!preset::save(path, preset::fromGraph(doc().graph, name), &error)) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Could not save preset: %1").arg(error));
         return;
@@ -1971,7 +1973,7 @@ void MainWindow::savePreset()
 
 void MainWindow::applyPresetFile()
 {
-    if (m_graph.source().isNull()) {
+    if (doc().graph.source().isNull()) {
         showHint(QStringLiteral("Open an image before applying a preset"));
         return;
     }
@@ -1996,13 +1998,13 @@ void MainWindow::applyPresetFile()
 
 void MainWindow::applyPreset(const QJsonObject &presetObj, const QString &doneHint)
 {
-    if (!preset::applyToGraph(presetObj, m_graph)) {
+    if (!preset::applyToGraph(presetObj, doc().graph)) {
         showHint(QStringLiteral("That isn't a valid preset"));
         return;
     }
     // One undoable step, then refresh the preview and reseed any open tools — the
     // same path undo/redo uses to reflect a graph change in the UI.
-    m_graph.commit();
+    doc().graph.commit();
     afterHistoryChange();
     showHint(doneHint);
 }
@@ -2023,11 +2025,11 @@ bool MainWindow::restoreRecovery(const QString &path)
     // Loaded as a document, but a recovery file is NOT the user's file: keep it as
     // unsaved work that continues autosaving to this same file and prompts on
     // close (until the user explicitly Saves to a chosen path).
-    m_projectPath.clear();
-    m_recoveryPath = path;
-    m_sourcePath = m_sourceName; // export naming from the original, not the temp file
-    m_openDoc = QByteArray();    // sentinel: recovered work is treated as unsaved
-    updateTitle(QStringLiteral("%1 (recovered)").arg(QFileInfo(m_sourceName).fileName()));
+    doc().projectPath.clear();
+    doc().recoveryPath = path;
+    doc().sourcePath = doc().sourceName; // export naming from the original, not the temp file
+    doc().openDoc = QByteArray();    // sentinel: recovered work is treated as unsaved
+    updateTitle(QStringLiteral("%1 (recovered)").arg(QFileInfo(doc().sourceName).fileName()));
     showHint(QStringLiteral("Restored unsaved work — save it to keep a copy"));
     return true;
 }
@@ -2107,7 +2109,7 @@ void MainWindow::openImageDialog()
 
 void MainWindow::exportImage()
 {
-    if (m_graph.source().isNull()) {
+    if (doc().graph.source().isNull()) {
         showHint(QStringLiteral("Open an image before exporting"));
         return;
     }
@@ -2118,32 +2120,32 @@ void MainWindow::exportImage()
 
     // 1. Choose format + quality + size + colour space.
     ExportDialog dlg(this);
-    dlg.setSelection(m_exportExt, m_exportQuality, m_exportLongEdge, m_exportColorSpace);
+    dlg.setSelection(doc().exportExt, doc().exportQuality, doc().exportLongEdge, doc().exportColorSpace);
     if (dlg.exec() != QDialog::Accepted)
         return;
-    m_exportExt = dlg.extension();
+    doc().exportExt = dlg.extension();
     const int quality = dlg.quality();
     if (quality >= 0)
-        m_exportQuality = quality;
-    m_exportLongEdge = dlg.longEdge();
-    m_exportColorSpace = dlg.colorSpace();
-    const Image::ExportOptions exportOpts{quality, dlg.bits(), m_exportLongEdge,
-                                          m_exportColorSpace};
+        doc().exportQuality = quality;
+    doc().exportLongEdge = dlg.longEdge();
+    doc().exportColorSpace = dlg.colorSpace();
+    const Image::ExportOptions exportOpts{quality, dlg.bits(), doc().exportLongEdge,
+                                          doc().exportColorSpace};
 
     // 2. Choose the path, defaulting to "<name>-edited.<ext>" in the last-used
     //    export folder (falling back to next-to-the-source).
-    const QFileInfo src(m_sourcePath);
+    const QFileInfo src(doc().sourcePath);
     const QString dir = lastDir(QStringLiteral("export"), src.dir().path());
     const QString suggested = QDir(dir).filePath(
-        src.completeBaseName() + QStringLiteral("-edited.") + m_exportExt);
+        src.completeBaseName() + QStringLiteral("-edited.") + doc().exportExt);
     const QString filter =
-        QStringLiteral("%1 (*.%2)").arg(m_exportExt.toUpper(), m_exportExt);
+        QStringLiteral("%1 (*.%2)").arg(doc().exportExt.toUpper(), doc().exportExt);
     QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Export image"),
                                                 suggested, filter);
     if (path.isEmpty())
         return;
     if (QFileInfo(path).suffix().isEmpty())
-        path += QStringLiteral(".") + m_exportExt;
+        path += QStringLiteral(".") + doc().exportExt;
 
     // 3. Show the "Exporting…" badge now, then defer the snapshot and the worker
     //    launch to the next event-loop tick. Returning first lets the Save dialog
@@ -2158,16 +2160,16 @@ void MainWindow::exportImage()
     QTimer::singleShot(0, this, [this, path, exportOpts]() {
         // Do EVERYTHING heavy on the worker thread — both the full-resolution
         // composite and the encode. Every node's apply() is eager (it materialises
-        // pixels via vips_image_write_to_memory), so m_graph.result() at full res
+        // pixels via vips_image_write_to_memory), so doc().graph.result() at full res
         // is a multi-second block; running it on the UI thread froze the whole app
         // (the badge animation included). Instead snapshot the graph as JSON (cheap:
         // node params plus PNG-encoded masks) and take a ref to the source, then
         // rebuild an independent EditGraph on the worker and composite there. The
-        // worker never touches m_graph's mutable node cache, so the export stays
+        // worker never touches doc().graph's mutable node cache, so the export stays
         // race-free even if the user keeps editing. The finished handler reports
         // success/failure.
-        const QJsonObject graphState = m_graph.saveState();
-        const Image source = m_graph.source();
+        const QJsonObject graphState = doc().graph.saveState();
+        const Image source = doc().graph.source();
         m_exportPending = false;
         m_exportWatcher.setFuture(QtConcurrent::run(
             [path, exportOpts, graphState, source]() -> ExportResult {
@@ -2199,7 +2201,7 @@ void MainWindow::updatePreview()
 {
     // Before/After: neutralise every shader stage so the original base shows
     // through unedited (the base texture is set to the original in refreshBaseImage).
-    if (m_compareOriginal) {
+    if (doc().compareOriginal) {
         m_canvas->setPreviewState(PreviewState{});
         m_canvas->setCurveLuts(identityChannelLuts());
         m_canvas->setLut3D(Lut3D{});
@@ -2212,17 +2214,17 @@ void MainWindow::updatePreview()
     // is dialled in. Once the stroke ends this falls back to the explicit "Show
     // mask" toggle, so the user can hide the highlight (and see the layer's
     // opacity/adjustment) by choosing "Show: Off".
-    const int overlayView = (m_maskView != 0) ? m_maskView : (m_selectivePainting ? 1 : 0);
+    const int overlayView = (doc().maskView != 0) ? doc().maskView : (m_selectivePainting ? 1 : 0);
 
-    PreviewState ps = m_graph.previewState();
+    PreviewState ps = doc().graph.previewState();
     ps.selMaskView = static_cast<float>(overlayView); // preview-only overlay
     if (overlayView != 0)
         ps.selMaskMode = 1.0f; // overlay samples the uploaded mask texture
     // Fade the explicit "Show mask" highlight by the active layer's opacity so
     // opacity has a visible effect while inspecting the mask. While painting we
     // keep it full strength so the strokes you're drawing stay visible.
-    if (!m_selectivePainting && m_maskView != 0 && m_graph.activeLayerIndex() > 0)
-        ps.selMaskOpacity = m_graph.activeLayer().opacity();
+    if (!m_selectivePainting && doc().maskView != 0 && doc().graph.activeLayerIndex() > 0)
+        ps.selMaskOpacity = doc().graph.activeLayer().opacity();
     if (m_healPainting) {
         // Show the in-progress heal stroke as a red overlay (the mask texture),
         // without any selective adjustment.
@@ -2231,9 +2233,9 @@ void MainWindow::updatePreview()
         ps.selMaskView = 1.0f;
     }
     m_canvas->setPreviewState(ps);
-    m_canvas->setCurveLuts(m_graph.previewLut());
-    m_canvas->setLut3D(m_graph.previewLook());
-    m_canvas->setVignette(m_graph.vignette()); // creative vignette (present pass)
+    m_canvas->setCurveLuts(doc().graph.previewLut());
+    m_canvas->setLut3D(doc().graph.previewLook());
+    m_canvas->setVignette(doc().graph.vignette()); // creative vignette (present pass)
 
     // A capped-resolution sRGB copy of the source, for evaluating data-driven
     // (luminosity/colour) layer masks; geometric masks ignore it. Building it
@@ -2247,16 +2249,16 @@ void MainWindow::updatePreview()
         return m.type != MaskSpec::None || !m.zones.empty();
     };
     bool needsMaskSrc = false;
-    for (int i = 1; i < m_graph.layerCount(); ++i) {
-        if (hasMask(m_graph.layer(i).mask())) {
+    for (int i = 1; i < doc().graph.layerCount(); ++i) {
+        if (hasMask(doc().graph.layer(i).mask())) {
             needsMaskSrc = true;
             break;
         }
     }
     constexpr int cap = 1280;
     QImage maskSrc;
-    if (needsMaskSrc && !m_sourceQImage.isNull()) {
-        maskSrc = m_sourceQImage;
+    if (needsMaskSrc && !doc().sourceQImage.isNull()) {
+        maskSrc = doc().sourceQImage;
         if (std::max(maskSrc.width(), maskSrc.height()) > cap)
             maskSrc = maskSrc.scaled(cap, cap, Qt::KeepAspectRatio,
                                      Qt::SmoothTransformation);
@@ -2266,10 +2268,10 @@ void MainWindow::updatePreview()
     const uint8_t *maskRgba = maskSrc.isNull() ? nullptr : maskSrc.constBits();
 
     // Layers above the Base, composited as extra GPU passes.
-    const int activeIdx = m_graph.activeLayerIndex();
+    const int activeIdx = doc().graph.activeLayerIndex();
     std::vector<LayerPreview> extras;
-    for (int i = 1; i < m_graph.layerCount(); ++i) {
-        Layer &layer = m_graph.layer(i);
+    for (int i = 1; i < doc().graph.layerCount(); ++i) {
+        Layer &layer = doc().graph.layer(i);
         LayerPreview lp;
         layer.contributeToPreview(lp.state);
         layer.contributeToPreviewLut(lp.curves);
@@ -2295,9 +2297,9 @@ void MainWindow::applyCameraProfile(const raw::ColorProfile &profile, bool seedK
 {
     if (!profile.valid)
         return;
-    for (int i = 0; i < m_graph.layerCount(); ++i) {
+    for (int i = 0; i < doc().graph.layerCount(); ++i) {
         if (auto *t = static_cast<TuneNode *>(
-                m_graph.layer(i).nodeOfType(QStringLiteral("tune"))))
+                doc().graph.layer(i).nodeOfType(QStringLiteral("tune"))))
             t->setCameraProfile(profile.camToRgb, profile.xyzToCam, profile.asShotMul,
                                 seedKelvin);
     }
@@ -2305,34 +2307,34 @@ void MainWindow::applyCameraProfile(const raw::ColorProfile &profile, bool seedK
 
 TuneNode *MainWindow::activeTune() const
 {
-    return static_cast<TuneNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("tune")));
+    return static_cast<TuneNode *>(doc().graph.activeLayer().nodeOfType(QStringLiteral("tune")));
 }
 
 CurvesNode *MainWindow::activeCurves() const
 {
-    return static_cast<CurvesNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("curves")));
+    return static_cast<CurvesNode *>(doc().graph.activeLayer().nodeOfType(QStringLiteral("curves")));
 }
 
 LutNode *MainWindow::activeLut() const
 {
-    return static_cast<LutNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("lut")));
+    return static_cast<LutNode *>(doc().graph.activeLayer().nodeOfType(QStringLiteral("lut")));
 }
 
 MonoNode *MainWindow::activeMono() const
 {
-    return static_cast<MonoNode *>(m_graph.activeLayer().nodeOfType(QStringLiteral("mono")));
+    return static_cast<MonoNode *>(doc().graph.activeLayer().nodeOfType(QStringLiteral("mono")));
 }
 
 ColorGradeNode *MainWindow::activeColorGrade() const
 {
     return static_cast<ColorGradeNode *>(
-        m_graph.activeLayer().nodeOfType(QStringLiteral("colorgrade")));
+        doc().graph.activeLayer().nodeOfType(QStringLiteral("colorgrade")));
 }
 
 ColorMixerNode *MainWindow::activeColorMixer() const
 {
     return static_cast<ColorMixerNode *>(
-        m_graph.activeLayer().nodeOfType(QStringLiteral("colormixer")));
+        doc().graph.activeLayer().nodeOfType(QStringLiteral("colormixer")));
 }
 
 void MainWindow::openLayersTool()
@@ -2363,8 +2365,8 @@ void MainWindow::hideLayersPanel()
         m_brushTarget = BrushTarget::None;
         m_canvas->setBrushMode(false);
     }
-    if (m_maskView != 0) {           // clear the mask overlay
-        m_maskView = 0;
+    if (doc().maskView != 0) {           // clear the mask overlay
+        doc().maskView = 0;
         updatePreview();
     }
     syncMaskGizmo();                 // hide the gizmo
@@ -2375,13 +2377,13 @@ void MainWindow::hideLayersPanel()
 void MainWindow::refreshLayersPanel()
 {
     QVector<LayersPanel::Row> rows;
-    for (int i = 0; i < m_graph.layerCount(); ++i)
-        rows.append({m_graph.layer(i).name(), m_graph.layer(i).enabled()});
-    const int active = m_graph.activeLayerIndex();
+    for (int i = 0; i < doc().graph.layerCount(); ++i)
+        rows.append({doc().graph.layer(i).name(), doc().graph.layer(i).enabled()});
+    const int active = doc().graph.activeLayerIndex();
     m_layersPanel->setLayers(rows, active,
-                             static_cast<int>(std::lround(m_graph.activeLayer().opacity() * 100)));
-    m_layersPanel->setMaskState(m_graph.activeLayer().mask(), active == 0, m_brushSize,
-                                m_brushHardness, m_brushAdd, m_maskView);
+                             static_cast<int>(std::lround(doc().graph.activeLayer().opacity() * 100)));
+    m_layersPanel->setMaskState(doc().graph.activeLayer().mask(), active == 0, m_brushSize,
+                                m_brushHardness, m_brushAdd, doc().maskView);
     syncMaskGizmo();
     syncZoneGizmo();
     updateMaskEditing();
@@ -2419,15 +2421,15 @@ void MainWindow::reseedOpenPanels()
 
 Layer &MainWindow::addMaskedAdjustmentLayer(const QString &name)
 {
-    Layer &layer = m_graph.addLayer(name);
+    Layer &layer = doc().graph.addLayer(name);
     // Full adjustment node set so any tool (Tone/Mixer/Curves/Grade/Looks/Mono)
     // works on the layer (added to it as it is now the active layer).
-    m_graph.addNode(std::make_unique<TuneNode>());
-    m_graph.addNode(std::make_unique<ColorMixerNode>());
-    m_graph.addNode(std::make_unique<CurvesNode>());
-    m_graph.addNode(std::make_unique<ColorGradeNode>());
-    m_graph.addNode(std::make_unique<LutNode>());
-    m_graph.addNode(std::make_unique<MonoNode>());
+    doc().graph.addNode(std::make_unique<TuneNode>());
+    doc().graph.addNode(std::make_unique<ColorMixerNode>());
+    doc().graph.addNode(std::make_unique<CurvesNode>());
+    doc().graph.addNode(std::make_unique<ColorGradeNode>());
+    doc().graph.addNode(std::make_unique<LutNode>());
+    doc().graph.addNode(std::make_unique<MonoNode>());
     // Start with a full-range luminosity mask (a no-op until dialled in) so the
     // panel's mask editor — including the Shadows/Midtones/Highlights presets — is
     // available immediately, matching the "Selective adjustment" command.
@@ -2439,25 +2441,25 @@ Layer &MainWindow::addMaskedAdjustmentLayer(const QString &name)
 
 void MainWindow::addAdjustmentLayer()
 {
-    addMaskedAdjustmentLayer(QStringLiteral("Layer %1").arg(m_graph.layerCount()));
+    addMaskedAdjustmentLayer(QStringLiteral("Layer %1").arg(doc().graph.layerCount()));
     refreshLayersPanel();
     updatePreview();
-    m_graph.commit();
+    doc().graph.commit();
 }
 
 void MainWindow::deleteActiveLayer()
 {
-    if (m_graph.removeLayer(m_graph.activeLayerIndex())) {
+    if (doc().graph.removeLayer(doc().graph.activeLayerIndex())) {
         refreshLayersPanel();
         updatePreview();
-        m_graph.commit();
+        doc().graph.commit();
     }
 }
 
 void MainWindow::selectLayer(int index)
 {
     endMaskBrushSession(); // commit the current layer's mask-brush before switching
-    m_graph.setActiveLayer(index);
+    doc().graph.setActiveLayer(index);
     refreshLayersPanel();
     // Reseed any open adjustment tool with the newly-active layer's values
     // (guarded — a layer may not carry every node type, e.g. a selective layer).
@@ -2475,22 +2477,22 @@ void MainWindow::selectLayer(int index)
     }
     if (m_monoPanel->isVisible()) {
         if (!activeMono()) {
-            m_graph.addNode(std::make_unique<MonoNode>());
-            m_graph.commit();
+            doc().graph.addNode(std::make_unique<MonoNode>());
+            doc().graph.commit();
         }
         m_monoPanel->reveal(activeMono()->values());
     }
     if (m_colorMixerPanel->isVisible()) {
         if (!activeColorMixer()) {
-            m_graph.addNode(std::make_unique<ColorMixerNode>());
-            m_graph.commit();
+            doc().graph.addNode(std::make_unique<ColorMixerNode>());
+            doc().graph.commit();
         }
         m_colorMixerPanel->reveal(activeColorMixer()->values());
     }
     if (m_colorGradePanel->isVisible()) {
         if (!activeColorGrade()) {
-            m_graph.addNode(std::make_unique<ColorGradeNode>());
-            m_graph.commit();
+            doc().graph.addNode(std::make_unique<ColorGradeNode>());
+            doc().graph.commit();
         }
         m_colorGradePanel->reveal(activeColorGrade()->values());
     }
@@ -2498,9 +2500,9 @@ void MainWindow::selectLayer(int index)
 
 void MainWindow::setActiveLayerMaskType(int maskType)
 {
-    if (m_graph.activeLayerIndex() == 0)
+    if (doc().graph.activeLayerIndex() == 0)
         return; // the Base layer has no mask
-    MaskSpec spec = m_graph.activeLayer().mask();
+    MaskSpec spec = doc().graph.activeLayer().mask();
     const auto type = static_cast<MaskSpec::Type>(maskType);
     if (spec.type == type)
         return;
@@ -2520,37 +2522,37 @@ void MainWindow::setActiveLayerMaskType(int maskType)
         spec.brush = m_brushMask;
     }
     spec.type = type;
-    m_graph.activeLayer().setMask(spec);
+    doc().graph.activeLayer().setMask(spec);
 
     m_layersPanel->setMaskState(spec, /*isBaseActive=*/false, m_brushSize, m_brushHardness,
-                                m_brushAdd, m_maskView);
+                                m_brushAdd, doc().maskView);
     syncMaskGizmo();
     syncZoneGizmo();
     updateMaskEditing(); // turn the canvas brush on/off for a Brush mask
     recomputeSelectiveMask();
     updatePreview();
-    m_graph.commit();
+    doc().graph.commit();
 }
 
 void MainWindow::onLayerMaskEdited(const MaskSpec &spec, bool commit)
 {
-    if (m_graph.activeLayerIndex() == 0)
+    if (doc().graph.activeLayerIndex() == 0)
         return;
-    m_graph.activeLayer().setMask(spec);
+    doc().graph.activeLayer().setMask(spec);
     recomputeSelectiveMask(); // redraw the overlay as the gizmo drags (if shown)
     updatePreview();
     if (commit)
-        m_graph.commit();
+        doc().graph.commit();
 }
 
 void MainWindow::syncMaskGizmo()
 {
     // The gizmo shows itself only for gradient/radial masks on a non-Base layer —
     // and never while the user has hidden the overlay geometry.
-    if (m_overlaysHidden || m_graph.activeLayerIndex() == 0)
+    if (doc().overlaysHidden || doc().graph.activeLayerIndex() == 0)
         m_maskGizmo->setSpec(MaskSpec{}); // None → hides
     else
-        m_maskGizmo->setSpec(m_graph.activeLayer().mask());
+        m_maskGizmo->setSpec(doc().graph.activeLayer().mask());
     layoutOverlays(); // re-apply gizmo geometry + z-order
 }
 
@@ -2558,21 +2560,21 @@ void MainWindow::syncZoneGizmo()
 {
     // Zones are edited only on a non-Base layer while the Layers panel (which
     // hosts the zone controls) is open, and never while overlays are hidden.
-    const bool active = !m_overlaysHidden && m_graph.activeLayerIndex() != 0
+    const bool active = !doc().overlaysHidden && doc().graph.activeLayerIndex() != 0
                         && m_layersPanel->isVisible();
     if (!active) {
         m_zoneGizmo->setVisible(false);
         layoutOverlays();
         return;
     }
-    m_zoneGizmo->setShapes(m_graph.activeLayer().mask().zones);
+    m_zoneGizmo->setShapes(doc().graph.activeLayer().mask().zones);
     m_zoneGizmo->setVisible(true);
     layoutOverlays();
 }
 
 void MainWindow::setOverlayGeometryVisible(bool visible)
 {
-    m_overlaysHidden = !visible;
+    doc().overlaysHidden = !visible;
     m_layersPanel->setOverlayVisible(visible); // keep the panel toggle in sync
     syncMaskGizmo();
     syncZoneGizmo();
@@ -2593,7 +2595,7 @@ void MainWindow::openToneTool()
 void MainWindow::closeToneTool()
 {
     m_tonePanel->hide();
-    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
@@ -2610,7 +2612,7 @@ void MainWindow::openCurvesTool()
 void MainWindow::closeCurvesTool()
 {
     m_curvesPanel->hide();
-    m_graph.commit();
+    doc().graph.commit();
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
@@ -2627,7 +2629,7 @@ void MainWindow::openLooksTool()
 void MainWindow::closeLooksTool()
 {
     m_looksPanel->hide();
-    m_graph.commit();
+    doc().graph.commit();
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
@@ -2635,7 +2637,7 @@ void MainWindow::closeLooksTool()
 void MainWindow::openPresetsTool()
 {
     m_input.setMode(InputController::Mode::ToolActive);
-    m_presetsPanel->setAmount(m_presetAmount); // reflect the current blend
+    m_presetsPanel->setAmount(doc().presetAmount); // reflect the current blend
     refreshPresetThumbnails();                 // preview each look against the current photo
     m_presetsPanel->adjustSize();
     const int margin = 18;
@@ -2646,15 +2648,15 @@ void MainWindow::openPresetsTool()
 void MainWindow::closePresetsTool()
 {
     m_presetsPanel->hide();
-    m_graph.commit(); // capture any live Amount-slider change as one undo step
+    doc().graph.commit(); // capture any live Amount-slider change as one undo step
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
 
 void MainWindow::invalidatePresetThumbCache()
 {
-    m_thumbCache.clear();
-    m_thumbCacheSig.clear();
+    doc().thumbCache.clear();
+    doc().thumbCacheSig.clear();
 }
 
 void MainWindow::refreshPresetThumbnails()
@@ -2670,76 +2672,76 @@ void MainWindow::refreshPresetThumbnails()
     // cache is missing (e.g. a newly-saved user preset).
     const QByteArray signature = [this] {
         QJsonObject sig;
-        sig.insert(QStringLiteral("src"), QString::number(m_sourceGeneration));
-        sig.insert(QStringLiteral("base"), m_graph.baseLayer().saveState());
-        sig.insert(QStringLiteral("crop"), m_graph.crop().toJson());
+        sig.insert(QStringLiteral("src"), QString::number(doc().sourceGeneration));
+        sig.insert(QStringLiteral("base"), doc().graph.baseLayer().saveState());
+        sig.insert(QStringLiteral("crop"), doc().graph.crop().toJson());
         return QJsonDocument(sig).toJson(QJsonDocument::Compact);
     }();
-    if (signature != m_thumbCacheSig) {
-        m_thumbCache.clear();
-        m_thumbCacheSig = signature;
+    if (signature != doc().thumbCacheSig) {
+        doc().thumbCache.clear();
+        doc().thumbCacheSig = signature;
     }
 
     // Render each preset exactly as applying it would: on a temporary full-coverage
     // layer at 100% over the current photo (tone/colour/grain), plus the preset's
     // graph-global stages (vignette, and structure on the Base node) swapped in for
     // the render — so the thumbnail matches the applied result.
-    const bool haveSource = !m_graph.source().isNull();
+    const bool haveSource = !doc().graph.source().isNull();
     // Suppress the active preset layer so thumbnails show each preset alone rather
     // than stacked on top of whichever preset is applied right now.
     const int presetIdx = presetLayerIndex();
-    const float savedOpacity = presetIdx >= 0 ? m_graph.layer(presetIdx).opacity() : 0.0f;
+    const float savedOpacity = presetIdx >= 0 ? doc().graph.layer(presetIdx).opacity() : 0.0f;
     if (presetIdx >= 0)
-        m_graph.layer(presetIdx).setOpacity(0.0f);
-    const int savedActive = m_graph.activeLayerIndex();
+        doc().graph.layer(presetIdx).setOpacity(0.0f);
+    const int savedActive = doc().graph.activeLayerIndex();
     // Vignette (graph-global) and structure (a Base node) can't ride the temp
     // layer, so swap each preset's own in for its render, then restore afterwards.
-    const VignetteParams savedVignette = m_graph.vignette();
+    const VignetteParams savedVignette = doc().graph.vignette();
     const StructureNode::Values savedStructure =
-        m_structure ? m_structure->values() : StructureNode::Values{};
+        doc().structure ? doc().structure->values() : StructureNode::Values{};
     constexpr int kThumbDim = 200;
 
     for (const preset::Builtin &b : presets) {
         PresetsPanel::Item item{b.id, b.name, b.category, {},
                                 b.id.startsWith(QStringLiteral("user:")),
-                                b.id == m_activePresetId};
+                                b.id == doc().activePresetId};
         if (haveSource) {
-            auto cached = m_thumbCache.constFind(b.id);
-            if (cached != m_thumbCache.constEnd()) {
+            auto cached = doc().thumbCache.constFind(b.id);
+            if (cached != doc().thumbCache.constEnd()) {
                 item.thumb = cached.value();
             } else {
                 Layer &temp = addPresetLayer(QStringLiteral("__thumb"));
-                const int tempIdx = m_graph.activeLayerIndex();
+                const int tempIdx = doc().graph.activeLayerIndex();
                 preset::applyToLayer(b.data, temp); // tone/colour/grain onto the layer
                 temp.setOpacity(1.0f);
-                m_graph.setVignette(preset::vignetteOf(b.data)); // and its vignette
-                if (m_structure)
-                    m_structure->setValues(structureFromPreset(b.data)); // and its structure
-                const QImage img = m_graph.resultDownsampled(kThumbDim).toQImage();
+                doc().graph.setVignette(preset::vignetteOf(b.data)); // and its vignette
+                if (doc().structure)
+                    doc().structure->setValues(structureFromPreset(b.data)); // and its structure
+                const QImage img = doc().graph.resultDownsampled(kThumbDim).toQImage();
                 if (!img.isNull()) {
                     item.thumb = QPixmap::fromImage(img);
-                    m_thumbCache.insert(b.id, item.thumb);
+                    doc().thumbCache.insert(b.id, item.thumb);
                 }
-                m_graph.removeLayer(tempIdx);
+                doc().graph.removeLayer(tempIdx);
             }
         }
         items.push_back(item);
     }
 
-    m_graph.setActiveLayer(savedActive);
-    m_graph.setVignette(savedVignette);
-    if (m_structure)
-        m_structure->setValues(savedStructure);
+    doc().graph.setActiveLayer(savedActive);
+    doc().graph.setVignette(savedVignette);
+    if (doc().structure)
+        doc().structure->setValues(savedStructure);
     if (presetIdx >= 0)
-        m_graph.layer(presetIdx).setOpacity(savedOpacity);
+        doc().graph.layer(presetIdx).setOpacity(savedOpacity);
 
     m_presetsPanel->setItems(items);
 }
 
 int MainWindow::presetLayerIndex() const
 {
-    for (int i = 1; i < m_graph.layerCount(); ++i)
-        if (m_graph.layer(i).name().startsWith(kPresetLayerPrefix))
+    for (int i = 1; i < doc().graph.layerCount(); ++i)
+        if (doc().graph.layer(i).name().startsWith(kPresetLayerPrefix))
             return i;
     return -1;
 }
@@ -2749,20 +2751,20 @@ Layer &MainWindow::addPresetLayer(const QString &name)
     // Full-coverage (None mask) adjustment layer, so its opacity blends the whole
     // preset look uniformly. Carries every creative node the preset can drive —
     // including grain, so grain rides the same opacity blend as the tone/colour.
-    Layer &layer = m_graph.addLayer(name);
-    m_graph.addNode(std::make_unique<TuneNode>());
-    m_graph.addNode(std::make_unique<ColorMixerNode>());
-    m_graph.addNode(std::make_unique<CurvesNode>());
-    m_graph.addNode(std::make_unique<ColorGradeNode>());
-    m_graph.addNode(std::make_unique<LutNode>());
-    m_graph.addNode(std::make_unique<MonoNode>());
-    m_graph.addNode(std::make_unique<GrainNode>());
+    Layer &layer = doc().graph.addLayer(name);
+    doc().graph.addNode(std::make_unique<TuneNode>());
+    doc().graph.addNode(std::make_unique<ColorMixerNode>());
+    doc().graph.addNode(std::make_unique<CurvesNode>());
+    doc().graph.addNode(std::make_unique<ColorGradeNode>());
+    doc().graph.addNode(std::make_unique<LutNode>());
+    doc().graph.addNode(std::make_unique<MonoNode>());
+    doc().graph.addNode(std::make_unique<GrainNode>());
     return layer;
 }
 
 void MainWindow::applyPresetLook(const preset::Builtin &b, int amountPct)
 {
-    if (m_graph.source().isNull()) {
+    if (doc().graph.source().isNull()) {
         showHint(QStringLiteral("Open an image before applying a preset"));
         return;
     }
@@ -2772,23 +2774,23 @@ void MainWindow::applyPresetLook(const preset::Builtin &b, int amountPct)
     // vignette is already the outgoing preset's blend, not the user's original.
     const int existing = presetLayerIndex();
     if (existing < 0) {
-        m_presetBaselineVignette = m_graph.vignette();
-        m_presetBaselineStructure = m_structure ? m_structure->values() : StructureNode::Values{};
+        doc().presetBaselineVignette = doc().graph.vignette();
+        doc().presetBaselineStructure = doc().structure ? doc().structure->values() : StructureNode::Values{};
     }
     if (existing >= 0)
-        m_graph.removeLayer(existing);
+        doc().graph.removeLayer(existing);
     Layer &layer = addPresetLayer(kPresetLayerPrefix + b.name);
     preset::applyToLayer(b.data, layer);
     layer.setOpacity(std::clamp(amountPct, 0, 100) / 100.0f);
-    m_graph.setActiveLayer(0); // leave editing focused on the Base, not the preset
+    doc().graph.setActiveLayer(0); // leave editing focused on the Base, not the preset
 
-    m_activePresetId = b.id;
-    m_presetAmount = amountPct;
-    m_presetVignette = preset::vignetteOf(b.data);
-    m_presetStructure = structureFromPreset(b.data);
+    doc().activePresetId = b.id;
+    doc().presetAmount = amountPct;
+    doc().presetVignette = preset::vignetteOf(b.data);
+    doc().presetStructure = structureFromPreset(b.data);
     applyPresetVignette(amountPct);  // fold the preset's vignette into the blend
     applyPresetStructure(amountPct); // and its local-contrast (baked on the Base)
-    m_graph.commit();
+    doc().graph.commit();
     afterHistoryChange();     // rebuild the preview (incl. the baked structure) + reseed tools
     refreshLayersPanel();     // the new preset layer shows in the stack
     refreshPresetThumbnails(); // re-render (baseline may have shifted)
@@ -2797,11 +2799,11 @@ void MainWindow::applyPresetLook(const preset::Builtin &b, int amountPct)
 
 void MainWindow::setPresetAmount(int amountPct)
 {
-    m_presetAmount = amountPct;
+    doc().presetAmount = amountPct;
     const int idx = presetLayerIndex();
     if (idx < 0)
         return; // no preset applied yet; the value seeds the next apply
-    m_graph.layer(idx).setOpacity(std::clamp(amountPct, 0, 100) / 100.0f);
+    doc().graph.layer(idx).setOpacity(std::clamp(amountPct, 0, 100) / 100.0f);
     applyPresetVignette(amountPct); // keep the vignette in step with the blend
     const bool structureChanged = applyPresetStructure(amountPct);
     updatePreview(); // live; one undo step is committed when the tool closes
@@ -2820,11 +2822,11 @@ void MainWindow::applyPresetVignette(int amountPct)
     // Only steer the vignette when a preset was applied this session — otherwise
     // the baseline/preset snapshots are empty and we'd wipe a vignette that was
     // loaded with a project (whose preset context isn't restored).
-    if (m_activePresetId.isEmpty())
+    if (doc().activePresetId.isEmpty())
         return;
     const float t = std::clamp(amountPct, 0, 100) / 100.0f;
-    const VignetteParams v = blendVignette(m_presetBaselineVignette, m_presetVignette, t);
-    m_graph.setVignette(v);
+    const VignetteParams v = blendVignette(doc().presetBaselineVignette, doc().presetVignette, t);
+    doc().graph.setVignette(v);
     m_canvas->setVignette(v); // present-pass op; no base re-bake needed
 }
 
@@ -2833,13 +2835,13 @@ bool MainWindow::applyPresetStructure(int amountPct)
     // As with the vignette, only steer structure when a preset is active this
     // session. Returns whether the Base structure node actually changed (so the
     // caller knows a re-bake is needed).
-    if (m_activePresetId.isEmpty() || !m_structure)
+    if (doc().activePresetId.isEmpty() || !doc().structure)
         return false;
     const float t = std::clamp(amountPct, 0, 100) / 100.0f;
     const StructureNode::Values v =
-        blendStructure(m_presetBaselineStructure, m_presetStructure, t);
-    const bool changed = v != m_structure->values();
-    m_structure->setValues(v);
+        blendStructure(doc().presetBaselineStructure, doc().presetStructure, t);
+    const bool changed = v != doc().structure->values();
+    doc().structure->setValues(v);
     return changed;
 }
 
@@ -2849,8 +2851,8 @@ void MainWindow::openMonoTool()
     // Most layers carry a mono node; a layer added by another tool (e.g. a
     // selective layer) may not, so add one on demand.
     if (!activeMono()) {
-        m_graph.addNode(std::make_unique<MonoNode>());
-        m_graph.commit();
+        doc().graph.addNode(std::make_unique<MonoNode>());
+        doc().graph.commit();
     }
     m_monoPanel->adjustSize();
     const int margin = 18;
@@ -2861,7 +2863,7 @@ void MainWindow::openMonoTool()
 void MainWindow::closeMonoTool()
 {
     m_monoPanel->hide();
-    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
@@ -2872,8 +2874,8 @@ void MainWindow::openColorMixerTool()
     // Most layers carry a colour-mixer node; a layer added by another tool may
     // not, so add one on demand.
     if (!activeColorMixer()) {
-        m_graph.addNode(std::make_unique<ColorMixerNode>());
-        m_graph.commit();
+        doc().graph.addNode(std::make_unique<ColorMixerNode>());
+        doc().graph.commit();
     }
     m_colorMixerPanel->adjustSize();
     const int margin = 18;
@@ -2884,7 +2886,7 @@ void MainWindow::openColorMixerTool()
 void MainWindow::closeColorMixerTool()
 {
     m_colorMixerPanel->hide();
-    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
@@ -2894,8 +2896,8 @@ void MainWindow::openColorGradeTool()
     m_input.setMode(InputController::Mode::ToolActive);
     // A layer added by another tool may not carry a colour-grade node yet.
     if (!activeColorGrade()) {
-        m_graph.addNode(std::make_unique<ColorGradeNode>());
-        m_graph.commit();
+        doc().graph.addNode(std::make_unique<ColorGradeNode>());
+        doc().graph.commit();
     }
     m_colorGradePanel->adjustSize();
     const int margin = 18;
@@ -2906,86 +2908,86 @@ void MainWindow::openColorGradeTool()
 void MainWindow::closeColorGradeTool()
 {
     m_colorGradePanel->hide();
-    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
 
 void MainWindow::openLensTool()
 {
-    if (!m_lens)
+    if (!doc().lens)
         return;
     m_input.setMode(InputController::Mode::ToolActive);
     m_lensPanel->adjustSize();
     const int margin = 18;
     m_lensPanel->move(width() - m_lensPanel->width() - margin, margin);
-    const LensCorrectionNode::Params &p = m_lens->params();
+    const LensCorrectionNode::Params &p = doc().lens->params();
     // Show the matched Lensfun profile name (which, for fixed-lens compacts,
     // comes from the camera rather than an EXIF lens string).
-    m_lensPanel->reveal(p, m_lens->lensMatched(), m_lens->matchedLensName());
+    m_lensPanel->reveal(p, doc().lens->lensMatched(), doc().lens->matchedLensName());
 }
 
 void MainWindow::closeLensTool()
 {
     m_lensPanel->hide();
-    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
 
 void MainWindow::openSharpenTool()
 {
-    if (!m_sharpen)
+    if (!doc().sharpen)
         return;
     m_input.setMode(InputController::Mode::ToolActive);
     m_sharpenPanel->adjustSize();
     const int margin = 18;
     m_sharpenPanel->move(width() - m_sharpenPanel->width() - margin, margin);
-    m_sharpenPanel->reveal(m_sharpen->values());
+    m_sharpenPanel->reveal(doc().sharpen->values());
 }
 
 void MainWindow::closeSharpenTool()
 {
     m_sharpenPanel->hide();
-    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
 
 void MainWindow::openStructureTool()
 {
-    if (!m_structure)
+    if (!doc().structure)
         return;
     m_input.setMode(InputController::Mode::ToolActive);
     m_structurePanel->adjustSize();
     const int margin = 18;
     m_structurePanel->move(width() - m_structurePanel->width() - margin, margin);
-    m_structurePanel->reveal(m_structure->values());
+    m_structurePanel->reveal(doc().structure->values());
 }
 
 void MainWindow::closeStructureTool()
 {
     m_structurePanel->hide();
-    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
 
 void MainWindow::openGrainTool()
 {
-    if (!m_grain)
+    if (!doc().grain)
         return;
     m_input.setMode(InputController::Mode::ToolActive);
     m_grainPanel->adjustSize();
     const int margin = 18;
     m_grainPanel->move(width() - m_grainPanel->width() - margin, margin);
-    m_grainPanel->reveal(m_grain->values());
+    m_grainPanel->reveal(doc().grain->values());
 }
 
 void MainWindow::closeGrainTool()
 {
     m_grainPanel->hide();
-    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
@@ -2996,13 +2998,13 @@ void MainWindow::openVignetteTool()
     m_vignettePanel->adjustSize();
     const int margin = 18;
     m_vignettePanel->move(width() - m_vignettePanel->width() - margin, margin);
-    m_vignettePanel->reveal(m_graph.vignette());
+    m_vignettePanel->reveal(doc().graph.vignette());
 }
 
 void MainWindow::closeVignetteTool()
 {
     m_vignettePanel->hide();
-    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
@@ -3017,10 +3019,10 @@ void MainWindow::updateTitle(const QString &document)
 
 double MainWindow::sourceAspect() const
 {
-    if (m_sourceQImage.isNull() || m_sourceQImage.height() == 0)
+    if (doc().sourceQImage.isNull() || doc().sourceQImage.height() == 0)
         return 1.0;
-    return static_cast<double>(m_sourceQImage.width())
-           / static_cast<double>(m_sourceQImage.height());
+    return static_cast<double>(doc().sourceQImage.width())
+           / static_cast<double>(doc().sourceQImage.height());
 }
 
 QRectF MainWindow::straightenSafeCropRect(const CropState &c) const
@@ -3028,8 +3030,8 @@ QRectF MainWindow::straightenSafeCropRect(const CropState &c) const
     if (std::abs(c.straighten) < 1e-6)
         return QRectF(0.0, 0.0, 1.0, 1.0);
     const bool swap = (c.rotation == 90 || c.rotation == 270);
-    const double sw = m_sourceQImage.width();
-    const double sh = m_sourceQImage.height();
+    const double sw = doc().sourceQImage.width();
+    const double sh = doc().sourceQImage.height();
     const double ow = swap ? sh : sw; // oriented frame dims (pre-straighten)
     const double oh = swap ? sw : sh;
     return straightenSafeRect(c.straighten, ow, oh, m_cropAspect);
@@ -3041,11 +3043,11 @@ void MainWindow::openCropTool()
     m_cropPanel->adjustSize();
     const int margin = 18;
     m_cropPanel->move(width() - m_cropPanel->width() - margin, margin);
-    m_cropPanel->reveal(m_graph.crop(), sourceAspect());
+    m_cropPanel->reveal(doc().graph.crop(), sourceAspect());
     m_cropAspect = 0.0;
     m_cropGizmo->setAspect(0.0); // free until the user picks a preset
-    m_cropGizmo->setStraighten(m_graph.crop().straighten);
-    m_cropGizmo->setRect(m_graph.crop().rect);
+    m_cropGizmo->setStraighten(doc().graph.crop().straighten);
+    m_cropGizmo->setRect(doc().graph.crop().rect);
     updateCropView(); // switches the canvas into Editing (full-frame) mode
     m_canvas->setFitZoom(0.85f); // pull the frame in so the handles clear the edges
     m_cropGizmo->setGeometry(m_canvas->geometry());
@@ -3058,7 +3060,7 @@ void MainWindow::closeCropTool()
 {
     m_cropPanel->hide();
     m_cropGizmo->hide();
-    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     updateCropView(); // Applied (if cropped) or None
     m_canvas->resetView(); // fit the (now cropped) result to the window
@@ -3078,49 +3080,49 @@ void MainWindow::updateCropView()
         // orientation (rotation/flip) stays applied on screen while the canvas
         // still maps coordinates back to the un-oriented source the masks live in.
         mode = CanvasWidget::CropMaskEdit;
-    } else if (!m_graph.crop().isIdentity() && m_graph.crop().enabled) {
+    } else if (!doc().graph.crop().isIdentity() && doc().graph.crop().enabled) {
         mode = CanvasWidget::CropApplied;
     } else {
         // No crop, or the crop is toggled off in the Adjustments panel → full frame.
         mode = CanvasWidget::CropNone;
     }
-    m_canvas->setCropState(m_graph.crop(), mode);
+    m_canvas->setCropState(doc().graph.crop(), mode);
 }
 
 void MainWindow::openDenoiseTool()
 {
-    if (!m_denoise)
+    if (!doc().denoise)
         return;
     m_input.setMode(InputController::Mode::ToolActive);
     m_denoisePanel->adjustSize();
     const int margin = 18;
     m_denoisePanel->move(width() - m_denoisePanel->width() - margin, margin);
-    m_denoisePanel->reveal(m_denoise->values());
+    m_denoisePanel->reveal(doc().denoise->values());
 }
 
 void MainWindow::closeDenoiseTool()
 {
     m_denoisePanel->hide();
-    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
 
 void MainWindow::openDefringeTool()
 {
-    if (!m_defringe)
+    if (!doc().defringe)
         return;
     m_input.setMode(InputController::Mode::ToolActive);
     m_defringePanel->adjustSize();
     const int margin = 18;
     m_defringePanel->move(width() - m_defringePanel->width() - margin, margin);
-    m_defringePanel->reveal(m_defringe->values());
+    m_defringePanel->reveal(doc().defringe->values());
 }
 
 void MainWindow::closeDefringeTool()
 {
     m_defringePanel->hide();
-    m_graph.commit(); // one undo step per editing session (no-op if unchanged)
+    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
@@ -3131,7 +3133,7 @@ void MainWindow::openRawTool()
     m_rawPanel->adjustSize();
     const int margin = 18;
     m_rawPanel->move(width() - m_rawPanel->width() - margin, margin);
-    m_rawPanel->reveal(m_rawOptions, m_rawLensDefaults);
+    m_rawPanel->reveal(doc().rawOptions, m_rawLensDefaults);
 }
 
 void MainWindow::closeRawTool()
@@ -3143,7 +3145,7 @@ void MainWindow::closeRawTool()
         m_redecodeTimer->stop();
         redecodeCurrent();
     }
-    m_graph.commit(); // capture any lens-correction toggle as one undo step
+    doc().graph.commit(); // capture any lens-correction toggle as one undo step
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
@@ -3166,9 +3168,9 @@ void MainWindow::toggleHistogram()
 
 void MainWindow::toggleClipping()
 {
-    m_showClipping = !m_showClipping;
-    m_canvas->setClipping(m_showClipping);
-    showHint(m_showClipping ? QStringLiteral("Clipping warnings on — red = highlights, blue = shadows")
+    doc().showClipping = !doc().showClipping;
+    m_canvas->setClipping(doc().showClipping);
+    showHint(doc().showClipping ? QStringLiteral("Clipping warnings on — red = highlights, blue = shadows")
                             : QStringLiteral("Clipping warnings off"));
     syncViewToggles();
 }
@@ -3178,7 +3180,7 @@ void MainWindow::syncViewToggles()
     if (!m_viewToggles)
         return;
     m_histToggleBtn->setChecked(m_histogram && m_histogram->isVisible());
-    m_clipToggleBtn->setChecked(m_showClipping);
+    m_clipToggleBtn->setChecked(doc().showClipping);
     m_historyToggleBtn->setChecked(m_adjustmentsPanel && m_adjustmentsPanel->isVisible());
 }
 
@@ -3252,7 +3254,7 @@ static constexpr int kHistogramMaxDim = 512;
 
 void MainWindow::updateHistogram()
 {
-    if (!m_histogram || !m_histogram->isVisible() || m_graph.source().isNull())
+    if (!m_histogram || !m_histogram->isVisible() || doc().graph.source().isNull())
         return;
     // Don't overlap an in-flight bake — building result() would be a second
     // concurrent full-res inpaint. Defer; the bake's finished handler retriggers.
@@ -3261,7 +3263,7 @@ void MainWindow::updateHistogram()
 
     const quint64 gen = ++m_histGen;
     const bool healActive =
-        m_heal && m_heal->isEnabled() && !m_heal->healMask().isEmpty();
+        doc().heal && doc().heal->isEnabled() && !doc().heal->healMask().isEmpty();
     if (healActive) {
         // result() is EAGER when a heal mask is active — HealNode::apply runs the
         // inpaint inline (see HealNode.cpp), so it must NEVER be built on the UI
@@ -3271,7 +3273,7 @@ void MainWindow::updateHistogram()
         m_histWatcher.setFuture(QtConcurrent::run([this, gen]() -> HistogramData {
             if (gen != m_histGen)
                 return HistogramData{};
-            const Image result = m_graph.result();
+            const Image result = doc().graph.result();
             if (result.isNull() || gen != m_histGen)
                 return HistogramData{};
             return computeHistogram(result);
@@ -3280,7 +3282,7 @@ void MainWindow::updateHistogram()
         // No eager node: composite over a cached downsampled source so each
         // recompute is cheap (pointwise edits are resolution-independent). Build
         // the snapshot on the UI thread (race-free) and materialise on the worker.
-        const Image result = m_graph.resultDownsampled(kHistogramMaxDim);
+        const Image result = doc().graph.resultDownsampled(kHistogramMaxDim);
         if (result.isNull())
             return;
         m_histWatcher.setFuture(QtConcurrent::run([this, gen, result]() -> HistogramData {
@@ -3304,18 +3306,18 @@ const QImage &MainWindow::originalImage()
 {
     // The decoded source with no edits at all (not even lens), cached. Invalidated
     // in refreshWorkingSource whenever the source/lens changes.
-    if (m_originalQImage.isNull() && !m_graph.source().isNull())
-        m_originalQImage = m_graph.source().toQImage();
-    return m_originalQImage;
+    if (doc().originalQImage.isNull() && !doc().graph.source().isNull())
+        doc().originalQImage = doc().graph.source().toQImage();
+    return doc().originalQImage;
 }
 
 void MainWindow::setCompareOriginal(bool on)
 {
-    if (m_compareOriginal == on || m_graph.source().isNull())
+    if (doc().compareOriginal == on || doc().graph.source().isNull())
         return;
-    if (on && m_peeking)
+    if (on && doc().peeking)
         exitPeek(); // compare against the real edited image, not a peeked view
-    m_compareOriginal = on;
+    doc().compareOriginal = on;
     refreshBaseImage(true); // swap the base texture (original ↔ edited)
     updatePreview();        // swap the shader stage (identity ↔ edits)
     if (m_adjustmentsPanel->isVisible())
@@ -3352,61 +3354,61 @@ void MainWindow::rebuildAdjustments()
              [this, n] { n->restoreState(createNode(n->typeName())->saveState()); }});
     };
 
-    if (!m_graph.source().isNull()) {
+    if (!doc().graph.source().isNull()) {
         // Base pipeline, in processing order. Heal and the LAB neighbourhood ops use
         // an effect predicate (so a configured-but-zero op doesn't list); the rest
         // use the generic params-differ test.
-        if (nodeIsActive(m_lens))
-            addNodeAdj(QStringLiteral("Lens"), 0, m_lens);
-        if (m_heal && !m_heal->healMask().isEmpty())
-            addNodeAdj(QStringLiteral("Heal"), 1, m_heal);
-        if (const auto v = m_denoise ? m_denoise->values() : DenoiseNode::Values{};
+        if (nodeIsActive(doc().lens))
+            addNodeAdj(QStringLiteral("Lens"), 0, doc().lens);
+        if (doc().heal && !doc().heal->healMask().isEmpty())
+            addNodeAdj(QStringLiteral("Heal"), 1, doc().heal);
+        if (const auto v = doc().denoise ? doc().denoise->values() : DenoiseNode::Values{};
             v.enabled && (v.luma > 0.0f || v.chroma > 0.0f))
-            addNodeAdj(QStringLiteral("Noise Reduction"), 2, m_denoise);
-        if (const auto v = m_defringe ? m_defringe->values() : DefringeNode::Values{};
+            addNodeAdj(QStringLiteral("Noise Reduction"), 2, doc().denoise);
+        if (const auto v = doc().defringe ? doc().defringe->values() : DefringeNode::Values{};
             v.enabled && (v.purple > 0.0f || v.green > 0.0f))
-            addNodeAdj(QStringLiteral("Defringe"), 3, m_defringe);
-        if (const auto v = m_sharpen ? m_sharpen->values() : SharpenNode::Values{};
+            addNodeAdj(QStringLiteral("Defringe"), 3, doc().defringe);
+        if (const auto v = doc().sharpen ? doc().sharpen->values() : SharpenNode::Values{};
             v.enabled && v.amount > 0.0f)
-            addNodeAdj(QStringLiteral("Sharpen"), 4, m_sharpen);
-        if (const auto v = m_structure ? m_structure->values() : StructureNode::Values{};
+            addNodeAdj(QStringLiteral("Sharpen"), 4, doc().sharpen);
+        if (const auto v = doc().structure ? doc().structure->values() : StructureNode::Values{};
             v.enabled && v.amount != 0.0f)
-            addNodeAdj(QStringLiteral("Structure"), 5, m_structure);
-        if (nodeIsActive(m_tune))
-            addNodeAdj(QStringLiteral("Tone"), 6, m_tune);
-        if (nodeIsActive(m_colorMixer))
-            addNodeAdj(QStringLiteral("Color Mixer"), 7, m_colorMixer);
-        if (nodeIsActive(m_curves))
-            addNodeAdj(QStringLiteral("Curves"), 8, m_curves);
-        if (nodeIsActive(m_colorGrade))
-            addNodeAdj(QStringLiteral("Color Grade"), 9, m_colorGrade);
-        if (nodeIsActive(m_lutNode))
-            addNodeAdj(QStringLiteral("Look"), 10, m_lutNode);
-        if (nodeIsActive(m_mono))
-            addNodeAdj(QStringLiteral("B&W"), 11, m_mono);
-        if (nodeIsActive(m_grain))
-            addNodeAdj(QStringLiteral("Grain"), 12, m_grain);
+            addNodeAdj(QStringLiteral("Structure"), 5, doc().structure);
+        if (nodeIsActive(doc().tune))
+            addNodeAdj(QStringLiteral("Tone"), 6, doc().tune);
+        if (nodeIsActive(doc().colorMixer))
+            addNodeAdj(QStringLiteral("Color Mixer"), 7, doc().colorMixer);
+        if (nodeIsActive(doc().curves))
+            addNodeAdj(QStringLiteral("Curves"), 8, doc().curves);
+        if (nodeIsActive(doc().colorGrade))
+            addNodeAdj(QStringLiteral("Color Grade"), 9, doc().colorGrade);
+        if (nodeIsActive(doc().lut))
+            addNodeAdj(QStringLiteral("Look"), 10, doc().lut);
+        if (nodeIsActive(doc().mono))
+            addNodeAdj(QStringLiteral("B&W"), 11, doc().mono);
+        if (nodeIsActive(doc().grain))
+            addNodeAdj(QStringLiteral("Grain"), 12, doc().grain);
 
         // Selective layers (non-Base), then the final geometric/finishing stages.
-        for (int i = 1; i < m_graph.layerCount(); ++i) {
-            const QString name = m_graph.layer(i).name();
+        for (int i = 1; i < doc().graph.layerCount(); ++i) {
+            const QString name = doc().graph.layer(i).name();
             m_adjustments.push_back(
                 {name.isEmpty() ? QStringLiteral("Adjustment layer") : name, 100 + i,
-                 [this, i] { return m_graph.layer(i).enabled(); },
-                 [this, i](bool on) { m_graph.layer(i).setEnabled(on); },
-                 [this, i] { m_graph.removeLayer(i); }});
+                 [this, i] { return doc().graph.layer(i).enabled(); },
+                 [this, i](bool on) { doc().graph.layer(i).setEnabled(on); },
+                 [this, i] { doc().graph.removeLayer(i); }});
         }
-        if (!m_graph.crop().isIdentity()) {
+        if (!doc().graph.crop().isIdentity()) {
             m_adjustments.push_back(
-                {QStringLiteral("Crop"), 200, [this] { return m_graph.crop().enabled; },
-                 [this](bool on) { CropState c = m_graph.crop(); c.enabled = on; m_graph.setCrop(c); },
-                 [this] { m_graph.setCrop(CropState{}); }});
+                {QStringLiteral("Crop"), 200, [this] { return doc().graph.crop().enabled; },
+                 [this](bool on) { CropState c = doc().graph.crop(); c.enabled = on; doc().graph.setCrop(c); },
+                 [this] { doc().graph.setCrop(CropState{}); }});
         }
-        if (std::abs(m_graph.vignette().amount) > 0.0f) {
+        if (std::abs(doc().graph.vignette().amount) > 0.0f) {
             m_adjustments.push_back(
-                {QStringLiteral("Vignette"), 210, [this] { return m_graph.vignette().enabled; },
-                 [this](bool on) { VignetteParams v = m_graph.vignette(); v.enabled = on; m_graph.setVignette(v); },
-                 [this] { m_graph.setVignette(VignetteParams{}); }});
+                {QStringLiteral("Vignette"), 210, [this] { return doc().graph.vignette().enabled; },
+                 [this](bool on) { VignetteParams v = doc().graph.vignette(); v.enabled = on; doc().graph.setVignette(v); },
+                 [this] { doc().graph.setVignette(VignetteParams{}); }});
         }
     }
 
@@ -3414,30 +3416,30 @@ void MainWindow::rebuildAdjustments()
     items.reserve(static_cast<int>(m_adjustments.size()));
     for (const Adjustment &a : m_adjustments)
         items.push_back({a.name, a.isEnabled()});
-    m_adjustmentsPanel->setItems(items, m_viewCeiling, m_compareOriginal);
+    m_adjustmentsPanel->setItems(items, doc().viewCeiling, doc().compareOriginal);
     layoutOverlays(); // size may have changed
 }
 
 void MainWindow::onAdjustmentToggle(int index, bool on)
 {
-    if (m_peeking)
+    if (doc().peeking)
         exitPeek(); // editing resolves the transient peek
     if (index < 0 || index >= static_cast<int>(m_adjustments.size()))
         return;
     m_adjustments[index].setEnabled(on);
-    m_graph.commit();
+    doc().graph.commit();
     rebuildPreviewFromGraph();
     rebuildAdjustments();
 }
 
 void MainWindow::onAdjustmentDelete(int index)
 {
-    if (m_peeking)
+    if (doc().peeking)
         exitPeek();
     if (index < 0 || index >= static_cast<int>(m_adjustments.size()))
         return;
     m_adjustments[index].reset();
-    m_graph.commit();
+    doc().graph.commit();
     rebuildPreviewFromGraph();
     if (m_layersPanel->isVisible())
         refreshLayersPanel(); // a layer may have been removed
@@ -3449,19 +3451,19 @@ void MainWindow::peekUpTo(int index)
 {
     if (index < 0 || index >= static_cast<int>(m_adjustments.size()))
         return;
-    if (m_peeking && index == m_viewCeiling) { // clicking the selected row exits
+    if (doc().peeking && index == doc().viewCeiling) { // clicking the selected row exits
         exitPeek();
         return;
     }
-    if (m_compareOriginal)
+    if (doc().compareOriginal)
         setCompareOriginal(false); // Before/After and peek are mutually exclusive
-    if (!m_peeking) {
-        m_peekSnapshot = m_graph.saveState(); // the real state to restore on exit
-        m_peeking = true;
+    if (!doc().peeking) {
+        doc().peekSnapshot = doc().graph.saveState(); // the real state to restore on exit
+        doc().peeking = true;
     } else {
-        m_graph.restoreState(m_peekSnapshot); // reset before applying a new ceiling
+        doc().graph.restoreState(doc().peekSnapshot); // reset before applying a new ceiling
     }
-    m_viewCeiling = index;
+    doc().viewCeiling = index;
     const int ceilingOrder = m_adjustments[index].order;
     // Hide every adjustment that comes after the selected one in the pipeline.
     for (const Adjustment &a : m_adjustments)
@@ -3474,12 +3476,12 @@ void MainWindow::peekUpTo(int index)
 
 void MainWindow::exitPeek()
 {
-    if (!m_peeking)
+    if (!doc().peeking)
         return;
-    m_graph.restoreState(m_peekSnapshot); // back to the real, committed state
-    m_peeking = false;
-    m_viewCeiling = -1;
-    m_peekSnapshot = QJsonObject{};
+    doc().graph.restoreState(doc().peekSnapshot); // back to the real, committed state
+    doc().peeking = false;
+    doc().viewCeiling = -1;
+    doc().peekSnapshot = QJsonObject{};
     rebuildPreviewFromGraph();
     if (m_adjustmentsPanel->isVisible())
         rebuildAdjustments();
@@ -3501,7 +3503,7 @@ void MainWindow::openAdjustmentsTool()
 
 void MainWindow::closeAdjustmentsTool()
 {
-    if (m_compareOriginal)
+    if (doc().compareOriginal)
         setCompareOriginal(false);
     exitPeek();
     m_adjustmentsPanel->hide();
@@ -3511,19 +3513,19 @@ void MainWindow::closeAdjustmentsTool()
 
 void MainWindow::refreshWorkingSource()
 {
-    const Image &src = m_graph.source();
+    const Image &src = doc().graph.source();
     if (src.isNull()) {
-        m_workingSource = Image();
+        doc().workingSource = Image();
         return;
     }
     // The lens node is a pure function of the source; apply it once and cache so
     // heal dabs (which call refreshBaseImage repeatedly) don't re-warp full res.
     // Honour the pipeline toggle so the Adjustments panel can disable lens.
-    m_workingSource = (m_lens && m_lens->isEnabled()) ? m_lens->apply(src) : src;
-    if (m_workingSource.isNull())
-        m_workingSource = src; // defensive: never lose the image
-    m_sourceQImage = m_workingSource.toQImage(); // display + colour sampling
-    m_originalQImage = QImage(); // Before/After cache: recompute on next compare
+    doc().workingSource = (doc().lens && doc().lens->isEnabled()) ? doc().lens->apply(src) : src;
+    if (doc().workingSource.isNull())
+        doc().workingSource = src; // defensive: never lose the image
+    doc().sourceQImage = doc().workingSource.toQImage(); // display + colour sampling
+    doc().originalQImage = QImage(); // Before/After cache: recompute on next compare
 }
 
 void MainWindow::loadLookFile()
@@ -3555,12 +3557,12 @@ void MainWindow::updateMaskEditing()
     // tool is active, so don't fight it.)
     if (m_brushTarget == BrushTarget::Heal)
         return;
-    const int idx = m_graph.activeLayerIndex();
+    const int idx = doc().graph.activeLayerIndex();
     const bool brushLayer = m_layersPanel->isVisible() && idx > 0
-        && m_graph.activeLayer().mask().type == MaskSpec::Brush;
+        && doc().graph.activeLayer().mask().type == MaskSpec::Brush;
     if (brushLayer) {
         if (m_brushTarget != BrushTarget::Selective) {
-            m_brushMask = m_graph.activeLayer().mask().brush;
+            m_brushMask = doc().graph.activeLayer().mask().brush;
             if (m_brushMask.isEmpty())
                 initBrushMask();
             m_brushUndo.clear();
@@ -3582,7 +3584,7 @@ void MainWindow::endMaskBrushSession()
     // The strokes are already synced into the active layer's mask (brushAt), so
     // committing snapshots them as one undo step.
     if (m_brushTarget == BrushTarget::Selective) {
-        m_graph.commit();
+        doc().graph.commit();
         m_brushUndo.clear();
     }
 }
@@ -3593,10 +3595,10 @@ void MainWindow::openHealTool()
     m_healPanel->adjustSize();
     const int margin = 18;
     m_healPanel->move(width() - m_healPanel->width() - margin, margin);
-    m_healPanel->reveal(m_brushSize, m_brushHardness, m_brushAdd, m_heal->highQuality());
+    m_healPanel->reveal(m_brushSize, m_brushHardness, m_brushAdd, doc().heal->highQuality());
 
     // Restore the heal session from the node (may be empty).
-    m_brushMask = m_heal->healMask();
+    m_brushMask = doc().heal->healMask();
     m_brushUndo.clear();
     m_brushHasLast = false;
     if (m_brushMask.isEmpty())
@@ -3615,12 +3617,12 @@ void MainWindow::closeHealTool()
     m_canvas->setBrushMode(false);
     m_brushTarget = BrushTarget::None;
     m_healPainting = false;
-    m_heal->setHealMask(m_brushMask); // commit (one global undo step)
+    doc().heal->setHealMask(m_brushMask); // commit (one global undo step)
     m_brushUndo.clear();
     updateCropView(); // back to the cropped browse view
     refreshBaseImage();
     updatePreview();
-    m_graph.commit();
+    doc().graph.commit();
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
@@ -3635,7 +3637,7 @@ void MainWindow::refreshBaseImage(bool keepView)
 
     // Before/After: show the un-edited original (no baked ops) within the current
     // crop framing. updatePreview neutralises the pointwise/look/vignette stage.
-    if (m_compareOriginal) {
+    if (doc().compareOriginal) {
         const QImage &orig = originalImage();
         if (!orig.isNull())
             m_canvas->setImage(orig, keepView);
@@ -3645,32 +3647,32 @@ void MainWindow::refreshBaseImage(bool keepView)
     // The GPU preview base = the lens-corrected source with the other "baked"
     // neighbourhood ops applied (heal -> denoise -> defringe -> sharpen); the
     // shader then applies the pointwise/LUT ops on top. With no baked op active,
-    // the corrected source (m_sourceQImage) is already the base.
+    // the corrected source (doc().sourceQImage) is already the base.
     // Each baked op also respects its pipeline toggle (Adjustments panel), so a
     // disabled node bakes nothing — matching the pointwise/preview-LUT path.
     const bool healActive =
-        m_heal && m_heal->isEnabled() && !m_heal->healMask().isEmpty();
+        doc().heal && doc().heal->isEnabled() && !doc().heal->healMask().isEmpty();
     const DenoiseNode::Values dv =
-        m_denoise ? m_denoise->values() : DenoiseNode::Values{};
-    const bool denoiseActive = m_denoise && m_denoise->isEnabled() && dv.enabled
+        doc().denoise ? doc().denoise->values() : DenoiseNode::Values{};
+    const bool denoiseActive = doc().denoise && doc().denoise->isEnabled() && dv.enabled
                                && (dv.luma > 0.0f || dv.chroma > 0.0f);
     const DefringeNode::Values fv =
-        m_defringe ? m_defringe->values() : DefringeNode::Values{};
-    const bool defringeActive = m_defringe && m_defringe->isEnabled() && fv.enabled
+        doc().defringe ? doc().defringe->values() : DefringeNode::Values{};
+    const bool defringeActive = doc().defringe && doc().defringe->isEnabled() && fv.enabled
                                 && (fv.purple > 0.0f || fv.green > 0.0f);
     const SharpenNode::Values sv =
-        m_sharpen ? m_sharpen->values() : SharpenNode::Values{};
+        doc().sharpen ? doc().sharpen->values() : SharpenNode::Values{};
     const bool sharpenActive =
-        m_sharpen && m_sharpen->isEnabled() && sv.enabled && sv.amount > 0.0f;
+        doc().sharpen && doc().sharpen->isEnabled() && sv.enabled && sv.amount > 0.0f;
     const StructureNode::Values stv =
-        m_structure ? m_structure->values() : StructureNode::Values{};
+        doc().structure ? doc().structure->values() : StructureNode::Values{};
     const bool structureActive =
-        m_structure && m_structure->isEnabled() && stv.enabled && stv.amount != 0.0f;
-    if (m_graph.source().isNull()
+        doc().structure && doc().structure->isEnabled() && stv.enabled && stv.amount != 0.0f;
+    if (doc().graph.source().isNull()
         || (!healActive && !denoiseActive && !defringeActive && !sharpenActive
             && !structureActive)) {
-        if (!m_sourceQImage.isNull())
-            m_canvas->setImage(m_sourceQImage, keepView);
+        if (!doc().sourceQImage.isNull())
+            m_canvas->setImage(doc().sourceQImage, keepView);
         return;
     }
 
@@ -3679,10 +3681,10 @@ void MainWindow::refreshBaseImage(bool keepView)
     // the watcher only delivers its current future).
     const quint64 gen = ++m_healGen;
     // Baked ops run on top of the lens-corrected source (geometry already baked
-    // into m_workingSource), so painted spots track the corrected image.
-    const Image src = m_workingSource.isNull() ? m_graph.source() : m_workingSource;
-    const MaskBuffer mask = healActive ? m_heal->healMask() : MaskBuffer();
-    const bool hq = m_heal && m_heal->highQuality();
+    // into doc().workingSource), so painted spots track the corrected image.
+    const Image src = doc().workingSource.isNull() ? doc().graph.source() : doc().workingSource;
+    const MaskBuffer mask = healActive ? doc().heal->healMask() : MaskBuffer();
+    const bool hq = doc().heal && doc().heal->highQuality();
     if (healActive || denoiseActive || defringeActive || sharpenActive || structureActive) {
         // Label by the op the user triggered (if it's actually active); otherwise
         // fall back to precedence (heal first) for unattributed refreshes.
@@ -3754,28 +3756,28 @@ int MainWindow::ensureSelectiveLayer()
         return t == MaskSpec::None || t == MaskSpec::Luminosity
             || t == MaskSpec::Colour || t == MaskSpec::Brush;
     };
-    int idx = m_graph.activeLayerIndex();
-    if (idx == 0 || !selectable(m_graph.layer(idx).mask().type)) {
-        addMaskedAdjustmentLayer(QStringLiteral("Selective %1").arg(m_graph.layerCount()));
-        idx = m_graph.activeLayerIndex();
+    int idx = doc().graph.activeLayerIndex();
+    if (idx == 0 || !selectable(doc().graph.layer(idx).mask().type)) {
+        addMaskedAdjustmentLayer(QStringLiteral("Selective %1").arg(doc().graph.layerCount()));
+        idx = doc().graph.activeLayerIndex();
     }
     // Default a still-unset mask to a full-range luminosity mask (a no-op until
     // the range or adjustment is dialled in), so the panel has something to edit.
-    Layer &layer = m_graph.layer(idx);
+    Layer &layer = doc().graph.layer(idx);
     if (layer.mask().type == MaskSpec::None) {
         MaskSpec m;
         m.type = MaskSpec::Luminosity;
         layer.setMask(m);
     }
-    m_graph.commit();
+    doc().graph.commit();
     return idx;
 }
 
 void MainWindow::syncBrushMaskToLayer()
 {
-    if (m_graph.activeLayerIndex() == 0)
+    if (doc().graph.activeLayerIndex() == 0)
         return;
-    Layer &layer = m_graph.activeLayer();
+    Layer &layer = doc().graph.activeLayer();
     if (layer.mask().type != MaskSpec::Brush)
         return;
     MaskSpec m = layer.mask();
@@ -3789,25 +3791,25 @@ void MainWindow::recomputeSelectiveMask()
     // the active layer's mask; brush mode uses the live working mask. The
     // texture is only consumed while the overlay is on, so skip the work
     // otherwise (the brush paints into the texture directly via brushAt).
-    if (m_maskView == 0)
+    if (doc().maskView == 0)
         return;
-    if (m_graph.activeLayerIndex() == 0) {
+    if (doc().graph.activeLayerIndex() == 0) {
         m_canvas->setSelectiveMask({});
         return;
     }
-    const MaskSpec &m = m_graph.activeLayer().mask();
+    const MaskSpec &m = doc().graph.activeLayer().mask();
     if (m.type == MaskSpec::Brush) {
         m_canvas->setSelectiveMask(m_brushMask);
         return;
     }
-    if ((m.type == MaskSpec::None && m.zones.empty()) || m_sourceQImage.isNull()) {
+    if ((m.type == MaskSpec::None && m.zones.empty()) || doc().sourceQImage.isNull()) {
         m_canvas->setSelectiveMask({});
         return;
     }
     // Evaluate at a capped resolution for a responsive overlay (export/composite
     // recompute at full res).
     constexpr int cap = 1280;
-    int w = m_sourceQImage.width(), h = m_sourceQImage.height();
+    int w = doc().sourceQImage.width(), h = doc().sourceQImage.height();
     if (std::max(w, h) > cap) {
         const double s = double(cap) / std::max(w, h);
         w = std::max(1, static_cast<int>(std::lround(w * s)));
@@ -3817,7 +3819,7 @@ void MainWindow::recomputeSelectiveMask()
     // so live gizmo dragging stays smooth. Luminosity/Colour need the rgba.
     if (m.type == MaskSpec::Luminosity || m.type == MaskSpec::Colour) {
         const QImage img =
-            m_sourceQImage.scaled(w, h, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+            doc().sourceQImage.scaled(w, h, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
                 .convertToFormat(QImage::Format_RGBA8888);
         m_canvas->setSelectiveMask(
             evaluateMask(m, img.width(), img.height(), img.constBits(), 4));
@@ -3828,11 +3830,11 @@ void MainWindow::recomputeSelectiveMask()
 
 void MainWindow::initBrushMask()
 {
-    if (m_sourceQImage.isNull())
+    if (doc().sourceQImage.isNull())
         return;
     constexpr int cap = 1280;
-    int w = m_sourceQImage.width();
-    int h = m_sourceQImage.height();
+    int w = doc().sourceQImage.width();
+    int h = doc().sourceQImage.height();
     if (std::max(w, h) > cap) {
         const double s = double(cap) / std::max(w, h);
         w = std::max(1, static_cast<int>(std::lround(w * s)));
@@ -3928,7 +3930,7 @@ void MainWindow::endBrushStroke()
     if (m_brushTarget == BrushTarget::Heal) {
         // Inpaint and show the result; restore the selective texture afterwards.
         m_healPainting = false;
-        m_heal->setHealMask(m_brushMask);
+        doc().heal->setHealMask(m_brushMask);
         refreshBaseImage();
         recomputeSelectiveMask();
         updatePreview();
@@ -3949,7 +3951,7 @@ bool MainWindow::brushSessionUndo()
     m_brushMask.data = m_brushUndo.back();
     m_brushUndo.pop_back();
     if (m_brushTarget == BrushTarget::Heal) {
-        m_heal->setHealMask(m_brushMask);
+        doc().heal->setHealMask(m_brushMask);
         refreshBaseImage();
         recomputeSelectiveMask();
         updatePreview();
@@ -3963,13 +3965,13 @@ bool MainWindow::brushSessionUndo()
 
 void MainWindow::onColorPicked(const QPointF &norm)
 {
-    if (m_sourceQImage.isNull())
+    if (doc().sourceQImage.isNull())
         return;
-    const int x = std::clamp(static_cast<int>(std::lround(norm.x() * (m_sourceQImage.width() - 1))),
-                             0, m_sourceQImage.width() - 1);
-    const int y = std::clamp(static_cast<int>(std::lround(norm.y() * (m_sourceQImage.height() - 1))),
-                             0, m_sourceQImage.height() - 1);
-    const QColor c = m_sourceQImage.pixelColor(x, y);
+    const int x = std::clamp(static_cast<int>(std::lround(norm.x() * (doc().sourceQImage.width() - 1))),
+                             0, doc().sourceQImage.width() - 1);
+    const int y = std::clamp(static_cast<int>(std::lround(norm.y() * (doc().sourceQImage.height() - 1))),
+                             0, doc().sourceQImage.height() - 1);
+    const QColor c = doc().sourceQImage.pixelColor(x, y);
 
     // White-balance eyedropper: make the sampled (as-shot baseline) pixel neutral.
     if (m_pickPurpose == PickPurpose::WhiteBalance) {
@@ -3980,14 +3982,14 @@ void MainWindow::onColorPicked(const QPointF &norm)
             updatePreview();
             if (m_tonePanel->isVisible())
                 m_tonePanel->reveal(toneValuesOf(t));
-            m_graph.commit();
+            doc().graph.commit();
         }
         return;
     }
 
-    if (m_graph.activeLayerIndex() == 0)
+    if (doc().graph.activeLayerIndex() == 0)
         return;
-    Layer &layer = m_graph.activeLayer();
+    Layer &layer = doc().graph.activeLayer();
     MaskSpec m = layer.mask();
     m.type = MaskSpec::Colour;
     m.targetR = static_cast<float>(c.redF());
@@ -3997,7 +3999,7 @@ void MainWindow::onColorPicked(const QPointF &norm)
     m_layersPanel->setTargetColor(c);
     recomputeSelectiveMask();
     updatePreview();
-    m_graph.commit();
+    doc().graph.commit();
 }
 
 void MainWindow::closeActiveTool()
@@ -4044,20 +4046,20 @@ void MainWindow::closeActiveTool()
 
 void MainWindow::doUndo()
 {
-    if (m_peeking)
+    if (doc().peeking)
         exitPeek(); // history nav resolves the transient peek first
     // While brush-painting, Ctrl+Z is a per-stroke session undo.
     if (m_brushTarget != BrushTarget::None && brushSessionUndo())
         return;
-    if (m_graph.undo())
+    if (doc().graph.undo())
         afterHistoryChange();
 }
 
 void MainWindow::doRedo()
 {
-    if (m_peeking)
+    if (doc().peeking)
         exitPeek();
-    if (m_graph.redo())
+    if (doc().graph.redo())
         afterHistoryChange();
 }
 
@@ -4071,7 +4073,7 @@ void MainWindow::afterHistoryChange()
     if (m_layersPanel->isVisible())
         refreshLayersPanel();
     if (m_healPanel->isVisible()) {
-        m_brushMask = m_heal->healMask(); // sync session to restored state
+        m_brushMask = doc().heal->healMask(); // sync session to restored state
         m_brushUndo.clear();
     }
     // If a tool is open, reseed its control from the restored state (guarded —
@@ -4100,30 +4102,30 @@ void MainWindow::afterHistoryChange()
         if (auto *g = activeColorGrade())
             m_colorGradePanel->reveal(g->values());
     }
-    if (m_lensPanel->isVisible() && m_lens) {
-        m_lensPanel->reveal(m_lens->params(), m_lens->lensMatched(),
-                            m_lens->matchedLensName());
+    if (m_lensPanel->isVisible() && doc().lens) {
+        m_lensPanel->reveal(doc().lens->params(), doc().lens->lensMatched(),
+                            doc().lens->matchedLensName());
     }
-    if (m_sharpenPanel->isVisible() && m_sharpen)
-        m_sharpenPanel->reveal(m_sharpen->values());
-    if (m_denoisePanel->isVisible() && m_denoise)
-        m_denoisePanel->reveal(m_denoise->values());
-    if (m_defringePanel->isVisible() && m_defringe)
-        m_defringePanel->reveal(m_defringe->values());
-    if (m_grainPanel->isVisible() && m_grain)
-        m_grainPanel->reveal(m_grain->values());
+    if (m_sharpenPanel->isVisible() && doc().sharpen)
+        m_sharpenPanel->reveal(doc().sharpen->values());
+    if (m_denoisePanel->isVisible() && doc().denoise)
+        m_denoisePanel->reveal(doc().denoise->values());
+    if (m_defringePanel->isVisible() && doc().defringe)
+        m_defringePanel->reveal(doc().defringe->values());
+    if (m_grainPanel->isVisible() && doc().grain)
+        m_grainPanel->reveal(doc().grain->values());
     if (m_vignettePanel->isVisible())
-        m_vignettePanel->reveal(m_graph.vignette());
+        m_vignettePanel->reveal(doc().graph.vignette());
     if (m_cropPanel->isVisible()) {
-        m_cropPanel->reveal(m_graph.crop(), sourceAspect());
-        m_cropGizmo->setRect(m_graph.crop().rect);
+        m_cropPanel->reveal(doc().graph.crop(), sourceAspect());
+        m_cropGizmo->setRect(doc().graph.crop().rect);
     }
     updateCropView(); // push the restored crop/orientation to the canvas
     updateHistogram(); // reflect the restored state (no-op when hidden)
     // If a mask brush is active, resync the working mask to the restored state.
     if (m_brushTarget == BrushTarget::Selective
-        && m_graph.activeLayer().mask().type == MaskSpec::Brush) {
-        m_brushMask = m_graph.activeLayer().mask().brush;
+        && doc().graph.activeLayer().mask().type == MaskSpec::Brush) {
+        m_brushMask = doc().graph.activeLayer().mask().brush;
         m_brushUndo.clear();
         recomputeSelectiveMask();
     }
@@ -4344,23 +4346,23 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
 
     // Before/After: '\' flips between the edited image and the original.
     if (e->key() == Qt::Key_Backslash && !e->isAutoRepeat()
-        && !m_graph.source().isNull()) {
-        setCompareOriginal(!m_compareOriginal);
+        && !doc().graph.source().isNull()) {
+        setCompareOriginal(!doc().compareOriginal);
         return;
     }
 
     // View-toggle keys, available whenever an image is loaded (any mode): 'J'
     // clipping, 'G' histo(G)ram, 'A' history (Adjustments panel). Their on/off
     // state is mirrored in the bottom-right cluster and the hint legend.
-    if (e->key() == Qt::Key_J && !e->isAutoRepeat() && !m_graph.source().isNull()) {
+    if (e->key() == Qt::Key_J && !e->isAutoRepeat() && !doc().graph.source().isNull()) {
         toggleClipping();
         return;
     }
-    if (e->key() == Qt::Key_G && !e->isAutoRepeat() && !m_graph.source().isNull()) {
+    if (e->key() == Qt::Key_G && !e->isAutoRepeat() && !doc().graph.source().isNull()) {
         toggleHistogram();
         return;
     }
-    if (e->key() == Qt::Key_A && !e->isAutoRepeat() && !m_graph.source().isNull()) {
+    if (e->key() == Qt::Key_A && !e->isAutoRepeat() && !doc().graph.source().isNull()) {
         openAdjustmentsTool(); // toggles the history panel
         return;
     }
@@ -4369,8 +4371,8 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     // (Reached only when no brush is active — the brush guard above returns first,
     // so this never clashes with the brush-hardness H binding.)
     if (e->key() == Qt::Key_H && !e->isAutoRepeat() && m_layersPanel->isVisible()
-        && m_graph.activeLayerIndex() != 0) {
-        setOverlayGeometryVisible(m_overlaysHidden);
+        && doc().graph.activeLayerIndex() != 0) {
+        setOverlayGeometryVisible(doc().overlaysHidden);
         return;
     }
 
@@ -4396,7 +4398,7 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
             return;
         }
         // Esc leaves a peek view, then dismisses the persistent panels.
-        if (e->key() == Qt::Key_Escape && m_peeking) {
+        if (e->key() == Qt::Key_Escape && doc().peeking) {
             exitPeek();
             return;
         }

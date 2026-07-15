@@ -114,6 +114,8 @@ add_library(lumen_core STATIC
     src/core/NodeFactory.cpp
     src/core/Project.h
     src/core/Project.cpp
+    src/core/Document.h
+    src/core/Document.cpp
     src/core/Preset.h
     src/core/Preset.cpp
     src/core/BuiltinPresets.h

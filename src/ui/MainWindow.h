@@ -31,8 +31,10 @@
 #include "input/InputController.h"
 
 #include <functional>
+#include <memory>
 #include <vector>
 
+class Document;
 class CanvasWidget;
 class CommandPalette;
 class CurvesPanel;
@@ -184,6 +186,11 @@ private:
     // balance is camera-accurate. `seedKelvin` moves the slider to the as-shot
     // temperature (opening a fresh RAW) vs keeping the restored value (projects).
     void applyCameraProfile(const raw::ColorProfile &profile, bool seedKelvin);
+
+    // The document currently bound into the shell. Today there is exactly one;
+    // when tabs land, this returns the front tab's document. All per-image state
+    // migrates behind this accessor (see the tabs plan / Document.h).
+    Document *activeDoc() const { return m_activeDoc.get(); }
 
     // The active layer's tone/curves/look/mono nodes (tools edit the active layer).
     TuneNode *activeTune() const;
@@ -349,28 +356,8 @@ private:
     CurvesPanel *m_curvesPanel = nullptr;
     LooksPanel *m_looksPanel = nullptr;
     PresetsPanel *m_presetsPanel = nullptr;
-    int m_presetAmount = 100;   // Presets browser Amount slider [0,100]
-    QString m_activePresetId;   // id of the preset on the current preset layer, if any
-    // Vignette isn't a layer node, so Amount can't blend it via layer opacity.
-    // We snapshot the graph vignette that existed before a preset was applied
-    // (the "baseline") and the active preset's own vignette, then interpolate
-    // between them by Amount — so at 0% the original vignette is restored and at
-    // 100% the preset's is fully in.
-    VignetteParams m_presetBaselineVignette;
-    VignetteParams m_presetVignette;
-    // Structure (local contrast) is a baked Base op — it can't ride the preset
-    // layer's opacity either, so it gets the same baseline/preset snapshot + Amount
-    // blend as the vignette (applied to the Base structure node, re-baked).
-    StructureNode::Values m_presetBaselineStructure;
-    StructureNode::Values m_presetStructure;
-    // Thumbnail cache: rendering every preset over the current photo is O(library)
-    // and runs on open/apply. Thumbnails only depend on the source + Base edits +
-    // crop (the preset layer is suppressed during the render), so we cache the
-    // pixmaps keyed by that signature and re-render only when it changes. Bumped on
-    // a new source; user-preset edits clear the cache explicitly.
-    QByteArray m_thumbCacheSig;
-    QHash<QString, QPixmap> m_thumbCache;
-    quint64 m_sourceGeneration = 0;
+    // Preset state (Amount slider, active preset id, vignette/structure blend
+    // snapshots, and the per-source thumbnail cache) is per-image → Document.
     MonoPanel *m_monoPanel = nullptr;
     ColorMixerPanel *m_colorMixerPanel = nullptr;
     ColorGradePanel *m_colorGradePanel = nullptr;
@@ -409,43 +396,17 @@ private:
     // Per-panel "✕" close buttons, repositioned to the top-right on panel resize.
     QHash<QWidget *, QPushButton *> m_panelClose;
 
-    // The non-destructive edit graph. The GPU preview reads the tune node's
-    // exposure live; Export walks the graph at full resolution via libvips.
-    EditGraph m_graph;
-    // Snapshot of the graph in its pristine state (Base layer, neutral nodes,
-    // no selective layers), captured once after construction. Restored when a
-    // new image is opened so the previous image's edits don't carry over.
-    QJsonObject m_defaultGraphState;
-    TuneNode *m_tune = nullptr;          // owned by m_graph
-    CurvesNode *m_curves = nullptr;      // owned by m_graph
-    LutNode *m_lutNode = nullptr;        // owned by m_graph
-    MonoNode *m_mono = nullptr;          // owned by m_graph
-    ColorMixerNode *m_colorMixer = nullptr; // owned by m_graph (after tune, before curves)
-    ColorGradeNode *m_colorGrade = nullptr; // owned by m_graph
-    HealNode *m_heal = nullptr;          // owned by m_graph (second in the chain)
-    LensCorrectionNode *m_lens = nullptr; // owned by m_graph (first in the chain)
-    DenoiseNode *m_denoise = nullptr;     // owned by m_graph (after heal, before defringe)
-    DefringeNode *m_defringe = nullptr;   // owned by m_graph (after denoise, before sharpen)
-    SharpenNode *m_sharpen = nullptr;     // owned by m_graph (after defringe, before structure)
-    StructureNode *m_structure = nullptr; // owned by m_graph (local contrast, after sharpen)
-    GrainNode *m_grain = nullptr;         // owned by m_graph (final Base node, after mono)
-    Image m_workingSource;               // cached lens-corrected source (preview base input)
-    QString m_sourcePath;                // for a sensible default export name
-    QString m_exportExt = QStringLiteral("jpg"); // remembered export format
-    int m_exportQuality = 90;                    // remembered export quality
-    int m_exportLongEdge = 0;                    // remembered long-edge cap (0 = full)
-    Image::ColorSpace m_exportColorSpace =       // remembered output colour space
-        Image::ColorSpace::SRGB;
-    QImage m_sourceQImage;               // for colour sampling + preview mask
-    QImage m_originalQImage;             // decoded source, no edits (Before/After); lazy
-    bool m_compareOriginal = false;      // Before/After: show the un-edited original
-    QByteArray m_sourceBytes;            // original encoded source, for embedding in .lumen
-    QString m_sourceName;                // original source file name
-    QString m_projectPath;               // current .lumen path (empty until saved/opened)
+    // The single open document. Owns the per-image state that has migrated off
+    // MainWindow so far (the edit graph + Base-layer node pointers); more moves
+    // in over the following stages. Once tabs land, MainWindow holds a vector of
+    // these and binds one at a time. doc() is the access point for that state.
+    std::unique_ptr<Document> m_activeDoc;
+    Document &doc() { return *m_activeDoc; }
+    const Document &doc() const { return *m_activeDoc; }
+
+    // Shared across all open documents (a look copied from one image can be
+    // pasted onto another), so it stays on the shell rather than the Document.
     QJsonObject m_copiedSettings;        // in-memory clipboard for Copy/Paste Settings
-    int m_maskView = 0;                  // selective mask overlay (preview-only)
-    bool m_showClipping = false;         // on-canvas clipping warnings (preview-only)
-    bool m_overlaysHidden = false;       // user hid the on-canvas gizmo geometry
 
     // Autosave & crash recovery. While m_projectPath is empty, autosave writes
     // m_recoveryPath in ~/.lumen/projects; once saved/opened it targets the user
@@ -454,28 +415,24 @@ private:
     // parallel to the panel's rows (signals carry the row index). Peek is a
     // transient, non-committed "show up to here" view backed by a graph snapshot.
     AdjustmentsPanel *m_adjustmentsPanel = nullptr;
-    std::vector<Adjustment> m_adjustments;
-    bool m_peeking = false;
-    QJsonObject m_peekSnapshot;
-    int m_viewCeiling = -1; // index of the peeked-to adjustment, or -1 for full
+    std::vector<Adjustment> m_adjustments; // rebuilt each refresh from the active doc
 
+    // Autosave/peek/RAW-options data is per-image → Document. The timers and the
+    // off-thread write watcher are shell machinery and stay here (Stage 3 routes
+    // their results to the owning document).
     QTimer *m_autosaveTimer = nullptr;
-    QString m_recoveryPath;              // this session's recovery file (lazy; empty = none)
-    QByteArray m_openDoc;                // doc as opened/loaded (pristine baseline)
-    QByteArray m_lastAutosaveDoc;        // doc as last persisted (skip redundant writes)
     QFutureWatcher<bool> m_autosaveWatcher; // off-thread write completion
-    bool m_autosaveInFlight = false;     // single-flight guard
-    QByteArray m_pendingAutosaveDoc;     // doc snapshot the in-flight write carries
 
-    // Automatic-RAW configuration. m_rawOptions are decode-time (baked, stored
-    // per-project in the .lumen); m_rawLensDefaults seed the lens node on open.
-    // Both default to the global preference (loadRawDefaults) at construction.
-    raw::RawDecodeOptions m_rawOptions;
+    // m_rawLensDefaults seed the lens node on open and default to the global
+    // preference (loadRawDefaults); a shell-wide default, not per-image.
     raw::RawLensDefaults m_rawLensDefaults;
     QTimer *m_redecodeTimer = nullptr;   // debounces re-decode on RAW option drags
 
     // Shared brush-paint session (used by the selective brush and the heal
-    // brush, one at a time).
+    // brush, one at a time). This is shell-side scratch for the single active
+    // canvas: strokes are committed into the active Document's graph (the
+    // layer mask / heal node), so it stays here rather than on Document. A tab
+    // switch will end the in-progress session (Stage 4).
     enum class BrushTarget { None, Selective, Heal };
     BrushTarget m_brushTarget = BrushTarget::None;
     MaskBuffer m_brushMask;
