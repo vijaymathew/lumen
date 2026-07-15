@@ -111,14 +111,15 @@ private:
     void openProject();   // pick a .lumen file via dialog, then load it
     void loadProjectFile(const QString &path); // load a .lumen async (source + layers)
 
-    // Save helpers. promptSaveProjectPath() runs the Save dialog; writeProjectAsync()
-    // snapshots the document and writes it off the UI thread; saveProjectSync() is
-    // the blocking save the quit/discard flow needs (it must finish before the
-    // document can be discarded); applySaveSuccess() updates state after a write.
-    QString promptSaveProjectPath();
+    // Save helpers. promptSaveProjectPath() runs the Save dialog (default name from
+    // the given document); writeProjectAsync() snapshots the active document and
+    // writes it off the UI thread; saveProjectSync() is the blocking save the
+    // quit/discard flow needs (it must finish before the document can be
+    // discarded); applySaveSuccess() updates the document's state after a write.
+    QString promptSaveProjectPath(const Document &d);
     void writeProjectAsync(const QString &path);
-    bool saveProjectSync();
-    void applySaveSuccess(const QString &path);
+    bool saveProjectSync(Document &d);
+    void applySaveSuccess(Document &d, const QString &path);
 
     // Reusable edit presets / copy-paste settings. copy/paste move the current
     // look through an in-memory clipboard; save/apply persist it as a .lumenpreset
@@ -134,23 +135,28 @@ private:
     // The current document serialised the way a project is saved: the edit graph
     // plus the per-project RAW decode options. Used for both writing and for
     // dirty detection (compare against the open/last-saved baselines).
-    QJsonObject buildDocGraph() const;
-    QByteArray currentDocBytes() const;
+    QJsonObject buildDocGraph(const Document &d) const;
+    QByteArray currentDocBytes(const Document &d) const;
     // The source bytes to embed (original encoded file, or a PNG of the source as
     // a fallback); *name receives the matching file name.
-    QByteArray sourceForSave(QString *name) const;
-    void startAutosave();        // (re)start the autosave timer for a document
-    void performAutosave();      // timer slot: write if the document changed
-    bool flushAutosaveSync();    // synchronous write to the current target (on close)
-    void deleteRecoveryFile();   // remove this session's recovery file, if any
-    // Returns false only if the user cancels; otherwise the current document may
-    // be safely discarded (saved, flushed, or the user chose to discard).
-    bool maybeSaveBeforeDiscard();
-    // Loads a recovery file as unsaved work (keeps autosaving to it, prompts on
-    // close). Unlike loadProjectFile, it does not adopt the path as the user file.
+    QByteArray sourceForSave(const Document &d, QString *name) const;
+    void startAutosave();        // (re)start the shared autosave timer
+    void performAutosave();      // timer slot: write the next changed document
+    bool autosaveDocument(Document &d); // write d if it changed; true if a write launched
+    bool flushAutosaveSync(Document &d);  // synchronous write to d's target (on close)
+    void deleteRecoveryFile(Document &d); // remove d's recovery file, if any
+    // Whether d has unsaved edits — drives the tab's dirty marker. False for an
+    // empty placeholder and for a saved project (kept current by autosave).
+    bool documentIsDirty(const Document &d) const;
+    // Returns false only if the user cancels; otherwise d may be safely discarded
+    // (saved, flushed, or the user chose to discard).
+    bool maybeSaveBeforeDiscard(Document &d);
+    // Loads a recovery file as a new tab of unsaved work (keeps autosaving to it,
+    // prompts on close). Unlike loadProjectFile, it doesn't adopt the path as the
+    // user file.
     bool restoreRecovery(const QString &path);
-    // Resets the dirty baselines to the current document (called after open/save).
-    void resetAutosaveBaseline();
+    // Resets d's dirty baselines to its current state (called after open/save).
+    void resetAutosaveBaseline(Document &d);
     void toggleFullScreen();
     // Overlays a small "✕" close button on a floating panel's top-right corner
     // and routes it to `onClose` — a pointer counterpart to the Esc/Enter close.

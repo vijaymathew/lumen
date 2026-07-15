@@ -866,8 +866,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Background project save finished: report the outcome and adopt the file.
     connect(&m_saveWatcher, &QFutureWatcher<SaveResult>::finished, this, [this] {
-        const bool active = docIsActive(m_saveJobDoc);
-        if (active)
+        if (docIsActive(m_saveJobDoc))
             static_cast<BusyBadge *>(m_healBusy)->stop();
         if (!m_saveWatcher.future().isValid())
             return;
@@ -877,13 +876,10 @@ MainWindow::MainWindow(QWidget *parent)
                                  QStringLiteral("Could not save project: %1").arg(r.error));
             return;
         }
-        // applySaveSuccess updates the document's in-memory save state (path,
-        // autosave baseline) via the active document, so only run it when the
-        // saved document is still active. The file itself is already written; a
-        // background-tab save reconciles its bookkeeping when it next becomes
-        // active (Stage 5 makes this bookkeeping document-targeted).
-        if (active)
-            applySaveSuccess(r.path);
+        // Reconcile the saved document's in-memory state (path, autosave baseline),
+        // whichever tab is active now; drop if that document was closed.
+        if (Document *d = docById(m_saveJobDoc))
+            applySaveSuccess(*d, r.path);
     });
 
     // Background image open finished: install the decoded source + rebuild.
@@ -1534,11 +1530,15 @@ bool MainWindow::openPath(const QString &path)
 
 QString MainWindow::documentLabel(const Document &d) const
 {
+    QString name;
     if (!d.projectPath.isEmpty())
-        return QFileInfo(d.projectPath).fileName();
-    if (!d.sourceName.isEmpty())
-        return d.sourceName;
-    return QStringLiteral("Untitled");
+        name = QFileInfo(d.projectPath).fileName();
+    else if (!d.sourceName.isEmpty())
+        name = d.sourceName;
+    else
+        name = QStringLiteral("Untitled");
+    // Leading dot marks unsaved edits (refreshed whenever the tab bar syncs).
+    return documentIsDirty(d) ? QStringLiteral("• %1").arg(name) : name;
 }
 
 bool MainWindow::documentIsEmpty(const Document &d) const
@@ -1625,7 +1625,9 @@ void MainWindow::closeTab(int index)
 {
     if (index < 0 || index >= tabCount())
         return;
-    // TODO(Stage 5): prompt to save unsaved work before discarding this document.
+    // Guard unsaved work in this tab before discarding it (cancel aborts close).
+    if (!maybeSaveBeforeDiscard(*m_docs[index]))
+        return;
     Document *d = m_docs[index].get();
     const quint64 id = d->id;
 
@@ -1717,7 +1719,7 @@ void MainWindow::bindDocument(const BindOptions &opts)
 
     // Fresh document session: baseline the just-loaded state (so an unedited open
     // won't autosave) and arm the autosave timer.
-    resetAutosaveBaseline();
+    resetAutosaveBaseline(doc());
     startAutosave();
     if (m_layersPanel->isVisible())
         refreshLayersPanel();   // the load may have changed the selective layers
@@ -1772,11 +1774,11 @@ void MainWindow::redecodeCurrent()
     }));
 }
 
-QString MainWindow::promptSaveProjectPath()
+QString MainWindow::promptSaveProjectPath(const Document &d)
 {
     // Default name "<source>.lumen", in the last-used project folder (falling
     // back to next-to-the-source on first save).
-    const QFileInfo src(doc().projectPath.isEmpty() ? doc().sourcePath : doc().projectPath);
+    const QFileInfo src(d.projectPath.isEmpty() ? d.sourcePath : d.projectPath);
     const QString dir = lastDir(QStringLiteral("saveProject"), src.dir().path());
     const QString suggested =
         QDir(dir).filePath(src.completeBaseName() + QStringLiteral(".lumen"));
@@ -1790,17 +1792,19 @@ QString MainWindow::promptSaveProjectPath()
     return path;
 }
 
-void MainWindow::applySaveSuccess(const QString &path)
+void MainWindow::applySaveSuccess(Document &d, const QString &path)
 {
-    doc().projectPath = path;
+    d.projectPath = path;
     rememberDir(QStringLiteral("saveProject"), path);
     // The work now lives in the user's file; autosave targets it from here on and
     // the transient recovery file is no longer needed.
-    deleteRecoveryFile();
-    resetAutosaveBaseline();
+    deleteRecoveryFile(d);
+    resetAutosaveBaseline(d);
     startAutosave();
-    updateTitle(QFileInfo(path).fileName());
+    if (docIsActive(d.id))
+        updateTitle(QFileInfo(path).fileName());
     showHint(QStringLiteral("Saved %1").arg(QFileInfo(path).fileName()));
+    syncTabBar(); // clear the dirty marker + refresh the label
 }
 
 void MainWindow::saveProject()
@@ -1815,7 +1819,8 @@ void MainWindow::saveProject()
     }
     // Re-save to the existing file silently; only a first ("fresh") save needs the
     // dialog. Use "Save as…" to write to a new location.
-    const QString path = doc().projectPath.isEmpty() ? promptSaveProjectPath() : doc().projectPath;
+    const QString path =
+        doc().projectPath.isEmpty() ? promptSaveProjectPath(doc()) : doc().projectPath;
     if (path.isEmpty())
         return;
     writeProjectAsync(path);
@@ -1831,7 +1836,7 @@ void MainWindow::saveProjectAs()
         showHint(QStringLiteral("A save is already in progress"));
         return;
     }
-    const QString path = promptSaveProjectPath();
+    const QString path = promptSaveProjectPath(doc());
     if (path.isEmpty())
         return;
     writeProjectAsync(path);
@@ -1843,8 +1848,8 @@ void MainWindow::writeProjectAsync(const QString &path)
     // the UI thread behind the "Saving…" badge — the write can be slow to external
     // or network drives.
     QString name;
-    const QByteArray bytes = sourceForSave(&name);
-    const QJsonObject graph = buildDocGraph();
+    const QByteArray bytes = sourceForSave(doc(), &name);
+    const QJsonObject graph = buildDocGraph(doc());
 
     m_saveJobDoc = doc().id; // the document whose save-state the finish handler updates
     auto *badge = static_cast<BusyBadge *>(m_healBusy);
@@ -1859,58 +1864,58 @@ void MainWindow::writeProjectAsync(const QString &path)
     }));
 }
 
-bool MainWindow::saveProjectSync()
+bool MainWindow::saveProjectSync(Document &d)
 {
     // The blocking save the quit/discard flow needs: it must complete before the
     // document can be discarded, so it can't go through the async path.
-    if (doc().graph.source().isNull())
+    if (d.graph.source().isNull())
         return true; // nothing to save
-    const QString path = promptSaveProjectPath();
+    const QString path = promptSaveProjectPath(d);
     if (path.isEmpty())
         return false; // user cancelled the dialog → don't discard their work
 
     QString name;
-    const QByteArray bytes = sourceForSave(&name);
+    const QByteArray bytes = sourceForSave(d, &name);
     QGuiApplication::setOverrideCursor(Qt::WaitCursor);
     QString error;
-    const bool ok = autosave::writeProjectAtomic(path, buildDocGraph(), bytes, name, &error);
+    const bool ok = autosave::writeProjectAtomic(path, buildDocGraph(d), bytes, name, &error);
     QGuiApplication::restoreOverrideCursor();
     if (!ok) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Could not save project: %1").arg(error));
         return false;
     }
-    applySaveSuccess(path);
+    applySaveSuccess(d, path);
     return true;
 }
 
 // --- Autosave & crash recovery ---------------------------------------------
 
-QJsonObject MainWindow::buildDocGraph() const
+QJsonObject MainWindow::buildDocGraph(const Document &d) const
 {
     // The edit graph plus the per-project RAW decode options — the exact document
     // a project file persists. (The graph stays decode-agnostic; loadProjectFile
     // reads the rawOptions key back.)
-    QJsonObject graph = doc().graph.saveState();
-    graph[QStringLiteral("rawOptions")] = doc().rawOptions.toJson();
+    QJsonObject graph = d.graph.saveState();
+    graph[QStringLiteral("rawOptions")] = d.rawOptions.toJson();
     return graph;
 }
 
-QByteArray MainWindow::currentDocBytes() const
+QByteArray MainWindow::currentDocBytes(const Document &d) const
 {
-    return QJsonDocument(buildDocGraph()).toJson(QJsonDocument::Compact);
+    return QJsonDocument(buildDocGraph(d)).toJson(QJsonDocument::Compact);
 }
 
-QByteArray MainWindow::sourceForSave(QString *name) const
+QByteArray MainWindow::sourceForSave(const Document &d, QString *name) const
 {
     // Embed the original encoded bytes; fall back to a PNG of the source if they
     // aren't available (e.g. a source we only hold as a decoded QImage).
-    QByteArray bytes = doc().sourceBytes;
-    QString outName = doc().sourceName;
-    if (bytes.isEmpty() && !doc().sourceQImage.isNull()) {
+    QByteArray bytes = d.sourceBytes;
+    QString outName = d.sourceName;
+    if (bytes.isEmpty() && !d.sourceQImage.isNull()) {
         QBuffer buf(&bytes);
         buf.open(QIODevice::WriteOnly);
-        doc().sourceQImage.save(&buf, "PNG");
+        d.sourceQImage.save(&buf, "PNG");
         outName = QStringLiteral("source.png");
     }
     if (name)
@@ -1918,128 +1923,169 @@ QByteArray MainWindow::sourceForSave(QString *name) const
     return bytes;
 }
 
-void MainWindow::resetAutosaveBaseline()
+void MainWindow::resetAutosaveBaseline(Document &d)
 {
-    doc().openDoc = doc().lastAutosaveDoc = currentDocBytes();
+    d.openDoc = d.lastAutosaveDoc = currentDocBytes(d);
 }
 
 void MainWindow::startAutosave()
 {
-    if (!doc().graph.source().isNull())
-        m_autosaveTimer->start();
+    // One shared timer drives autosave for every open document (performAutosave
+    // sweeps them). Run it whenever any document has an image loaded.
+    for (const auto &d : m_docs) {
+        if (!d->graph.source().isNull()) {
+            m_autosaveTimer->start();
+            return;
+        }
+    }
 }
 
-void MainWindow::deleteRecoveryFile()
+void MainWindow::deleteRecoveryFile(Document &d)
 {
-    if (doc().recoveryPath.isEmpty())
+    if (d.recoveryPath.isEmpty())
         return;
-    QFile::remove(doc().recoveryPath);
-    QFile::remove(doc().recoveryPath + QStringLiteral(".tmp"));
-    doc().recoveryPath.clear();
+    QFile::remove(d.recoveryPath);
+    QFile::remove(d.recoveryPath + QStringLiteral(".tmp"));
+    d.recoveryPath.clear();
+}
+
+bool MainWindow::documentIsDirty(const Document &d) const
+{
+    if (d.graph.source().isNull())
+        return false; // empty placeholder — nothing to save
+    if (!d.projectPath.isEmpty())
+        return false; // saved project, kept current by autosave
+    // Unsaved (or recovered): dirty once it differs from the open baseline.
+    // openDoc is an empty sentinel for recovered work, so that always reads dirty.
+    return currentDocBytes(d) != d.openDoc;
 }
 
 void MainWindow::performAutosave()
 {
+    // One shared writer, so at most one document is autosaved per tick; the next
+    // changed document is picked up on the following tick. Prefer the active
+    // document so the tab you're editing is saved first.
+    if (m_autosaveWatcher.isRunning())
+        return;
+    if (autosaveDocument(doc()))
+        return;
+    for (const auto &d : m_docs)
+        if (d.get() != &doc() && autosaveDocument(*d))
+            return;
+}
+
+bool MainWindow::autosaveDocument(Document &d)
+{
     // Never persist a transient "show up to here" view — its disabled flags aren't
     // part of the real document.
-    if (doc().graph.source().isNull() || doc().autosaveInFlight || doc().peeking)
-        return;
-    const QByteArray docBytes = currentDocBytes();
-    if (docBytes == doc().lastAutosaveDoc)
-        return; // nothing changed since the last write
-    if (doc().projectPath.isEmpty() && docBytes == doc().openDoc)
-        return; // opened but never edited — don't spawn a recovery file
+    if (d.graph.source().isNull() || d.autosaveInFlight || d.peeking)
+        return false;
+    const QByteArray docBytes = currentDocBytes(d);
+    if (docBytes == d.lastAutosaveDoc)
+        return false; // nothing changed since the last write
+    if (d.projectPath.isEmpty() && docBytes == d.openDoc)
+        return false; // opened but never edited — don't spawn a recovery file
 
-    QString target = doc().projectPath;
+    QString target = d.projectPath;
     if (target.isEmpty()) {
-        if (doc().recoveryPath.isEmpty())
-            doc().recoveryPath = autosave::newRecoveryPath(
-                autosave::projectsDir(), doc().sourceName, QDateTime::currentDateTime());
-        target = doc().recoveryPath;
+        if (d.recoveryPath.isEmpty())
+            d.recoveryPath = autosave::newRecoveryPath(
+                autosave::projectsDir(), d.sourceName, QDateTime::currentDateTime());
+        target = d.recoveryPath;
     }
     if (target.isEmpty())
-        return; // no writable location (projectsDir failed)
+        return false; // no writable location (projectsDir failed)
 
     QString name;
-    const QByteArray bytes = sourceForSave(&name);
-    const QJsonObject graph = buildDocGraph();
-    doc().pendingAutosaveDoc = docBytes;
-    doc().autosaveInFlight = true;
-    m_autosaveJobDoc = doc().id; // the document whose baseline the finish handler updates
+    const QByteArray bytes = sourceForSave(d, &name);
+    const QJsonObject graph = buildDocGraph(d);
+    d.pendingAutosaveDoc = docBytes;
+    d.autosaveInFlight = true;
+    m_autosaveJobDoc = d.id; // the document whose baseline the finish handler updates
     // Write off the UI thread: embedding the full source can be tens of MB. The
     // snapshot args are value copies, so the worker touches nothing the UI mutates.
     m_autosaveWatcher.setFuture(QtConcurrent::run([target, graph, bytes, name] {
         return autosave::writeProjectAtomic(target, graph, bytes, name);
     }));
+    return true;
 }
 
-bool MainWindow::flushAutosaveSync()
+bool MainWindow::flushAutosaveSync(Document &d)
 {
-    if (doc().graph.source().isNull())
+    if (d.graph.source().isNull())
         return true;
     // Don't race a background write to the same target.
     if (m_autosaveWatcher.isRunning())
         m_autosaveWatcher.waitForFinished();
-    doc().autosaveInFlight = false;
+    d.autosaveInFlight = false;
 
-    const QByteArray docBytes = currentDocBytes();
-    if (docBytes == doc().lastAutosaveDoc)
+    const QByteArray docBytes = currentDocBytes(d);
+    if (docBytes == d.lastAutosaveDoc)
         return true; // already persisted
-    QString target = doc().projectPath.isEmpty() ? doc().recoveryPath : doc().projectPath;
+    QString target = d.projectPath.isEmpty() ? d.recoveryPath : d.projectPath;
     if (target.isEmpty()) // unsaved & no recovery file yet → nothing to flush to
         return true;
     QString name;
-    const QByteArray bytes = sourceForSave(&name);
+    const QByteArray bytes = sourceForSave(d, &name);
     QString error;
-    if (!autosave::writeProjectAtomic(target, buildDocGraph(), bytes, name, &error)) {
+    if (!autosave::writeProjectAtomic(target, buildDocGraph(d), bytes, name, &error)) {
         QMessageBox::warning(this, QStringLiteral("Lumen"),
                              QStringLiteral("Could not save your work: %1").arg(error));
         return false;
     }
-    doc().lastAutosaveDoc = docBytes;
+    d.lastAutosaveDoc = docBytes;
     return true;
 }
 
-bool MainWindow::maybeSaveBeforeDiscard()
+bool MainWindow::maybeSaveBeforeDiscard(Document &d)
 {
-    exitPeek(); // restore the real document before any save / serialise / discard
-    if (doc().graph.source().isNull())
+    if (docIsActive(d.id))
+        exitPeek(); // restore the real document before any save / serialise / discard
+    if (d.graph.source().isNull())
         return true;
-    if (!doc().projectPath.isEmpty()) {
+    if (!d.projectPath.isEmpty()) {
         // A saved document is continuously autosaved to the user's file: flush the
         // latest edits and discard silently (no prompt). On a write failure, fall
         // through to the prompt so the user can choose another location.
-        if (flushAutosaveSync())
+        if (flushAutosaveSync(d))
             return true;
-    } else if (currentDocBytes() == doc().openDoc) {
+    } else if (currentDocBytes(d) == d.openDoc) {
         return true; // opened but never edited — nothing to lose
     }
 
+    // Name the document so the prompt is unambiguous when several tabs are open.
+    const QString what = documentLabel(d);
     const QMessageBox::StandardButton choice = QMessageBox::question(
-        this, QStringLiteral("Lumen"), QStringLiteral("Do you want to save your work?"),
+        this, QStringLiteral("Lumen"),
+        QStringLiteral("Do you want to save your work on “%1”?").arg(what),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
     if (choice == QMessageBox::Cancel)
         return false;
     if (choice == QMessageBox::Discard) {
-        deleteRecoveryFile();
+        deleteRecoveryFile(d);
         return true;
     }
     // Save: route through the dialog synchronously — the document must actually be
     // persisted before we allow the discard, so this can't use the async path.
-    return saveProjectSync();
+    return saveProjectSync(d);
 }
 
 void MainWindow::closeEvent(QCloseEvent *e)
 {
-    if (!maybeSaveBeforeDiscard()) {
-        e->ignore();
-        return;
+    // Guard unsaved work across every open tab. A cancel on any one aborts the
+    // whole quit.
+    for (const auto &d : m_docs) {
+        if (!maybeSaveBeforeDiscard(*d)) {
+            e->ignore();
+            return;
+        }
     }
-    // Clean exit: drop this session's recovery file so the next launch doesn't
+    // Clean exit: drop each session recovery file so the next launch doesn't
     // mistake it for a crash.
     if (m_autosaveTimer)
         m_autosaveTimer->stop();
-    deleteRecoveryFile();
+    for (const auto &d : m_docs)
+        deleteRecoveryFile(*d);
     e->accept();
 }
 
@@ -2239,16 +2285,19 @@ bool MainWindow::offerCrashRecovery()
     const QStringList files = autosave::findRecoveryFiles(autosave::projectsDir());
     if (files.isEmpty())
         return false;
-    const QString newest = files.first();
 
-    // Peek the original source name for a friendlier prompt.
-    QString sourceLabel;
-    project::Project peek;
-    if (project::load(newest, &peek))
-        sourceLabel = peek.sourceName;
-    const QString what = sourceLabel.isEmpty()
-                             ? QStringLiteral("your unsaved work")
-                             : QStringLiteral("your unsaved work on “%1”").arg(sourceLabel);
+    // Friendlier prompt: name the single source, or count several.
+    QString what;
+    if (files.size() == 1) {
+        QString sourceLabel;
+        project::Project peek;
+        if (project::load(files.first(), &peek))
+            sourceLabel = peek.sourceName;
+        what = sourceLabel.isEmpty() ? QStringLiteral("your unsaved work")
+                                     : QStringLiteral("your unsaved work on “%1”").arg(sourceLabel);
+    } else {
+        what = QStringLiteral("your unsaved work (%1 documents)").arg(files.size());
+    }
 
     QMessageBox box(this);
     box.setWindowTitle(QStringLiteral("Lumen"));
@@ -2268,15 +2317,13 @@ bool MainWindow::offerCrashRecovery()
         return false;
     }
 
-    if (!restoreRecovery(newest))
-        return false;
-    for (const QString &f : files) { // the newest is now live; drop the older ones
-        if (f != newest) {
-            QFile::remove(f);
-            QFile::remove(f + QStringLiteral(".tmp"));
-        }
-    }
-    return true;
+    // Restore each recovery file as its own tab; each keeps autosaving to its own
+    // file (restoreRecovery leaves it live), so nothing is removed here.
+    int restored = 0;
+    for (const QString &f : files)
+        if (restoreRecovery(f))
+            ++restored;
+    return restored > 0;
 }
 
 void MainWindow::openImageDialog()
