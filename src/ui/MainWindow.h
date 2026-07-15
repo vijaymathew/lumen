@@ -8,6 +8,7 @@
 #include <QMainWindow>
 #include <QPixmap>
 #include <QPointF>
+#include <QStringList>
 
 #include <atomic>
 
@@ -31,8 +32,10 @@
 #include "input/InputController.h"
 
 #include <functional>
+#include <memory>
 #include <vector>
 
+class Document;
 class CanvasWidget;
 class CommandPalette;
 class CurvesPanel;
@@ -62,7 +65,10 @@ class StructurePanel;
 class TonePanel;
 class QLabel;
 class QPushButton;
+class QTabBar;
 class QTimer;
+class QDragEnterEvent;
+class QDropEvent;
 
 // MainWindow is the immersive shell: a fullscreen canvas with a "/"-triggered
 // command palette floating over it and a dismissible hint bar. It owns the
@@ -78,11 +84,16 @@ public:
     // Loads an image at startup (e.g. a path passed on the command line).
     bool openPath(const QString &path);
 
-    // Startup crash recovery: if ~/.lumen/projects holds an autosaved document
-    // from a session that didn't shut down cleanly, offer to restore the newest.
-    // Returns true if work was restored. Skipped when an image is opened from the
-    // command line (explicit intent wins). See main().
+    // Startup crash recovery: if ~/.lumen/projects holds autosaved documents from
+    // a session that didn't shut down cleanly, offer to restore them (each as a
+    // tab). Returns true if work was restored. Skipped when an image is opened
+    // from the command line (explicit intent wins). See main().
     bool offerCrashRecovery();
+
+    // Reopens the files that were open at the last clean quit, each as a tab.
+    // Returns true if anything was reopened. Called at launch only when there are
+    // no command-line files and nothing to crash-recover. See main().
+    bool restoreSession();
 
 protected:
     void resizeEvent(QResizeEvent *e) override;
@@ -93,6 +104,9 @@ protected:
     // widget has focus, so the active tool can always be closed.
     void keyPressEvent(QKeyEvent *e) override;
     void keyReleaseEvent(QKeyEvent *e) override;
+    // Drag-and-drop image/project files onto the window: each opens in a new tab.
+    void dragEnterEvent(QDragEnterEvent *e) override;
+    void dropEvent(QDropEvent *e) override;
     // Drag handling for the persistent overlays (histogram via its surface, the
     // view-toggle cluster via its grip). Once dragged, layoutOverlays() stops
     // auto-pinning that overlay and only clamps it back into view.
@@ -107,14 +121,15 @@ private:
     void openProject();   // pick a .lumen file via dialog, then load it
     void loadProjectFile(const QString &path); // load a .lumen async (source + layers)
 
-    // Save helpers. promptSaveProjectPath() runs the Save dialog; writeProjectAsync()
-    // snapshots the document and writes it off the UI thread; saveProjectSync() is
-    // the blocking save the quit/discard flow needs (it must finish before the
-    // document can be discarded); applySaveSuccess() updates state after a write.
-    QString promptSaveProjectPath();
+    // Save helpers. promptSaveProjectPath() runs the Save dialog (default name from
+    // the given document); writeProjectAsync() snapshots the active document and
+    // writes it off the UI thread; saveProjectSync() is the blocking save the
+    // quit/discard flow needs (it must finish before the document can be
+    // discarded); applySaveSuccess() updates the document's state after a write.
+    QString promptSaveProjectPath(const Document &d);
     void writeProjectAsync(const QString &path);
-    bool saveProjectSync();
-    void applySaveSuccess(const QString &path);
+    bool saveProjectSync(Document &d);
+    void applySaveSuccess(Document &d, const QString &path);
 
     // Reusable edit presets / copy-paste settings. copy/paste move the current
     // look through an in-memory clipboard; save/apply persist it as a .lumenpreset
@@ -130,23 +145,30 @@ private:
     // The current document serialised the way a project is saved: the edit graph
     // plus the per-project RAW decode options. Used for both writing and for
     // dirty detection (compare against the open/last-saved baselines).
-    QJsonObject buildDocGraph() const;
-    QByteArray currentDocBytes() const;
+    QJsonObject buildDocGraph(const Document &d) const;
+    QByteArray currentDocBytes(const Document &d) const;
     // The source bytes to embed (original encoded file, or a PNG of the source as
     // a fallback); *name receives the matching file name.
-    QByteArray sourceForSave(QString *name) const;
-    void startAutosave();        // (re)start the autosave timer for a document
-    void performAutosave();      // timer slot: write if the document changed
-    bool flushAutosaveSync();    // synchronous write to the current target (on close)
-    void deleteRecoveryFile();   // remove this session's recovery file, if any
-    // Returns false only if the user cancels; otherwise the current document may
-    // be safely discarded (saved, flushed, or the user chose to discard).
-    bool maybeSaveBeforeDiscard();
-    // Loads a recovery file as unsaved work (keeps autosaving to it, prompts on
-    // close). Unlike loadProjectFile, it does not adopt the path as the user file.
+    QByteArray sourceForSave(const Document &d, QString *name) const;
+    void startAutosave();        // (re)start the shared autosave timer
+    void performAutosave();      // timer slot: write the next changed document
+    bool autosaveDocument(Document &d); // write d if it changed; true if a write launched
+    bool flushAutosaveSync(Document &d);  // synchronous write to d's target (on close)
+    void deleteRecoveryFile(Document &d); // remove d's recovery file, if any
+    // Whether d has unsaved edits — drives the tab's dirty marker. False for an
+    // empty placeholder and for a saved project (kept current by autosave).
+    bool documentIsDirty(const Document &d) const;
+    // Returns false only if the user cancels; otherwise d may be safely discarded
+    // (saved, flushed, or the user chose to discard).
+    bool maybeSaveBeforeDiscard(Document &d);
+    // Loads a recovery file as a new tab of unsaved work (keeps autosaving to it,
+    // prompts on close). Unlike loadProjectFile, it doesn't adopt the path as the
+    // user file.
     bool restoreRecovery(const QString &path);
-    // Resets the dirty baselines to the current document (called after open/save).
-    void resetAutosaveBaseline();
+    // Resets d's dirty baselines to its current state (called after open/save).
+    void resetAutosaveBaseline(Document &d);
+    // Persists the open documents' file paths on a clean quit, for restoreSession.
+    void saveSession();
     void toggleFullScreen();
     // Overlays a small "✕" close button on a floating panel's top-right corner
     // and routes it to `onClose` — a pointer counterpart to the Esc/Enter close.
@@ -180,10 +202,55 @@ private:
     void setOverlayGeometryVisible(bool visible);
     void updateMaskEditing();  // enable/disable the canvas brush for a Brush mask
     void endMaskBrushSession(); // commit in-progress mask-brush strokes
-    // Installs the RAW camera colour profile on every layer's TuneNode so white
-    // balance is camera-accurate. `seedKelvin` moves the slider to the as-shot
-    // temperature (opening a fresh RAW) vs keeping the restored value (projects).
-    void applyCameraProfile(const raw::ColorProfile &profile, bool seedKelvin);
+
+    // Reflects the active document (already populated via Document::initFrom*)
+    // into the shell: resets the paint scratch, rebuilds every preview stage,
+    // resets the undo timeline, arms autosave, and re-syncs the panels/title.
+    // The single "install a document into the UI" path — open-image, open-project
+    // (and, once tabs land, a tab switch) all funnel through here.
+    struct BindOptions {
+        QString title;             // window title / tab label (usually the file name)
+        QString hint;              // optional transient hint after binding
+        bool pushCropView = false; // restore a saved crop/orientation (projects)
+    };
+    void bindDocument(const BindOptions &opts);
+
+    // --- Tabs (multiple open documents) -----------------------------------
+    // Rebuilds every shell surface from the active document WITHOUT resetting its
+    // undo history or autosave baseline — the tab-switch counterpart to
+    // bindDocument (which is the fresh-open path). Restores the tab's saved view.
+    void reflectActiveDocument();
+    // Human-readable label for a document: its file name, or "Untitled" when no
+    // image is loaded yet. Used for the window title and tab text.
+    QString documentLabel(const Document &d) const;
+    bool documentIsEmpty(const Document &d) const; // no source loaded
+    int addDocumentTab();          // append an empty document + tab; returns its index
+    void snapshotActiveView();     // save the active tab's zoom/pan into its Document
+    // Chooses where an open lands: reuses the active document when it's still an
+    // empty placeholder, otherwise opens a new tab and makes it active. After this
+    // returns, doc() is the document to populate.
+    void beginOpenIntoTab();
+    void switchToTab(int index);   // make tab `index` active (snapshot/restore view)
+    void closeTab(int index);      // drain + remove; never leaves zero documents
+    // Opens a copy of the active document (same source + edits) in a new tab, as
+    // independent unsaved work. Re-decodes the source so RAW white balance stays
+    // correct (the camera profile is a decode-time artefact, not in the graph).
+    void duplicateActiveTab();
+    void syncTabBar();             // refresh labels, current index, and visibility
+    int tabCount() const { return static_cast<int>(m_docs.size()); }
+    // Paths waiting to open while a decode is already in flight (opening several
+    // files at once — CLI args, later drag-drop — each becomes its own tab). The
+    // open-finish handlers drain this one at a time.
+    QStringList m_openQueue;
+    void dequeueNextOpen();
+    // True while a programmatic tab-bar change is in progress, so the bar's
+    // currentChanged/close signals don't re-enter the switch/close logic.
+    bool m_inTabOp = false;
+
+    // The document currently bound into the shell. Today there is exactly one;
+    // when tabs land, this returns the front tab's document. All per-image state
+    // migrates behind this accessor (see the tabs plan / Document.h).
+    Document *activeDoc() const { return m_docs[m_activeTab].get(); }
 
     // The active layer's tone/curves/look/mono nodes (tools edit the active layer).
     TuneNode *activeTune() const;
@@ -341,6 +408,7 @@ private:
 
     InputController m_input;
     CanvasWidget *m_canvas = nullptr;
+    QTabBar *m_tabBar = nullptr;     // top overlay; shown only when >1 document is open
     QWidget *m_scrim = nullptr;     // dims the image behind the command palette
     QWidget *m_brushRing = nullptr; // on-canvas brush size/hardness cursor
     QWidget *m_healBusy = nullptr;  // animated badge during async base re-bake (heal/denoise/sharpen)
@@ -349,28 +417,8 @@ private:
     CurvesPanel *m_curvesPanel = nullptr;
     LooksPanel *m_looksPanel = nullptr;
     PresetsPanel *m_presetsPanel = nullptr;
-    int m_presetAmount = 100;   // Presets browser Amount slider [0,100]
-    QString m_activePresetId;   // id of the preset on the current preset layer, if any
-    // Vignette isn't a layer node, so Amount can't blend it via layer opacity.
-    // We snapshot the graph vignette that existed before a preset was applied
-    // (the "baseline") and the active preset's own vignette, then interpolate
-    // between them by Amount — so at 0% the original vignette is restored and at
-    // 100% the preset's is fully in.
-    VignetteParams m_presetBaselineVignette;
-    VignetteParams m_presetVignette;
-    // Structure (local contrast) is a baked Base op — it can't ride the preset
-    // layer's opacity either, so it gets the same baseline/preset snapshot + Amount
-    // blend as the vignette (applied to the Base structure node, re-baked).
-    StructureNode::Values m_presetBaselineStructure;
-    StructureNode::Values m_presetStructure;
-    // Thumbnail cache: rendering every preset over the current photo is O(library)
-    // and runs on open/apply. Thumbnails only depend on the source + Base edits +
-    // crop (the preset layer is suppressed during the render), so we cache the
-    // pixmaps keyed by that signature and re-render only when it changes. Bumped on
-    // a new source; user-preset edits clear the cache explicitly.
-    QByteArray m_thumbCacheSig;
-    QHash<QString, QPixmap> m_thumbCache;
-    quint64 m_sourceGeneration = 0;
+    // Preset state (Amount slider, active preset id, vignette/structure blend
+    // snapshots, and the per-source thumbnail cache) is per-image → Document.
     MonoPanel *m_monoPanel = nullptr;
     ColorMixerPanel *m_colorMixerPanel = nullptr;
     ColorGradePanel *m_colorGradePanel = nullptr;
@@ -409,43 +457,18 @@ private:
     // Per-panel "✕" close buttons, repositioned to the top-right on panel resize.
     QHash<QWidget *, QPushButton *> m_panelClose;
 
-    // The non-destructive edit graph. The GPU preview reads the tune node's
-    // exposure live; Export walks the graph at full resolution via libvips.
-    EditGraph m_graph;
-    // Snapshot of the graph in its pristine state (Base layer, neutral nodes,
-    // no selective layers), captured once after construction. Restored when a
-    // new image is opened so the previous image's edits don't carry over.
-    QJsonObject m_defaultGraphState;
-    TuneNode *m_tune = nullptr;          // owned by m_graph
-    CurvesNode *m_curves = nullptr;      // owned by m_graph
-    LutNode *m_lutNode = nullptr;        // owned by m_graph
-    MonoNode *m_mono = nullptr;          // owned by m_graph
-    ColorMixerNode *m_colorMixer = nullptr; // owned by m_graph (after tune, before curves)
-    ColorGradeNode *m_colorGrade = nullptr; // owned by m_graph
-    HealNode *m_heal = nullptr;          // owned by m_graph (second in the chain)
-    LensCorrectionNode *m_lens = nullptr; // owned by m_graph (first in the chain)
-    DenoiseNode *m_denoise = nullptr;     // owned by m_graph (after heal, before defringe)
-    DefringeNode *m_defringe = nullptr;   // owned by m_graph (after denoise, before sharpen)
-    SharpenNode *m_sharpen = nullptr;     // owned by m_graph (after defringe, before structure)
-    StructureNode *m_structure = nullptr; // owned by m_graph (local contrast, after sharpen)
-    GrainNode *m_grain = nullptr;         // owned by m_graph (final Base node, after mono)
-    Image m_workingSource;               // cached lens-corrected source (preview base input)
-    QString m_sourcePath;                // for a sensible default export name
-    QString m_exportExt = QStringLiteral("jpg"); // remembered export format
-    int m_exportQuality = 90;                    // remembered export quality
-    int m_exportLongEdge = 0;                    // remembered long-edge cap (0 = full)
-    Image::ColorSpace m_exportColorSpace =       // remembered output colour space
-        Image::ColorSpace::SRGB;
-    QImage m_sourceQImage;               // for colour sampling + preview mask
-    QImage m_originalQImage;             // decoded source, no edits (Before/After); lazy
-    bool m_compareOriginal = false;      // Before/After: show the un-edited original
-    QByteArray m_sourceBytes;            // original encoded source, for embedding in .lumen
-    QString m_sourceName;                // original source file name
-    QString m_projectPath;               // current .lumen path (empty until saved/opened)
+    // Open documents, one per tab, in tab order. Never empty: there is always at
+    // least one document (an empty placeholder at launch / after the last tab is
+    // closed). m_activeTab indexes the document currently bound into the shell;
+    // doc() is the access point for that document's per-image state.
+    std::vector<std::unique_ptr<Document>> m_docs;
+    int m_activeTab = 0;
+    Document &doc() { return *m_docs[m_activeTab]; }
+    const Document &doc() const { return *m_docs[m_activeTab]; }
+
+    // Shared across all open documents (a look copied from one image can be
+    // pasted onto another), so it stays on the shell rather than the Document.
     QJsonObject m_copiedSettings;        // in-memory clipboard for Copy/Paste Settings
-    int m_maskView = 0;                  // selective mask overlay (preview-only)
-    bool m_showClipping = false;         // on-canvas clipping warnings (preview-only)
-    bool m_overlaysHidden = false;       // user hid the on-canvas gizmo geometry
 
     // Autosave & crash recovery. While m_projectPath is empty, autosave writes
     // m_recoveryPath in ~/.lumen/projects; once saved/opened it targets the user
@@ -454,28 +477,24 @@ private:
     // parallel to the panel's rows (signals carry the row index). Peek is a
     // transient, non-committed "show up to here" view backed by a graph snapshot.
     AdjustmentsPanel *m_adjustmentsPanel = nullptr;
-    std::vector<Adjustment> m_adjustments;
-    bool m_peeking = false;
-    QJsonObject m_peekSnapshot;
-    int m_viewCeiling = -1; // index of the peeked-to adjustment, or -1 for full
+    std::vector<Adjustment> m_adjustments; // rebuilt each refresh from the active doc
 
+    // Autosave/peek/RAW-options data is per-image → Document. The timers and the
+    // off-thread write watcher are shell machinery and stay here (Stage 3 routes
+    // their results to the owning document).
     QTimer *m_autosaveTimer = nullptr;
-    QString m_recoveryPath;              // this session's recovery file (lazy; empty = none)
-    QByteArray m_openDoc;                // doc as opened/loaded (pristine baseline)
-    QByteArray m_lastAutosaveDoc;        // doc as last persisted (skip redundant writes)
     QFutureWatcher<bool> m_autosaveWatcher; // off-thread write completion
-    bool m_autosaveInFlight = false;     // single-flight guard
-    QByteArray m_pendingAutosaveDoc;     // doc snapshot the in-flight write carries
 
-    // Automatic-RAW configuration. m_rawOptions are decode-time (baked, stored
-    // per-project in the .lumen); m_rawLensDefaults seed the lens node on open.
-    // Both default to the global preference (loadRawDefaults) at construction.
-    raw::RawDecodeOptions m_rawOptions;
+    // m_rawLensDefaults seed the lens node on open and default to the global
+    // preference (loadRawDefaults); a shell-wide default, not per-image.
     raw::RawLensDefaults m_rawLensDefaults;
     QTimer *m_redecodeTimer = nullptr;   // debounces re-decode on RAW option drags
 
     // Shared brush-paint session (used by the selective brush and the heal
-    // brush, one at a time).
+    // brush, one at a time). This is shell-side scratch for the single active
+    // canvas: strokes are committed into the active Document's graph (the
+    // layer mask / heal node), so it stays here rather than on Document. A tab
+    // switch will end the in-progress session (Stage 4).
     enum class BrushTarget { None, Selective, Heal };
     BrushTarget m_brushTarget = BrushTarget::None;
     MaskBuffer m_brushMask;
@@ -490,15 +509,32 @@ private:
     bool m_selectivePainting = false; // a selective-mask stroke is in progress (forces the overlay)
     bool m_adjustHardness = false;    // s/h + wheel target: false=size, true=hardness
 
+    // Async job routing. Every background job (heal/hist/decode/export/save/
+    // autosave/open) is tagged at launch with the id of the document it targets,
+    // so its finish handler can (a) drop the result if that document has since
+    // been closed and (b) only touch the shell (canvas, badge, title) when that
+    // document is still the active tab. docById returns the open document with
+    // that id, or nullptr; docIsActive is the "still the front tab?" test. The
+    // per-op ids below are each set at launch (one watcher per op → one in flight
+    // → one id each); 0 means no job is in flight. The "latest wins" generation
+    // counters live on the Document (per-tab), not here.
+    Document *docById(quint64 id) const;
+    bool docIsActive(quint64 id) const;
+    quint64 m_healJobDoc = 0;
+    quint64 m_histJobDoc = 0;
+    quint64 m_decodeJobDoc = 0;
+    quint64 m_exportJobDoc = 0;
+    quint64 m_saveJobDoc = 0;
+    quint64 m_openJobDoc = 0;     // shared by open-image + open-project (mutually exclusive)
+    quint64 m_autosaveJobDoc = 0;
+
     // The heal (inpaint) preview runs off the UI thread so Detailed mode never
     // freezes the app; only the latest request's result is applied.
     QFutureWatcher<QImage> m_healWatcher;
-    std::atomic<quint64> m_healGen{0};
 
     // The histogram consumes the full-res composite, so it too is computed off
     // the UI thread; the latest request wins.
     QFutureWatcher<HistogramData> m_histWatcher;
-    std::atomic<quint64> m_histGen{0};
 
     // RAW re-decode (a full demosaic) also runs off the UI thread so the app
     // stays responsive and the busy badge can animate; the latest request wins.
@@ -508,7 +544,6 @@ private:
         QString error;
     };
     QFutureWatcher<DecodeResult> m_decodeWatcher;
-    std::atomic<quint64> m_decodeGen{0};
 
     // Export runs the full-res graph walk + libvips encode off the UI thread (a
     // heal mask makes result() eager, and encoding a large image is slow either

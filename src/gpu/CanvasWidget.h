@@ -61,6 +61,21 @@ public:
     // Resets zoom/pan so the image is fit-to-window and centred.
     void resetView();
 
+    // Drops the displayed image so the canvas shows the empty background again
+    // (used when the last tab is closed and only an empty placeholder remains).
+    void clearImage();
+
+    // Opaque snapshot of the interactive zoom/pan transform, so a per-tab view can
+    // be saved on switch-away and restored on switch-back. The values are relative
+    // to fit-to-window, so they're only meaningful when restored onto the same
+    // image they were captured from.
+    struct ViewState {
+        float zoom = 1.0f;
+        QPointF pan{0.0, 0.0};
+    };
+    ViewState viewState() const { return {m_zoom, m_pan}; }
+    void setViewState(const ViewState &v);
+
     // Centres and sets the fit-relative zoom (1.0 = fit-to-window; <1 leaves a
     // margin). The crop tool uses this to pull the frame in from the screen edges
     // so its handles are reachable.
