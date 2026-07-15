@@ -949,6 +949,11 @@ MainWindow::MainWindow(QWidget *parent)
             refreshBaseImage(true);  // keep zoom/pan (itself async if a bake is active)
             recomputeSelectiveMask();
             updatePreview();
+        } else {
+            // Invalidate the cached display so switching back rebuilds it from the
+            // new source (reflectActiveDocument reuses a non-null cache).
+            d->workingSource = Image();
+            d->sourceQImage = QImage();
         }
     });
 
@@ -1603,11 +1608,18 @@ void MainWindow::reflectActiveDocument()
         return;
     }
 
-    refreshWorkingSource();
+    // workingSource + sourceQImage are cached per-document and persist across
+    // switches, so only rebuild them if the cache is missing. Recomputing them
+    // (a full-res lens apply + toQImage) is what made switching sluggish.
+    if (doc().sourceQImage.isNull())
+        refreshWorkingSource();
     refreshBaseImage(false); // fits to window; the saved view is restored below
     recomputeSelectiveMask();
     updateCropView();        // a switched-to document may carry a crop/orientation
     updatePreview();
+    // Per-document canvas flags must be re-pushed, or they'd leak from the
+    // previous tab (e.g. clipping warnings staying on after a switch).
+    m_canvas->setClipping(doc().showClipping);
     if (m_layersPanel->isVisible())
         refreshLayersPanel();
     reseedOpenPanels();
@@ -1776,6 +1788,7 @@ void MainWindow::bindDocument(const BindOptions &opts)
     if (opts.pushCropView)
         updateCropView();    // push a restored crop/orientation to the canvas
     updatePreview();         // apply any existing edits
+    m_canvas->setClipping(doc().showClipping); // don't inherit the previous tab's flag
     doc().graph.resetHistory(); // fresh undo timeline for this document
     doc().viewValid = false;    // a freshly opened image starts fit-to-window
 
