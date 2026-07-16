@@ -90,4 +90,13 @@ Image decodeBytes(const void *data, qsizetype size, QString *error = nullptr,
 // sets *error when the file has no usable embedded preview.
 QImage loadThumbnail(const QString &path, int maxEdge = 0, QString *error = nullptr);
 
+// The camera's embedded preview (the processed JPEG the camera stores for
+// playback, or rarely an RGB bitmap) decoded full-size and rotated to the
+// capture orientation, so it lines up with how the demosaiced RAW displays.
+// Reads from an in-memory RAW buffer — the source an open document keeps.
+// Returns a null QImage and sets *error when the file has no usable embedded
+// preview. This is the camera's 8-bit rendering; no higher-bit-depth version of
+// it is stored in the RAW.
+QImage embeddedPreview(const void *data, qsizetype size, QString *error = nullptr);
+
 } // namespace raw
