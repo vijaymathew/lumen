@@ -5,6 +5,41 @@ All notable changes to Lumen are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0] — 2026-07-16
+
+This release makes Lumen a multi-image workspace and adds a way to see the
+camera's own rendering next to your own.
+
+### Added
+
+- **Tabs** — open several photos and projects at once, each an independent
+  document with its own edit graph, undo history, view, and background work.
+  Switch with <kbd>Ctrl+Tab</kbd> / <kbd>Ctrl+Shift+Tab</kbd> and close with
+  <kbd>Ctrl+W</kbd>; the tab strip appears once more than one is open.
+- **Duplicate to a new tab** — branch the current photo (source plus its full
+  edit) into a fresh, independent tab to explore a variation without disturbing
+  the original.
+- **Open the embedded camera JPEG** — from a RAW, load the camera's processed
+  JPEG preview in a new tab, orientation-matched to the RAW, to compare it
+  against your own rendering. Available from a RAW-only button on the view
+  cluster.
+
+### Changed
+
+- The bottom-right view cluster is now a vertical stack, each toggle labelled
+  with its keyboard shortcut (Histogram <kbd>G</kbd>, Clipping <kbd>J</kbd>,
+  History <kbd>A</kbd>); the bottom hint bar no longer repeats them. The cluster
+  is hidden until an image is open.
+- Export now runs on a background thread, so the interface stays responsive while
+  a full-resolution image is written.
+- Healing brush interface refinements.
+- Binary releases (AppImage and DMG) now report the exact version.
+
+### Fixed
+
+- Installer robustness fixes.
+- Reduced interaction lag when several documents are open.
+
 ## [0.0.1] — 2026-07-04
 
 First public release of Lumen — a fast, non-destructive RAW and photo editor for
@@ -66,4 +101,5 @@ and the interactive preview on the GPU. Your original is never touched.
   depth, output resize (long-edge), and colour management (sRGB, Display P3, or
   Adobe RGB with the matching ICC profile embedded).
 
+[0.1.0]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.0
 [0.0.1]: https://github.com/vijaymathew/lumen/releases/tag/v0.0.1
