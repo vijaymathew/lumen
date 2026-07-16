@@ -71,6 +71,7 @@
 #include <QTabBar>
 #include <QHBoxLayout>
 #include <QPushButton>
+#include <QVBoxLayout>
 #include <QSettings>
 #include <QShortcut>
 #include <QStandardPaths>
@@ -1185,17 +1186,20 @@ MainWindow::MainWindow(QWidget *parent)
     m_viewToggles->setStyleSheet(QStringLiteral(
         "#viewToggles { background: rgba(20,20,22,0.85); border-radius: 8px; }"
         "#viewToggles QPushButton { background: transparent; border: none;"
-        " color: #c8c8cc; padding: 5px 11px; font-size: 12px; border-radius: 6px; }"
+        " color: #c8c8cc; padding: 5px 11px; font-size: 12px; border-radius: 6px;"
+        " text-align: left; }"
         "#viewToggles QPushButton:hover { background: #2a2a2e; }"
         "#viewToggles QPushButton:checked { background: #3a3a40; color: #f0f0f1; }"
         "#clusterGrip { color: #6a6a70; font-size: 13px; padding: 0 2px; }"));
-    auto *vtLayout = new QHBoxLayout(m_viewToggles);
+    // Vertical stack: the toggles read as a compact column in the bottom-right.
+    auto *vtLayout = new QVBoxLayout(m_viewToggles);
     vtLayout->setContentsMargins(6, 4, 6, 4);
     vtLayout->setSpacing(4);
     // Drag handle: grab here to move the cluster (the buttons consume their own
-    // clicks, so they can't double as a drag surface).
+    // clicks, so they can't double as a drag surface). Centred atop the column.
     m_clusterGrip = new QLabel(QStringLiteral("⠿"), m_viewToggles);
     m_clusterGrip->setObjectName(QStringLiteral("clusterGrip"));
+    m_clusterGrip->setAlignment(Qt::AlignCenter);
     m_clusterGrip->setCursor(Qt::SizeAllCursor);
     m_clusterGrip->installEventFilter(this);
     vtLayout->addWidget(m_clusterGrip);
@@ -1207,9 +1211,21 @@ MainWindow::MainWindow(QWidget *parent)
         vtLayout->addWidget(b);
         return b;
     };
-    m_histToggleBtn = addToggle(QStringLiteral("Histogram"), [this] { toggleHistogram(); });
-    m_clipToggleBtn = addToggle(QStringLiteral("Clipping"), [this] { toggleClipping(); });
-    m_historyToggleBtn = addToggle(QStringLiteral("History"), [this] { openAdjustmentsTool(); });
+    // Labels carry the keyboard shortcut so the cluster is self-documenting (the
+    // bottom hint bar no longer repeats G/J/A).
+    m_histToggleBtn = addToggle(QStringLiteral("Histogram (G)"), [this] { toggleHistogram(); });
+    m_clipToggleBtn = addToggle(QStringLiteral("Clipping (J)"), [this] { toggleClipping(); });
+    m_historyToggleBtn =
+        addToggle(QStringLiteral("History (A)"), [this] { openAdjustmentsTool(); });
+    // A one-shot action, not a toggle: it spawns a tab rather than flipping a
+    // view state, so it's non-checkable (never paints the :checked highlight) and
+    // is shown only for RAW documents (syncViewToggles drives its visibility).
+    m_embeddedJpegBtn = new QPushButton(QStringLiteral("JPEG ↗"), m_viewToggles);
+    m_embeddedJpegBtn->setFocusPolicy(Qt::NoFocus); // never steal focus from the canvas
+    m_embeddedJpegBtn->setToolTip(
+        QStringLiteral("Open the camera's embedded JPEG in a new tab"));
+    connect(m_embeddedJpegBtn, &QPushButton::clicked, this, [this] { openEmbeddedJpeg(); });
+    vtLayout->addWidget(m_embeddedJpegBtn);
     m_viewToggles->adjustSize();
     syncViewToggles();
 
@@ -1605,6 +1621,7 @@ void MainWindow::reflectActiveDocument()
     if (documentIsEmpty(doc())) {
         m_canvas->clearImage();
         updateTitle();
+        syncViewToggles(); // hide the cluster: nothing to glance at on a blank canvas
         return;
     }
 
@@ -1762,6 +1779,59 @@ void MainWindow::duplicateActiveTab()
     showHint(QStringLiteral("Duplicated to a new tab"));
 }
 
+void MainWindow::openEmbeddedJpeg()
+{
+    const Document &d = doc();
+    if (!raw::isRawPath(d.sourceName) || d.sourceBytes.isEmpty()) {
+        showHint(QStringLiteral("Only RAW files carry an embedded JPEG"));
+        return;
+    }
+    if (openBusy()) {
+        showHint(QStringLiteral("Busy — try again in a moment"));
+        return;
+    }
+
+    // The camera's embedded preview, rotated to the RAW's orientation (LibRaw
+    // hands the preview back in sensor orientation, so this is what makes the
+    // JPEG line up with the demosaiced RAW in the other tab).
+    QString err;
+    QImage preview =
+        raw::embeddedPreview(d.sourceBytes.constData(), d.sourceBytes.size(), &err);
+    if (preview.isNull()) {
+        showHint(QStringLiteral("This RAW has no embedded JPEG"));
+        return;
+    }
+
+    // Re-encode the oriented preview to JPEG so the new tab has a source that
+    // round-trips: a .lumen save embeds these bytes, and reopening decodes them
+    // with the orientation already baked in (a plain JPEG open doesn't re-derive
+    // it). One high-quality re-encode — a negligible loss for a camera preview.
+    QByteArray bytes;
+    QBuffer buf(&bytes);
+    buf.open(QIODevice::WriteOnly);
+    preview.save(&buf, "JPEG", 95);
+    buf.close();
+
+    Image source = Image::fromBytes(bytes.constData(), bytes.size(), &err);
+    if (source.isNull()) {
+        showHint(QStringLiteral("Could not open the embedded JPEG"));
+        return;
+    }
+
+    // Name the tab after the RAW so the pairing reads clearly, e.g.
+    // "IMG_1234 (JPEG)". Computed before beginOpenIntoTab switches the active doc.
+    const QString name =
+        QStringLiteral("%1 (JPEG).jpg").arg(QFileInfo(d.sourceName).completeBaseName());
+
+    beginOpenIntoTab(); // reuse the empty placeholder or open a new tab
+    raw::LensMetadata meta; // a plain JPEG: neutral lens, no camera colour profile
+    doc().initFromImage(source, bytes, name, /*isRaw=*/false, meta, m_rawLensDefaults);
+    BindOptions opts;
+    opts.title = name;
+    opts.hint = QStringLiteral("Opened the embedded JPEG in a new tab");
+    bindDocument(opts);
+}
+
 void MainWindow::syncTabBar()
 {
     {
@@ -1801,6 +1871,7 @@ void MainWindow::bindDocument(const BindOptions &opts)
     reseedOpenPanels();         // re-sync open tools with the document's values
     updateTitle(opts.title);
     syncTabBar();               // reflect the new label + show the bar if >1 tab
+    syncViewToggles();          // reveal the cluster + the RAW-only JPEG button
     if (!opts.hint.isEmpty())
         showHint(opts.hint);
 }
@@ -3521,9 +3592,35 @@ void MainWindow::syncViewToggles()
 {
     if (!m_viewToggles)
         return;
+    // The cluster only makes sense against an open image — hide it wholesale on
+    // the empty startup placeholder (and after the last tab is closed).
+    m_viewToggles->setVisible(!documentIsEmpty(doc()));
     m_histToggleBtn->setChecked(m_histogram && m_histogram->isVisible());
     m_clipToggleBtn->setChecked(doc().showClipping);
     m_historyToggleBtn->setChecked(m_adjustmentsPanel && m_adjustmentsPanel->isVisible());
+    // The embedded JPEG only exists for RAW sources; hide the button otherwise.
+    m_embeddedJpegBtn->setVisible(raw::isRawPath(doc().sourceName));
+    // Showing/hiding a button changes the cluster's width; re-fit and reposition
+    // so it can't drift off-screen or misalign after a RAW↔non-RAW switch.
+    positionViewToggles();
+}
+
+void MainWindow::positionViewToggles()
+{
+    if (!m_viewToggles || !m_viewToggles->isVisible())
+        return;
+    m_viewToggles->adjustSize();
+    // Once dragged, keep the user's position (clamped into view); otherwise pin
+    // to the bottom-right, opposite the histogram.
+    if (m_clusterMoved) {
+        QPoint p = m_viewToggles->pos();
+        p.setX(std::clamp(p.x(), 0, std::max(0, width() - m_viewToggles->width())));
+        p.setY(std::clamp(p.y(), 0, std::max(0, height() - m_viewToggles->height())));
+        m_viewToggles->move(p);
+    } else {
+        m_viewToggles->move(width() - m_viewToggles->width() - 18,
+                            height() - m_viewToggles->height() - 18);
+    }
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
@@ -4522,9 +4619,11 @@ QString MainWindow::modeHintText() const
             "drag to paint · Alt subtract · [ ] brush size   ·   ↵ / Esc  done");
     case InputController::Mode::Browse:
     default:
+        // G / J / A now live on the view-toggle cluster's buttons; before/after
+        // has no cluster button, so it stays here.
         return QStringLiteral(
             "/  or right-click  ·  command palette       "
-            "G histogram · J clipping · A history · \\ before/after       "
+            "\\  before/after       "
             "Ctrl+O open · Ctrl+S save · F11 fullscreen");
     }
 }
@@ -4657,19 +4756,7 @@ void MainWindow::layoutOverlays()
     m_hint->move((width() - m_hint->width()) / 2, height() - m_hint->height() - 18);
 
     // View-toggle cluster: bottom-right, opposite the histogram (bottom-left).
-    // Once dragged, keep the user's position (clamped into view).
-    if (m_viewToggles) {
-        m_viewToggles->adjustSize();
-        if (m_clusterMoved) {
-            QPoint p = m_viewToggles->pos();
-            p.setX(std::clamp(p.x(), 0, std::max(0, width() - m_viewToggles->width())));
-            p.setY(std::clamp(p.y(), 0, std::max(0, height() - m_viewToggles->height())));
-            m_viewToggles->move(p);
-        } else {
-            m_viewToggles->move(width() - m_viewToggles->width() - 18,
-                                height() - m_viewToggles->height() - 18);
-        }
-    }
+    positionViewToggles();
 }
 
 void MainWindow::resizeEvent(QResizeEvent *e)

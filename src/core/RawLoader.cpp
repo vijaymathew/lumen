@@ -266,6 +266,30 @@ QImage raw::loadThumbnail(const QString &path, int maxEdge, QString *error)
     return img;
 }
 
+QImage raw::embeddedPreview(const void *data, qsizetype size, QString *error)
+{
+    if (!data || size <= 0) {
+        if (error)
+            *error = QStringLiteral("Empty RAW data");
+        return QImage();
+    }
+    LibRaw raw;
+    if (const int e = raw.open_buffer(const_cast<void *>(data), static_cast<size_t>(size))) {
+        if (error)
+            *error = QStringLiteral("Could not read RAW data: %1")
+                         .arg(QString::fromUtf8(LibRaw::strerror(e)));
+        return QImage();
+    }
+    // Full-size, orientation-corrected — the same extraction as the file-picker
+    // thumbnail, minus the downscale loadThumbnail applies afterwards. No
+    // half-size demosaic fallback: this feature is about the camera's JPEG, not
+    // a re-rendered RAW.
+    QImage img = embeddedThumb(raw);
+    if (img.isNull() && error)
+        *error = QStringLiteral("This RAW has no embedded preview");
+    return img;
+}
+
 QJsonObject raw::RawDecodeOptions::toJson() const
 {
     QJsonObject o;

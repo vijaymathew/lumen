@@ -333,6 +333,13 @@ private:
     // bottom-right view-toggle cluster (keeps the buttons in sync with the
     // keyboard + palette paths that can flip the same state).
     void syncViewToggles();
+    // Sizes and positions the view-toggle cluster (bottom-right by default, or
+    // wherever the user dragged it). Shared by layoutOverlays() and the
+    // visibility refresh in syncViewToggles().
+    void positionViewToggles();
+    // Opens the active RAW's embedded camera JPEG in a new tab. No-op with a hint
+    // when the active document isn't a RAW or has no embedded preview.
+    void openEmbeddedJpeg();
     // Recomputes the cached lens-corrected working source (and its display
     // QImage) from the original; cheap no-op when no correction is active. Called
     // when the lens parameters or the source image change — NOT per heal dab.
@@ -447,6 +454,9 @@ private:
     QPushButton *m_histToggleBtn = nullptr;
     QPushButton *m_clipToggleBtn = nullptr;
     QPushButton *m_historyToggleBtn = nullptr;
+    // One-shot action (not a toggle): open the RAW's embedded camera JPEG in a
+    // new tab. Shown only while the active document is a RAW.
+    QPushButton *m_embeddedJpegBtn = nullptr;
     // Overlay-drag state. The *Moved flags latch once the user repositions an
     // overlay so layoutOverlays() leaves it where they put it (clamped to view).
     QWidget *m_draggingOverlay = nullptr;
