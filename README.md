@@ -118,25 +118,15 @@ Common shortcuts:
   layers, serialization) sitting beneath the Qt front-end, so the imaging code is
   independently unit-tested.
 
-## Download
+## Installing
 
-The quickest way to run Lumen — no compiler, no dependencies, no terminal
-required. Grab the latest build for your platform from the
-[**Releases**](https://github.com/vijaymathew/lumen/releases/latest) page:
-
-- **Linux** — download `Lumen-x86_64.AppImage`, then make it executable and run:
-
-  ```bash
-  chmod +x Lumen-x86_64.AppImage
-  ./Lumen-x86_64.AppImage
-  ```
-
-- **macOS** — download `Lumen.dmg`, open it, and drag **Lumen** to Applications.
-  On first launch, right-click the app and choose **Open** to get past
-  Gatekeeper (the build is not yet notarised).
-
-Both are self-contained — Qt and the imaging libraries are bundled in. Want to
-build it yourself instead? See [Building](#building).
+Lumen is installed from source on both Linux and macOS — see
+[Building](#building) for the one-command script. There are no pre-built
+downloads, by choice rather than omission: Lumen leans on libvips, LibRaw, and
+Lensfun, and building against the copies your machine already has is what keeps
+lens profiles current and the corrections working. A bundle has to pin whatever
+the build machine shipped, which is how the v0.1.0 AppImage came to have lens
+corrections that silently did nothing.
 
 ## Building
 

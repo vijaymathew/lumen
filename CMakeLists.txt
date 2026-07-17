@@ -296,8 +296,8 @@ if(UNIX AND NOT APPLE)
 endif()
 
 # Desktop integration on Linux/BSD (macOS uses the .app bundle instead): a
-# .desktop entry and a scalable icon. This gives `make install` a launchable,
-# icon'd app, and is what the AppImage packaging job bundles from.
+# .desktop entry and a scalable icon, so `make install` leaves a launchable,
+# icon'd app.
 if(UNIX AND NOT APPLE)
     install(FILES packaging/lumen.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)

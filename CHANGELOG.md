@@ -7,23 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.1] — 2026-07-17
 
-A fix-only release. Lens correction did nothing at all in the 0.1.0 AppImage,
-and the Lens & Perspective sliders were unusable everywhere; both now work. The
-AppImage also follows the desktop's fonts and colours instead of looking like a
-different application.
+A fix-only release. The Lens & Perspective sliders were unusable and lens
+correction could silently do nothing; both now work. The pre-built downloads are
+gone — see below.
+
+### Removed
+
+- **The Linux AppImage and the macOS .dmg.** Lumen now installs from source on
+  both platforms with `./install.sh`. Every Linux-only defect in this release
+  traces to the AppImage bundling the build machine's imaging libraries: pinned
+  to Ubuntu 22.04, it shipped a libvips too old for the lens resampler, so
+  v0.1.0's corrections did nothing at all on machines whose own libvips was
+  perfectly fine. Neither bundle could really be tested — the libraries they ship
+  are not the ones CI builds against, and the .dmg had no one to test it on — so
+  they rotted unseen. Building against your own libraries is what keeps the lens
+  profiles current; a runtime-based bundle (Flatpak) is the way back to a shipped
+  binary. Both platforms are still built and tested in CI.
 
 ### Fixed
 
-- **Lens corrections in the AppImage** — distortion, chromatic aberration, and
-  the manual perspective controls silently did nothing in the AppImage: it
-  bundles libvips 8.12, which predates the `background` option the resampler
-  passed to `vips_mapim`, so every resample failed and left the image untouched.
-  The option is now used only where libvips supports it, and a failed resample
-  warns instead of passing the image through unchanged. (Vignetting was
-  unaffected — it never went through the resampler.)
-- **Lens corrections without lensfun-data installed** — the AppImage bundled
-  liblensfun but not its profile database, so on a host without the system
-  profiles nothing ever matched. The profiles now ship inside the AppImage.
+- **Lens corrections silently did nothing on libvips 8.12** — distortion,
+  chromatic aberration, and the manual perspective controls all resample through
+  `vips_mapim`, which only grew its `background` option in 8.13. Older libvips
+  failed the call outright and left the image untouched, which is what made the
+  v0.1.0 AppImage's lens corrections inert, and would equally affect a build on
+  Ubuntu 22.04. The option is now used only where libvips supports it, and a
+  failed resample warns instead of passing the image through unchanged.
+  (Vignetting was unaffected — it never went through the resampler.)
 - **Lens corrections on 3-band images** — the resampler's background was fixed
   at 4 values, which libvips rejects for a 3-band image, disabling every
   correction on one. It is now sized to the image.
@@ -33,10 +43,6 @@ different application.
   looked like it was ignoring the sliders. The warp now coalesces while dragging
   and runs off the UI thread, with the busy badge the other heavy panels already
   show.
-- **AppImage appearance** — the AppImage ignored the desktop's fonts and colours
-  and fell back to Qt's built-in defaults, so it looked unlike a locally built
-  Lumen. It now ships Qt's GTK platform theme and takes glib from the host
-  rather than bundling its own, which is what kept that theme from loading.
 
 ## [0.1.0] — 2026-07-16
 

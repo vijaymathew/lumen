@@ -228,8 +228,8 @@ case "$QT_DIR" in
         warn "Note: lumen was linked against a Qt in a non-system location:"
         warn "    $QT_DIR"
         warn "The installed binary references that path at runtime, so keep that"
-        warn "directory in place. For a relocatable, dependency-bundled build,"
-        warn "use the AppImage (Linux) or .dmg (macOS) from the project Releases."
+        warn "directory in place. Installing a system Qt 6.7+ and rebuilding will"
+        warn "drop the dependency on it."
         ;;
 esac
 

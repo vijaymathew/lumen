@@ -3,8 +3,6 @@
 
 #include "core/LensCorrectionNode.h"
 
-#include <QCoreApplication>
-#include <QDir>
 #include <QtGlobal>
 
 #include <algorithm>
@@ -37,9 +35,10 @@ Mat3 matMul(const Mat3 &a, const Mat3 &b)
 
 // vips_mapim only grew its "background" property in libvips 8.13. An older
 // runtime fails the whole call on the unknown property, which would turn every
-// resample below into a silent no-op — the AppImage bundles 8.12, so this is a
-// live case, not a hypothetical. There we accept the default (transparent)
-// background: it only shows in the outermost corrected pixels.
+// resample below into a silent no-op. That is a live case, not a hypothetical:
+// Ubuntu 22.04 (still in support, and what install.sh builds against there)
+// ships 8.12. On those we accept the default (transparent) background — it only
+// shows in the outermost corrected pixels.
 bool mapimTakesBackground()
 {
     static const bool ok =
@@ -180,35 +179,16 @@ bool LensCorrectionNode::autoActive() const
 #ifdef LUMEN_HAVE_LENSFUN
 namespace {
 
-// Lensfun's own Load() only ever looks in the prefix it was compiled with
-// (/usr/share/lensfun). A relocatable build — the AppImage above all — bundles
-// liblensfun but cannot count on the host having lensfun-data installed, so
-// look beside the executable first. Empty when there is no bundled copy (or no
-// QCoreApplication yet, as in the unit tests), which means "use the system DB".
-QString bundledProfileDir()
-{
-    if (!QCoreApplication::instance())
-        return {};
-    const QDir dir(QCoreApplication::applicationDirPath()
-                   + QStringLiteral("/../share/lensfun/version_1"));
-    return dir.exists() ? dir.canonicalPath() : QString();
-}
-
-// The Lensfun database is loaded once (bundled profiles, else system) and shared.
+// The Lensfun database is loaded once and shared. Load() reads the profiles the
+// distribution installed (liblensfun-data, which install.sh pulls in), which is
+// what keeps them current: they track the host's lensfun, so a camera the system
+// knows is a camera we match. Nothing is shipped alongside the binary — a pinned
+// copy of the profiles goes stale against the cameras people actually own.
 lfDatabase *lensDatabase()
 {
     static lfDatabase *db = [] {
         auto *d = new lfDatabase();
-        // best-effort throughout: an empty DB simply matches nothing
-        const QString bundled = bundledProfileDir();
-        if (bundled.isEmpty()) {
-            d->Load();
-        } else if (!d->LoadDirectory(bundled.toUtf8().constData())) {
-            qWarning("lens: bundled Lensfun profiles at %s failed to load; "
-                     "falling back to the system database",
-                     qUtf8Printable(bundled));
-            d->Load();
-        }
+        d->Load(); // best-effort: an empty DB simply matches nothing
         return d;
     }();
     return db;
