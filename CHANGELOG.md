@@ -5,7 +5,12 @@ All notable changes to Lumen are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.1] — 2026-07-17
+
+A fix-only release. Lens correction did nothing at all in the 0.1.0 AppImage,
+and the Lens & Perspective sliders were unusable everywhere; both now work. The
+AppImage also follows the desktop's fonts and colours instead of looking like a
+different application.
 
 ### Fixed
 
@@ -129,5 +134,6 @@ and the interactive preview on the GPU. Your original is never touched.
   depth, output resize (long-edge), and colour management (sRGB, Display P3, or
   Adobe RGB with the matching ICC profile embedded).
 
+[0.1.1]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.1
 [0.1.0]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.0
 [0.0.1]: https://github.com/vijaymathew/lumen/releases/tag/v0.0.1
