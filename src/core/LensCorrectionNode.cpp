@@ -3,6 +3,10 @@
 
 #include "core/LensCorrectionNode.h"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QtGlobal>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -31,6 +35,18 @@ Mat3 matMul(const Mat3 &a, const Mat3 &b)
     return c;
 }
 
+// vips_mapim only grew its "background" property in libvips 8.13. An older
+// runtime fails the whole call on the unknown property, which would turn every
+// resample below into a silent no-op — the AppImage bundles 8.12, so this is a
+// live case, not a hypothetical. There we accept the default (transparent)
+// background: it only shows in the outermost corrected pixels.
+bool mapimTakesBackground()
+{
+    static const bool ok =
+        vips_version(0) > 8 || (vips_version(0) == 8 && vips_version(1) >= 13);
+    return ok;
+}
+
 // Resample `in` through a per-pixel backward map (`map` is w*h*2 floats: source
 // x then y for each destination pixel) using vips_mapim with bicubic
 // interpolation. Out-of-range samples are filled with the background. Returns an
@@ -42,12 +58,28 @@ VipsImage *resampleThroughMap(VipsImage *in, const std::vector<float> &map, int 
     if (!index)
         return nullptr;
     VipsInterpolate *interp = vips_interpolate_new("bicubic");
-    double bg[4] = {0.0, 0.0, 0.0, 255.0}; // black, opaque, where defined
-    VipsArrayDouble *bgArr = vips_array_double_new(bg, 4);
     VipsImage *out = nullptr;
-    const int rc = vips_mapim(in, &out, index, "interpolate", interp,
-                              "background", bgArr, nullptr);
-    vips_area_unref(reinterpret_cast<VipsArea *>(bgArr));
+    int rc = 0;
+    if (mapimTakesBackground()) {
+        // vips rejects a background whose arity is neither 1 nor the band count,
+        // so size it to `in` (which is a single band on the per-channel TCA path).
+        std::vector<double> bg(in->Bands, 0.0); // black, where defined
+        if (in->Bands == 4)
+            bg[3] = 255.0; // ... and opaque
+        VipsArrayDouble *bgArr =
+            vips_array_double_new(bg.data(), static_cast<int>(bg.size()));
+        rc = vips_mapim(in, &out, index, "interpolate", interp, "background", bgArr,
+                        nullptr);
+        vips_area_unref(reinterpret_cast<VipsArea *>(bgArr));
+    } else {
+        rc = vips_mapim(in, &out, index, "interpolate", interp, nullptr);
+    }
+    if (rc) {
+        // Every caller treats nullptr as "leave the image alone", so without this
+        // a failure here is indistinguishable from a correction that did nothing.
+        qWarning("lens: vips_mapim failed, correction skipped: %s", vips_error_buffer());
+        vips_error_clear();
+    }
     if (interp)
         g_object_unref(interp);
     g_object_unref(index);
@@ -148,12 +180,35 @@ bool LensCorrectionNode::autoActive() const
 #ifdef LUMEN_HAVE_LENSFUN
 namespace {
 
-// The Lensfun database is loaded once (system profiles) and shared.
+// Lensfun's own Load() only ever looks in the prefix it was compiled with
+// (/usr/share/lensfun). A relocatable build — the AppImage above all — bundles
+// liblensfun but cannot count on the host having lensfun-data installed, so
+// look beside the executable first. Empty when there is no bundled copy (or no
+// QCoreApplication yet, as in the unit tests), which means "use the system DB".
+QString bundledProfileDir()
+{
+    if (!QCoreApplication::instance())
+        return {};
+    const QDir dir(QCoreApplication::applicationDirPath()
+                   + QStringLiteral("/../share/lensfun/version_1"));
+    return dir.exists() ? dir.canonicalPath() : QString();
+}
+
+// The Lensfun database is loaded once (bundled profiles, else system) and shared.
 lfDatabase *lensDatabase()
 {
     static lfDatabase *db = [] {
         auto *d = new lfDatabase();
-        d->Load(); // best-effort: an empty DB simply matches nothing
+        // best-effort throughout: an empty DB simply matches nothing
+        const QString bundled = bundledProfileDir();
+        if (bundled.isEmpty()) {
+            d->Load();
+        } else if (!d->LoadDirectory(bundled.toUtf8().constData())) {
+            qWarning("lens: bundled Lensfun profiles at %s failed to load; "
+                     "falling back to the system database",
+                     qUtf8Printable(bundled));
+            d->Load();
+        }
         return d;
     }();
     return db;
