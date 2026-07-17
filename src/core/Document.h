@@ -62,6 +62,7 @@ public:
     std::atomic<quint64> healGen{0};
     std::atomic<quint64> histGen{0};
     std::atomic<quint64> decodeGen{0};
+    std::atomic<quint64> lensGen{0};
 
     // Non-copyable: a Document owns heavy, unique per-image state (the edit
     // graph, decoded pixels). Move-only would come later if tabs need it.

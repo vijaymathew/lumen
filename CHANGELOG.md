@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Lens corrections on 3-band images** — the resampler's background was fixed
   at 4 values, which libvips rejects for a 3-band image, disabling every
   correction on one. It is now sized to the image.
+- **Lens & Perspective sliders froze the app** — every slider tick re-ran the
+  full-res warp and its display conversion on the UI thread (about three seconds
+  on a 20MP frame), so a drag queued up seconds of blocking work and the image
+  looked like it was ignoring the sliders. The warp now coalesces while dragging
+  and runs off the UI thread, with the busy badge the other heavy panels already
+  show.
 - **AppImage appearance** — the AppImage ignored the desktop's fonts and colours
   and fell back to Qt's built-in defaults, so it looked unlike a locally built
   Lumen. It now ships Qt's GTK platform theme and takes glib from the host
