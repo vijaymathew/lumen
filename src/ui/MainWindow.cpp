@@ -604,9 +604,10 @@ MainWindow::MainWindow(QWidget *parent)
                 if (!doc().lens)
                     return;
                 doc().lens->setParams(p);
-                refreshWorkingSource();   // re-render the corrected base
-                refreshBaseImage();       // re-apply heal onto it, keep the view
-                updatePreview();
+                // The warp re-renders the whole source, so coalesce drags rather
+                // than kicking a full-res pass per tick.
+                m_bakeOp = BakeOp::Lens;
+                m_bakeTimer->start();
             });
     connect(m_lensPanel, &LensPanel::closed, this, &MainWindow::closeLensTool);
 
@@ -781,6 +782,12 @@ MainWindow::MainWindow(QWidget *parent)
     // only kick it once the user has clearly stopped sliding (not per tick).
     m_bakeTimer->setInterval(kHeavyBakeSettleMs);
     connect(m_bakeTimer, &QTimer::timeout, this, [this] {
+        // Lens re-renders the cached corrected source first, off the UI thread;
+        // its completion runs the rest of this (see startLensBake).
+        if (m_bakeOp == BakeOp::Lens) {
+            startLensBake();
+            return;
+        }
         refreshBaseImage();
         updatePreview();
     });
@@ -850,6 +857,29 @@ MainWindow::MainWindow(QWidget *parent)
         // The histogram defers itself while a bake runs; recompute now (debounced).
         if (m_histogram->isVisible())
             m_histTimer->start();
+    });
+
+    // Background lens warp finished: adopt it as the cached corrected source and
+    // run the rest of the refresh the panel would have done inline.
+    connect(&m_lensWatcher, &QFutureWatcher<LensBakeResult>::finished, this, [this] {
+        const bool active = docIsActive(m_lensJobDoc);
+        if (active)
+            static_cast<BusyBadge *>(m_healBusy)->stop();
+        if (!m_lensWatcher.future().isValid())
+            return;
+        Document *d = docById(m_lensJobDoc);
+        if (!d)
+            return; // the tab this warp was for was closed mid-bake; drop it
+        const LensBakeResult r = m_lensWatcher.result();
+        if (r.working.isNull())
+            return; // superseded mid-flight; a newer bake is already on its way
+        d->workingSource = r.working;
+        d->sourceQImage = r.display;
+        d->originalQImage = QImage(); // Before/After cache: recompute on next compare
+        if (!active)
+            return; // warped for a background tab; drop (re-baked on return)
+        refreshBaseImage(); // re-apply heal etc. onto it, keep the view
+        updatePreview();
     });
 
     // Background export finished: stop the badge and report the outcome.
@@ -1307,9 +1337,12 @@ MainWindow::~MainWindow()
         ++d->healGen;
         ++d->histGen;
         ++d->decodeGen;
+        ++d->lensGen;
     }
     if (m_healWatcher.isRunning())
         m_healWatcher.waitForFinished();
+    if (m_lensWatcher.isRunning())
+        m_lensWatcher.waitForFinished();
     if (m_histWatcher.isRunning())
         m_histWatcher.waitForFinished();
     if (m_decodeWatcher.isRunning())
@@ -1684,11 +1717,13 @@ void MainWindow::closeTab(int index)
     ++d->healGen;
     ++d->histGen;
     ++d->decodeGen;
+    ++d->lensGen;
     const auto drainIfTargets = [&](auto &watcher, quint64 jobDoc) {
         if (jobDoc == id && watcher.isRunning())
             watcher.waitForFinished();
     };
     drainIfTargets(m_healWatcher, m_healJobDoc);
+    drainIfTargets(m_lensWatcher, m_lensJobDoc);
     drainIfTargets(m_histWatcher, m_histJobDoc);
     drainIfTargets(m_decodeWatcher, m_decodeJobDoc);
     drainIfTargets(m_exportWatcher, m_exportJobDoc);
@@ -3950,6 +3985,47 @@ void MainWindow::closeAdjustmentsTool()
     m_adjustmentsPanel->hide();
     layoutOverlays();
     syncViewToggles();
+}
+
+// The lens-corrected source, off the UI thread. This is refreshWorkingSource's
+// work — a full-res warp plus the QImage conversion, together seconds on a 20MP
+// frame — moved to a worker so the badge can animate and the sliders stay live.
+// Only the panel goes through here; the synchronous path still serves callers
+// that need the corrected source to exist by the time they return (open, decode).
+void MainWindow::startLensBake()
+{
+    m_bakeOp = BakeOp::Auto;
+    Document *d = &doc();
+    const Image src = d->graph.source();
+    if (src.isNull() || !d->lens || !d->lens->isEnabled()) {
+        // Nothing to warp (or lens is switched off in the Adjustments panel):
+        // the cheap path already does the right thing.
+        refreshWorkingSource();
+        refreshBaseImage();
+        updatePreview();
+        return;
+    }
+
+    m_lensJobDoc = d->id;
+    const quint64 gen = ++d->lensGen;
+    // Copy the parameters and build the node inside the worker: the document's
+    // node stays on the UI thread, where the panel keeps mutating it.
+    const LensCorrectionNode::Params p = d->lens->params();
+    auto *badge = static_cast<BusyBadge *>(m_healBusy);
+    badge->setLabel(QStringLiteral("Correcting lens…"));
+    badge->start();
+    layoutOverlays(); // position the badge + dim
+
+    m_lensWatcher.setFuture(QtConcurrent::run([d, gen, src, p]() -> LensBakeResult {
+        if (gen != d->lensGen)
+            return {}; // superseded before we even started
+        LensCorrectionNode node;
+        node.setParams(p);
+        Image img = node.apply(src);
+        if (img.isNull())
+            img = src; // defensive: never lose the image
+        return {img, img.toQImage()};
+    }));
 }
 
 void MainWindow::refreshWorkingSource()

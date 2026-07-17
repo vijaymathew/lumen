@@ -376,7 +376,7 @@ private:
     // busy badge labels by which op the user actually triggered. A handler sets
     // m_bakeOp before kicking the bake; refreshBaseImage consumes it for the
     // label and falls back to precedence when it's Auto (e.g. a load/lens refresh).
-    enum class BakeOp { Auto, Heal, Denoise, Defringe, Sharpen, Structure };
+    enum class BakeOp { Auto, Heal, Denoise, Defringe, Sharpen, Structure, Lens };
     BakeOp m_bakeOp = BakeOp::Auto;
     // Canvas colour-pick has two purposes: choosing a colour-mask target, or the
     // white-balance eyedropper. `m_pickPurpose` routes the picked point.
@@ -531,6 +531,7 @@ private:
     Document *docById(quint64 id) const;
     bool docIsActive(quint64 id) const;
     quint64 m_healJobDoc = 0;
+    quint64 m_lensJobDoc = 0;
     quint64 m_histJobDoc = 0;
     quint64 m_decodeJobDoc = 0;
     quint64 m_exportJobDoc = 0;
@@ -545,6 +546,17 @@ private:
     // The histogram consumes the full-res composite, so it too is computed off
     // the UI thread; the latest request wins.
     QFutureWatcher<HistogramData> m_histWatcher;
+
+    // The lens warp is a full-res lensfun + resample pass over the source, far
+    // too slow to run per slider tick on the UI thread. It runs off it, coalesced
+    // by m_bakeTimer, and produces both halves of what refreshWorkingSource would
+    // have computed inline; the latest request wins.
+    struct LensBakeResult {
+        Image working;  // -> Document::workingSource
+        QImage display; // -> Document::sourceQImage
+    };
+    QFutureWatcher<LensBakeResult> m_lensWatcher;
+    void startLensBake();
 
     // RAW re-decode (a full demosaic) also runs off the UI thread so the app
     // stays responsive and the busy badge can animate; the latest request wins.

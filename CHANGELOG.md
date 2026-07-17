@@ -5,6 +5,34 @@ All notable changes to Lumen are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Lens corrections in the AppImage** — distortion, chromatic aberration, and
+  the manual perspective controls silently did nothing in the AppImage: it
+  bundles libvips 8.12, which predates the `background` option the resampler
+  passed to `vips_mapim`, so every resample failed and left the image untouched.
+  The option is now used only where libvips supports it, and a failed resample
+  warns instead of passing the image through unchanged. (Vignetting was
+  unaffected — it never went through the resampler.)
+- **Lens corrections without lensfun-data installed** — the AppImage bundled
+  liblensfun but not its profile database, so on a host without the system
+  profiles nothing ever matched. The profiles now ship inside the AppImage.
+- **Lens corrections on 3-band images** — the resampler's background was fixed
+  at 4 values, which libvips rejects for a 3-band image, disabling every
+  correction on one. It is now sized to the image.
+- **Lens & Perspective sliders froze the app** — every slider tick re-ran the
+  full-res warp and its display conversion on the UI thread (about three seconds
+  on a 20MP frame), so a drag queued up seconds of blocking work and the image
+  looked like it was ignoring the sliders. The warp now coalesces while dragging
+  and runs off the UI thread, with the busy badge the other heavy panels already
+  show.
+- **AppImage appearance** — the AppImage ignored the desktop's fonts and colours
+  and fell back to Qt's built-in defaults, so it looked unlike a locally built
+  Lumen. It now ships Qt's GTK platform theme and takes glib from the host
+  rather than bundling its own, which is what kept that theme from loading.
+
 ## [0.1.0] — 2026-07-16
 
 This release makes Lumen a multi-image workspace and adds a way to see the

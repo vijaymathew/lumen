@@ -59,30 +59,78 @@ jobs:
       - name: Install into AppDir
         run: cmake --install build --prefix AppDir/usr
 
+      - name: Bundle the Lensfun profile database
+        # linuxdeploy copies liblensfun itself, but not its data. Without the
+        # profiles the automatic corrections silently match nothing on any host
+        # that lacks lensfun-data; ship them so the AppImage is self-contained.
+        run: |
+          src="$(pkg-config --variable=datadir lensfun)/lensfun/version_1"
+          [ -d "$src" ] || { echo "::error::Lensfun profiles not found at $src"; exit 1; }
+          mkdir -p AppDir/usr/share/lensfun
+          cp -r "$src" AppDir/usr/share/lensfun/
+          echo "Bundled $(ls AppDir/usr/share/lensfun/version_1/*.xml | wc -l) profile files"
+
       - name: Rasterise icon
         # linuxdeploy wants a raster icon for the AppImage's thumbnail (.DirIcon).
         run: rsvg-convert -w 256 -h 256 packaging/lumen.svg -o lumen.png
 
-      - name: Fetch linuxdeploy + Qt plugin
+      - name: Fetch linuxdeploy + Qt plugin + appimagetool
         run: |
           base=https://github.com/linuxdeploy
           curl -fsSLO $base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           curl -fsSLO $base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
-          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-qt-x86_64.AppImage
+          # We package with appimagetool rather than linuxdeploy's own appimage
+          # output plugin — see the pruning step below for why.
+          curl -fsSLO https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-qt-x86_64.AppImage \
+                   appimagetool-x86_64.AppImage
 
-      - name: Build AppImage
+      - name: Populate the AppDir
         env:
           QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake
           # Extract-and-run avoids needing FUSE on the runner.
           APPIMAGE_EXTRACT_AND_RUN: '1'
-          OUTPUT: Lumen-${{ steps.version.outputs.version }}-x86_64.AppImage
+          # Ship Qt's GTK platform theme (libqgtk3). Without it Qt falls back to
+          # its built-in defaults — Sans Serif 9pt on a grey palette — instead of
+          # the host's font and colours, a visible mismatch against a locally
+          # built Lumen on any GTK desktop.
+          DEPLOY_PLATFORM_THEMES: '1'
         run: |
           ./linuxdeploy-x86_64.AppImage \
             --appdir AppDir \
             --plugin qt \
             --icon-file lumen.png \
-            --desktop-file AppDir/usr/share/applications/lumen.desktop \
-            --output appimage
+            --desktop-file AppDir/usr/share/applications/lumen.desktop
+
+      - name: Unbundle glib and GTK
+        # libqgtk3 loads the *host's* libgtk-3, but its RUNPATH ($ORIGIN/../../lib)
+        # resolves that GTK's glib inside the AppDir. A bundled glib is therefore
+        # forced on a host GTK built against a newer one, and the theme dies with
+        # "undefined symbol: g_task_set_static_name" — which is exactly how the
+        # 22.04 glib (2.72) behaves on a 24.04-era desktop. Keeping one glib per
+        # process means taking the host's: glib stays backward compatible, so the
+        # bundled libvips/lensfun are fine on anything clearing our glibc floor,
+        # and a host without GTK just falls back to Qt's built-in defaults.
+        #
+        # This has to happen after linuxdeploy: its own blacklist already skips
+        # glib, but the qt plugin deploys it anyway, and --exclude-library does
+        # not reach into the plugin.
+        run: |
+          cd AppDir/usr/lib
+          rm -f libglib-2.0.so.0 libgio-2.0.so.0 libgobject-2.0.so.0 \
+                libgmodule-2.0.so.0 libgthread-2.0.so.0 \
+                libgtk-3.so.0 libgdk-3.so.0
+
+      - name: Package the AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          ARCH: x86_64
+        # appimagetool only packs what is in the AppDir. linuxdeploy's appimage
+        # output plugin re-runs dependency deployment and would put glib straight
+        # back in, undoing the step above.
+        run: |
+          ./appimagetool-x86_64.AppImage \
+            AppDir Lumen-${{ steps.version.outputs.version }}-x86_64.AppImage
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
