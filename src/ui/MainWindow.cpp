@@ -876,6 +876,9 @@ MainWindow::MainWindow(QWidget *parent)
         d->workingSource = r.working;
         d->sourceQImage = r.display;
         d->originalQImage = QImage(); // Before/After cache: recompute on next compare
+        d->workingSourceGeneration = d->sourceGeneration; // keep refreshWorkingSource's cache in sync
+        if (d->lens)
+            d->lens->clearDirty(); // this warp already reflects the current params
         if (!active)
             return; // warped for a background tab; drop (re-baked on return)
         refreshBaseImage(); // re-apply heal etc. onto it, keep the view
@@ -3239,9 +3242,20 @@ void MainWindow::applyPresetLook(const preset::Builtin &b, int amountPct)
     applyPresetVignette(amountPct);  // fold the preset's vignette into the blend
     applyPresetStructure(amountPct); // and its local-contrast (baked on the Base)
     doc().graph.commit();
+    m_bakeOp = BakeOp::Preset; // label the coming re-bake by what the user did, not by precedence
     afterHistoryChange();     // rebuild the preview (incl. the baked structure) + reseed tools
     refreshLayersPanel();     // the new preset layer shows in the stack
-    refreshPresetThumbnails(); // re-render (baseline may have shifted)
+    // Re-rendering the browser's thumbnails is a synchronous composite of every
+    // built-in preset (the Base's structure value just changed, so the whole
+    // thumbnail cache misses and every one is redrawn) — on a large photo that
+    // alone can run for hundreds of ms with nothing on screen yet. Defer it to
+    // the next tick so the busy badge and the just-applied preview get to paint
+    // first; the browser catches up a moment later, imperceptibly.
+    const quint64 targetDoc = doc().id;
+    QTimer::singleShot(0, this, [this, targetDoc] {
+        if (docIsActive(targetDoc))
+            refreshPresetThumbnails(); // re-render (baseline may have shifted)
+    });
     showHint(QStringLiteral("Applied “%1”").arg(b.name));
 }
 
@@ -3256,9 +3270,10 @@ void MainWindow::setPresetAmount(int amountPct)
     const bool structureChanged = applyPresetStructure(amountPct);
     updatePreview(); // live; one undo step is committed when the tool closes
     if (structureChanged) {
-        // Structure is baked; coalesce the (expensive) full-res re-bake so dragging
-        // the Amount slider stays smooth — it fires once the slider settles.
-        m_bakeOp = BakeOp::Structure;
+        // The preset's structure is baked; coalesce the (expensive) full-res
+        // re-bake so dragging the Amount slider stays smooth — it fires once the
+        // slider settles. Label it as the preset it belongs to, not "Structuring…".
+        m_bakeOp = BakeOp::Preset;
         m_bakeTimer->start();
     }
     if (m_layersPanel->isVisible())
@@ -4037,12 +4052,25 @@ void MainWindow::refreshWorkingSource()
     }
     // The lens node is a pure function of the source; apply it once and cache so
     // heal dabs (which call refreshBaseImage repeatedly) don't re-warp full res.
+    // Callers that only touch something downstream of lens (a preset, undo/redo
+    // of an unrelated node, ...) go through this too, so also skip the actual
+    // warp there: it's a full-res per-pixel resample (seconds on a big image)
+    // and a no-op whenever neither the pixels (sourceGeneration) nor the lens
+    // node's own params/enabled state (its dirty flag) moved since we last ran
+    // it — otherwise every such call froze the UI with no feedback before the
+    // (separately async) base re-bake got a chance to show a busy badge.
+    if (!doc().workingSource.isNull() && doc().lens && !doc().lens->isDirty()
+        && doc().workingSourceGeneration == doc().sourceGeneration)
+        return;
     // Honour the pipeline toggle so the Adjustments panel can disable lens.
     doc().workingSource = (doc().lens && doc().lens->isEnabled()) ? doc().lens->apply(src) : src;
     if (doc().workingSource.isNull())
         doc().workingSource = src; // defensive: never lose the image
     doc().sourceQImage = doc().workingSource.toQImage(); // display + colour sampling
     doc().originalQImage = QImage(); // Before/After cache: recompute on next compare
+    doc().workingSourceGeneration = doc().sourceGeneration;
+    if (doc().lens)
+        doc().lens->clearDirty();
 }
 
 void MainWindow::loadLookFile()
@@ -4208,7 +4236,12 @@ void MainWindow::refreshBaseImage(bool keepView)
         // Label by the op the user triggered (if it's actually active); otherwise
         // fall back to precedence (heal first) for unattributed refreshes.
         QString label;
-        if (triggeredBy == BakeOp::Structure && structureActive)
+        if (triggeredBy == BakeOp::Preset)
+            // A preset's own local-contrast bakes into the Base structure node,
+            // so this would otherwise fall through to "Structuring…" below —
+            // accurate to the implementation, but not to what the user just did.
+            label = QStringLiteral("Applying preset…");
+        else if (triggeredBy == BakeOp::Structure && structureActive)
             label = QStringLiteral("Structuring…");
         else if (triggeredBy == BakeOp::Sharpen && sharpenActive)
             label = QStringLiteral("Sharpening…");

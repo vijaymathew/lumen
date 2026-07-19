@@ -134,6 +134,11 @@ public:
 
     // --- Source pixels & bytes -------------------------------------------
     Image workingSource;         // cached lens-corrected source (preview base input)
+    // sourceGeneration workingSource was last built from; lets refreshWorkingSource
+    // skip the (full-res, per-pixel) lens re-warp when neither the pixels nor the
+    // lens node's own params/enabled state (tracked by its dirty flag) have moved
+    // since — see MainWindow::refreshWorkingSource.
+    quint64 workingSourceGeneration = 0;
     QImage sourceQImage;         // for colour sampling + preview mask
     QImage originalQImage;       // decoded source, no edits (Before/After); lazy
     bool compareOriginal = false; // Before/After: show the un-edited original
