@@ -376,7 +376,7 @@ private:
     // busy badge labels by which op the user actually triggered. A handler sets
     // m_bakeOp before kicking the bake; refreshBaseImage consumes it for the
     // label and falls back to precedence when it's Auto (e.g. a load/lens refresh).
-    enum class BakeOp { Auto, Heal, Denoise, Defringe, Sharpen, Structure, Lens };
+    enum class BakeOp { Auto, Heal, Denoise, Defringe, Sharpen, Structure, Lens, Preset };
     BakeOp m_bakeOp = BakeOp::Auto;
     // Canvas colour-pick has two purposes: choosing a colour-mask target, or the
     // white-balance eyedropper. `m_pickPurpose` routes the picked point.
