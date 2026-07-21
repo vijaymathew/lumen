@@ -805,6 +805,16 @@ MainWindow::MainWindow(QWidget *parent)
     // long enough that brief pauses mid-drag don't kick off a full recompute.
     m_histTimer->setInterval(300);
     connect(m_histTimer, &QTimer::timeout, this, &MainWindow::updateHistogram);
+    // Refresh the Adjustments (history) panel a beat after live edits settle, so a
+    // newly-active node (e.g. dialling in Monochrome) lists without reopening the
+    // panel — debounced so a drag doesn't recreate its rows on every tick.
+    m_adjTimer = new QTimer(this);
+    m_adjTimer->setSingleShot(true);
+    m_adjTimer->setInterval(150);
+    connect(m_adjTimer, &QTimer::timeout, this, [this] {
+        if (m_adjustmentsPanel->isVisible())
+            rebuildAdjustments();
+    });
     connect(&m_histWatcher, &QFutureWatcher<HistogramData>::finished, this, [this] {
         if (!m_histWatcher.future().isValid())
             return;
@@ -2754,6 +2764,11 @@ void MainWindow::updatePreview()
     // composite, so we don't want it on every drag tick).
     if (m_histogram && m_histogram->isVisible())
         m_histTimer->start();
+
+    // Likewise keep the open history panel in sync with live edits — a node
+    // crossing the active threshold (or back) changes which entries it lists.
+    if (m_adjustmentsPanel && m_adjustmentsPanel->isVisible())
+        m_adjTimer->start();
 }
 
 TuneNode *MainWindow::activeTune() const

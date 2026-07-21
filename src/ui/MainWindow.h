@@ -441,6 +441,7 @@ private:
     HealPanel *m_healPanel = nullptr;
     HistogramWidget *m_histogram = nullptr;
     QTimer *m_histTimer = nullptr; // debounces histogram recompute
+    QTimer *m_adjTimer = nullptr;  // debounces Adjustments (history) panel refresh
     QTimer *m_bakeTimer = nullptr; // debounces sharpen base re-bake
     LayersPanel *m_layersPanel = nullptr;
     MaskGizmo *m_maskGizmo = nullptr; // on-canvas gradient/radial mask editor

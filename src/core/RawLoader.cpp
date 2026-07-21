@@ -6,6 +6,7 @@
 
 #include <libraw/libraw.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -177,13 +178,11 @@ Image raw::decodeBytes(const void *data, qsizetype size, QString *error, LensMet
 
 namespace {
 
-// The camera's embedded preview JPEG (or, rarely, an RGB bitmap), rotated to the
-// shooting orientation. Fast — no demosaic. Null QImage if the file has no
-// embedded preview. Assumes `raw` has an opened file.
-QImage embeddedThumb(LibRaw &raw)
+// Converts LibRaw's currently-unpacked thumbnail (imgdata.thumbnail, populated by
+// unpack_thumb / unpack_thumb_ex) into a display-oriented QImage. Null QImage if
+// the preview isn't a format we can decode. Assumes a thumb was just unpacked.
+QImage decodeUnpackedThumb(LibRaw &raw)
 {
-    if (raw.unpack_thumb() != LIBRAW_SUCCESS)
-        return QImage();
     int err = 0;
     libraw_processed_image_t *thumb = raw.dcraw_make_mem_thumb(&err);
     if (!thumb)
@@ -210,6 +209,49 @@ QImage embeddedThumb(LibRaw &raw)
         img = img.transformed(t, Qt::SmoothTransformation);
     }
     return img;
+}
+
+// The camera's embedded preview JPEG (or, rarely, an RGB bitmap), rotated to the
+// shooting orientation. Fast — no demosaic, and it decodes LibRaw's default
+// (typically small) thumbnail. Null QImage if the file has no embedded preview.
+// Assumes `raw` has an opened file.
+QImage embeddedThumb(LibRaw &raw)
+{
+    if (raw.unpack_thumb() != LIBRAW_SUCCESS)
+        return QImage();
+    return decodeUnpackedThumb(raw);
+}
+
+// The *largest* embedded preview. Cameras often store a full-resolution JPEG
+// alongside the small thumbnail LibRaw unpacks by default; this walks the
+// parsed thumbnail list and decodes the biggest one so "view the camera JPEG"
+// opens at (or near) full sensor resolution. Tries candidates largest-first and
+// falls back to the default thumbnail when the list is empty or none decode.
+QImage largestEmbeddedThumb(LibRaw &raw)
+{
+    const libraw_thumbnail_list_t &list = raw.imgdata.thumbs_list;
+
+    // Indices sorted by pixel area, largest first (list is tiny — MAXCOUNT=8).
+    std::vector<int> byArea;
+    byArea.reserve(list.thumbcount);
+    for (int i = 0; i < list.thumbcount; ++i)
+        if (list.thumblist[i].twidth > 0 && list.thumblist[i].theight > 0)
+            byArea.push_back(i);
+    std::sort(byArea.begin(), byArea.end(), [&](int a, int b) {
+        const auto area = [&](int i) {
+            return qint64(list.thumblist[i].twidth) * list.thumblist[i].theight;
+        };
+        return area(a) > area(b);
+    });
+
+    for (int i : byArea) {
+        if (raw.unpack_thumb_ex(i) != LIBRAW_SUCCESS)
+            continue;
+        QImage img = decodeUnpackedThumb(raw);
+        if (!img.isNull())
+            return img;
+    }
+    return embeddedThumb(raw); // no list / nothing decoded → default preview
 }
 
 // Fallback for files with no embedded preview (e.g. some DNGs): a half-size
@@ -280,11 +322,12 @@ QImage raw::embeddedPreview(const void *data, qsizetype size, QString *error)
                          .arg(QString::fromUtf8(LibRaw::strerror(e)));
         return QImage();
     }
-    // Full-size, orientation-corrected — the same extraction as the file-picker
-    // thumbnail, minus the downscale loadThumbnail applies afterwards. No
-    // half-size demosaic fallback: this feature is about the camera's JPEG, not
-    // a re-rendered RAW.
-    QImage img = embeddedThumb(raw);
+    // The largest embedded preview, orientation-corrected. Cameras commonly
+    // store a full-resolution JPEG next to the small thumbnail, so this opens at
+    // (or near) the RAW's own resolution rather than the default thumbnail size.
+    // No half-size demosaic fallback: this feature is about the camera's JPEG,
+    // not a re-rendered RAW.
+    QImage img = largestEmbeddedThumb(raw);
     if (img.isNull() && error)
         *error = QStringLiteral("This RAW has no embedded preview");
     return img;
