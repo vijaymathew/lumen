@@ -81,6 +81,7 @@ void Document::initFromImage(const Image &source, const QByteArray &bytes,
     // Keep the original encoded bytes so we can embed them verbatim in a .lumen.
     sourceBytes = bytes;
     sourceName = QFileInfo(imagePath).fileName();
+    this->meta = meta; // EXIF for the "Image info" panel (empty for non-RAW)
     projectPath.clear(); // opening a raw image starts a new (unsaved) project
 
     // A freshly opened image starts from a clean slate: reset the graph to its
@@ -122,20 +123,21 @@ void Document::initFromProject(const Image &source, const QByteArray &bytes,
                                const QString &projectFilePath,
                                const QJsonObject &graphState,
                                const raw::RawDecodeOptions &opts, bool isRaw,
-                               const raw::ColorProfile &color)
+                               const raw::LensMetadata &meta)
 {
     rawOptions = opts; // adopt the project's decode options
 
     maskView = 0;
     sourceBytes = bytes;
     sourceName = sourceFileName;
+    this->meta = meta; // re-derived from the embedded RAW on open ("Image info")
     graph.setSource(source);
     ++sourceGeneration;              // new pixels → preset thumbnails must re-render
     graph.loadProjectState(graphState); // restores the lens node's params too
     // Refresh the camera profile from the actual decode, keeping the restored
     // WB temperature (don't reseed to as-shot).
     if (isRaw)
-        applyCameraProfile(color, /*seedKelvin=*/false);
+        applyCameraProfile(meta.color, /*seedKelvin=*/false);
 
     projectPath = projectFilePath;
     sourcePath = projectFilePath; // export defaults to "<project>-edited.<ext>"

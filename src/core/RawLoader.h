@@ -2,6 +2,7 @@
 
 #include "core/Image.h"
 
+#include <QDateTime>
 #include <QJsonObject>
 #include <QString>
 #include <QStringList>
@@ -54,8 +55,10 @@ struct ColorProfile {
     double asShotMul[3] = {1, 1, 1};                  // as-shot multipliers (cam_mul)
 };
 
-// Lens/camera identity extracted from the RAW's EXIF, used to look up a Lensfun
-// profile for automatic lens correction. Empty/zero fields mean "unknown".
+// Camera/lens identity and capture settings extracted from the RAW's EXIF. The
+// identity + focalLength drive the Lensfun lookup for automatic lens correction;
+// the remaining capture settings are display-only (the "Image info" panel).
+// Empty/zero/invalid fields mean "unknown".
 struct LensMetadata {
     QString cameraMaker;     // e.g. "Canon"
     QString cameraModel;     // e.g. "EOS 5D Mark III"
@@ -63,6 +66,9 @@ struct LensMetadata {
     float focalLength = 0;   // mm
     float aperture = 0;      // f-number at capture
     float focusDistance = 0; // metres (0 = unknown)
+    float iso = 0;           // ISO speed (0 = unknown)
+    float shutter = 0;       // exposure time in seconds (0 = unknown)
+    QDateTime captureTime;   // capture timestamp (invalid = unknown)
     ColorProfile color;      // camera colour matrices for white balance
 };
 

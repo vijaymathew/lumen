@@ -1,5 +1,6 @@
 #include "core/RawLoader.h"
 
+#include <QDateTime>
 #include <QFileInfo>
 #include <QImage>
 #include <QTransform>
@@ -31,6 +32,12 @@ void fillMetadata(LibRaw &raw, raw::LensMetadata *meta)
     // The focus distance at capture isn't reliably exposed by LibRaw; leave it
     // unknown (0) so the correction assumes ≈∞, which is right for landscapes.
     meta->focusDistance = 0.0f;
+    // Display-only capture settings (the "Image info" panel).
+    meta->iso = static_cast<float>(other.iso_speed);
+    meta->shutter = static_cast<float>(other.shutter);
+    meta->captureTime = other.timestamp > 0
+                            ? QDateTime::fromSecsSinceEpoch(other.timestamp)
+                            : QDateTime();
 }
 
 // Captures the camera colour matrices LibRaw computes (valid after dcraw_process)

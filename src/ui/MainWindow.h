@@ -46,6 +46,7 @@ class HealPanel;
 class HistogramWidget;
 class LayersPanel;
 class AdjustmentsPanel;
+class InfoPanel;
 class ColorGradePanel;
 class LensPanel;
 class MaskGizmo;
@@ -366,6 +367,9 @@ private:
     void openAdjustmentsTool();  // toggles the Adjustments panel
     void closeAdjustmentsTool();
     void rebuildAdjustments();   // re-scan active edits and repaint the panel
+    void openInfoTool();         // toggles the Image info panel
+    void closeInfoTool();
+    void rebuildInfo();          // repopulate the info panel from the active doc
     bool nodeIsActive(const EditNode *node) const; // params differ from neutral
     void onAdjustmentToggle(int index, bool on);
     void onAdjustmentDelete(int index);
@@ -455,6 +459,7 @@ private:
     QPushButton *m_histToggleBtn = nullptr;
     QPushButton *m_clipToggleBtn = nullptr;
     QPushButton *m_historyToggleBtn = nullptr;
+    QPushButton *m_infoToggleBtn = nullptr;
     // One-shot action (not a toggle): open the RAW's embedded camera JPEG in a
     // new tab. Shown only while the active document is a RAW.
     QPushButton *m_embeddedJpegBtn = nullptr;
@@ -489,6 +494,7 @@ private:
     // transient, non-committed "show up to here" view backed by a graph snapshot.
     AdjustmentsPanel *m_adjustmentsPanel = nullptr;
     std::vector<Adjustment> m_adjustments; // rebuilt each refresh from the active doc
+    InfoPanel *m_infoPanel = nullptr;      // read-only image metadata card
 
     // Autosave/peek/RAW-options data is per-image → Document. The timers and the
     // off-thread write watcher are shell machinery and stay here (Stage 3 routes
