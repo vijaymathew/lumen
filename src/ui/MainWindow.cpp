@@ -23,6 +23,7 @@
 #include "ui/HistogramWidget.h"
 #include "ui/LayersPanel.h"
 #include "ui/AdjustmentsPanel.h"
+#include "ui/InfoPanel.h"
 #include "ui/LensPanel.h"
 #include "ui/MaskGizmo.h"
 #include "ui/ZoneGizmo.h"
@@ -1034,6 +1035,8 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_adjustmentsPanel, &AdjustmentsPanel::viewUpToRequested, this,
             &MainWindow::peekUpTo);
 
+    m_infoPanel = new InfoPanel(this);
+
     m_layersPanel = new LayersPanel(this);
     connect(m_layersPanel, &LayersPanel::addRequested, this, &MainWindow::addAdjustmentLayer);
     connect(m_layersPanel, &LayersPanel::deleteRequested, this, &MainWindow::deleteActiveLayer);
@@ -1260,6 +1263,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_clipToggleBtn = addToggle(QStringLiteral("Clipping (J)"), [this] { toggleClipping(); });
     m_historyToggleBtn =
         addToggle(QStringLiteral("History (A)"), [this] { openAdjustmentsTool(); });
+    m_infoToggleBtn = addToggle(QStringLiteral("Info (I)"), [this] { openInfoTool(); });
     // A one-shot action, not a toggle: it spawns a tab rather than flipping a
     // view state, so it's non-checkable (never paints the :checked highlight) and
     // is shown only for RAW documents (syncViewToggles drives its visibility).
@@ -1450,6 +1454,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("histogram"), QStringLiteral("Histogram (toggle)"), view},
         {QStringLiteral("clipping"), QStringLiteral("Clipping warnings (toggle)"), view},
         {QStringLiteral("adjustments"), QStringLiteral("Adjustments (history)"), view},
+        {QStringLiteral("info"), QStringLiteral("Image info (metadata)"), view},
         {QStringLiteral("next-tab"), QStringLiteral("Next tab  ·  Ctrl+Tab"), view},
         {QStringLiteral("prev-tab"), QStringLiteral("Previous tab  ·  Ctrl+Shift+Tab"), view},
         {QStringLiteral("duplicate-tab"), QStringLiteral("Duplicate to a new tab"), view},
@@ -1528,6 +1533,8 @@ void MainWindow::runCommand(const QString &id)
         applyPresetFile();
     } else if (id == QLatin1String("adjustments")) {
         openAdjustmentsTool();
+    } else if (id == QLatin1String("info")) {
+        openInfoTool();
     } else if (id == QLatin1String("undo")) {
         doUndo();
     } else if (id == QLatin1String("redo")) {
@@ -1685,6 +1692,8 @@ void MainWindow::reflectActiveDocument()
     m_canvas->setClipping(doc().showClipping);
     if (m_layersPanel->isVisible())
         refreshLayersPanel();
+    if (m_infoPanel->isVisible())
+        rebuildInfo(); // the switched-to document has its own metadata
     reseedOpenPanels();
     if (m_presetsPanel && m_presetsPanel->isVisible())
         refreshPresetThumbnails(); // re-render the browser against the new document
@@ -1916,6 +1925,8 @@ void MainWindow::bindDocument(const BindOptions &opts)
     startAutosave();
     if (m_layersPanel->isVisible())
         refreshLayersPanel();   // the load may have changed the selective layers
+    if (m_infoPanel->isVisible())
+        rebuildInfo();          // reflect the newly-bound document's metadata
     reseedOpenPanels();         // re-sync open tools with the document's values
     updateTitle(opts.title);
     syncTabBar();               // reflect the new label + show the bar if >1 tab
@@ -2359,7 +2370,7 @@ bool MainWindow::applyProjectResult(const OpenProjectResult &r)
 
     beginOpenIntoTab(); // reuse the empty placeholder or open a new tab
     doc().initFromProject(r.source, r.sourceBytes, r.sourceName, r.path, r.graph,
-                          r.rawOptions, r.isRaw, r.meta.color);
+                          r.rawOptions, r.isRaw, r.meta);
     BindOptions opts;
     opts.pushCropView = true; // a project carries a saved crop/orientation
     opts.title = QFileInfo(r.path).fileName();
@@ -3663,6 +3674,7 @@ void MainWindow::syncViewToggles()
     m_histToggleBtn->setChecked(m_histogram && m_histogram->isVisible());
     m_clipToggleBtn->setChecked(doc().showClipping);
     m_historyToggleBtn->setChecked(m_adjustmentsPanel && m_adjustmentsPanel->isVisible());
+    m_infoToggleBtn->setChecked(m_infoPanel && m_infoPanel->isVisible());
     // The embedded JPEG only exists for RAW sources; hide the button otherwise.
     m_embeddedJpegBtn->setVisible(raw::isRawPath(doc().sourceName));
     // Showing/hiding a button changes the cluster's width; re-fit and reposition
@@ -4013,6 +4025,95 @@ void MainWindow::closeAdjustmentsTool()
         setCompareOriginal(false);
     exitPeek();
     m_adjustmentsPanel->hide();
+    layoutOverlays();
+    syncViewToggles();
+}
+
+// --- Image info panel ------------------------------------------------------
+
+void MainWindow::rebuildInfo()
+{
+    QVector<InfoPanel::Row> rows;
+    const auto add = [&rows](const QString &label, const QString &value) {
+        if (!value.isEmpty())
+            rows.push_back({label, value});
+    };
+
+    const Document &d = doc();
+    add(QStringLiteral("File"), d.sourceName);
+    // Full path on disk (the RAW/JPEG, or the .lumen for a saved project).
+    add(QStringLiteral("Path"), d.sourcePath);
+
+    const Image &src = d.graph.source();
+    if (!src.isNull()) {
+        const double mp = double(src.width()) * src.height() / 1e6;
+        add(QStringLiteral("Dimensions"),
+            QStringLiteral("%1 × %2  (%3 MP)")
+                .arg(src.width())
+                .arg(src.height())
+                .arg(mp, 0, 'f', 1));
+    }
+
+    // EXIF camera/lens + capture settings (populated for RAW; empty otherwise,
+    // in which case add() skips the row).
+    const raw::LensMetadata &m = d.meta;
+    QString camera = m.cameraMaker;
+    if (!m.cameraModel.isEmpty()) {
+        // Some makers repeat the brand in the model (e.g. "NIKON" + "NIKON Z 7");
+        // don't print it twice.
+        if (camera.isEmpty() || m.cameraModel.startsWith(camera, Qt::CaseInsensitive))
+            camera = m.cameraModel;
+        else
+            camera = camera + QLatin1Char(' ') + m.cameraModel;
+    }
+    add(QStringLiteral("Camera"), camera.trimmed());
+
+    QString lens = m.lensModel;
+    if (lens.isEmpty() && d.lens)
+        lens = d.lens->matchedLensName(); // fixed-lens compacts carry no EXIF lens
+    add(QStringLiteral("Lens"), lens);
+
+    if (m.focalLength > 0.0f)
+        add(QStringLiteral("Focal length"),
+            QStringLiteral("%1 mm").arg(m.focalLength, 0, 'f', 0));
+    if (m.aperture > 0.0f)
+        add(QStringLiteral("Aperture"),
+            QStringLiteral("f/%1").arg(m.aperture, 0, 'f', 1));
+    if (m.shutter > 0.0f) {
+        // Sub-second exposures read as "1/125 s"; longer ones as "2 s".
+        const QString shutter = m.shutter < 1.0f
+            ? QStringLiteral("1/%1 s").arg(qRound(1.0f / m.shutter))
+            : QStringLiteral("%1 s").arg(m.shutter, 0, 'f', 1);
+        add(QStringLiteral("Shutter"), shutter);
+    }
+    if (m.iso > 0.0f)
+        add(QStringLiteral("ISO"), QString::number(qRound(m.iso)));
+    if (m.captureTime.isValid())
+        add(QStringLiteral("Captured"),
+            m.captureTime.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+
+    m_infoPanel->setRows(rows);
+    layoutOverlays(); // the row count changes the card's height
+}
+
+void MainWindow::openInfoTool()
+{
+    if (m_infoPanel->isVisible()) {
+        closeInfoTool();
+        return;
+    }
+    rebuildInfo();
+    // Top-centre of the canvas — clear of the Adjustments card (top-left) and
+    // the tool panels (top-right). Draggable from there.
+    m_infoPanel->move((width() - m_infoPanel->width()) / 2, 18);
+    m_infoPanel->reveal();
+    layoutOverlays();
+    syncViewToggles();
+}
+
+void MainWindow::closeInfoTool()
+{
+    m_infoPanel->hide();
     layoutOverlays();
     syncViewToggles();
 }
@@ -4809,6 +4910,7 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_rawPanel);
     clampIntoView(m_healPanel);
     clampIntoView(m_layersPanel);
+    clampIntoView(m_infoPanel);
 
     // The crop gizmo overlays the full canvas area while the Crop tool is open.
     if (m_cropGizmo && m_cropGizmo->isVisible()) {
@@ -4861,7 +4963,8 @@ void MainWindow::layoutOverlays()
                                static_cast<QWidget *>(m_rawPanel),
                                static_cast<QWidget *>(m_healPanel),
                                static_cast<QWidget *>(m_layersPanel),
-                               static_cast<QWidget *>(m_adjustmentsPanel)}) {
+                               static_cast<QWidget *>(m_adjustmentsPanel),
+                               static_cast<QWidget *>(m_infoPanel)}) {
             if (panel && panel->isVisible())
                 panel->raise();
         }
@@ -4937,8 +5040,8 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     }
 
     // View-toggle keys, available whenever an image is loaded (any mode): 'J'
-    // clipping, 'G' histo(G)ram, 'A' history (Adjustments panel). Their on/off
-    // state is mirrored in the bottom-right cluster and the hint legend.
+    // clipping, 'G' histo(G)ram, 'A' history (Adjustments panel), 'I' image info.
+    // Their on/off state is mirrored in the bottom-right cluster and the hint legend.
     if (e->key() == Qt::Key_J && !e->isAutoRepeat() && !doc().graph.source().isNull()) {
         toggleClipping();
         return;
@@ -4949,6 +5052,10 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
     }
     if (e->key() == Qt::Key_A && !e->isAutoRepeat() && !doc().graph.source().isNull()) {
         openAdjustmentsTool(); // toggles the history panel
+        return;
+    }
+    if (e->key() == Qt::Key_I && !e->isAutoRepeat() && !doc().graph.source().isNull()) {
+        openInfoTool(); // toggles the Image info panel
         return;
     }
 

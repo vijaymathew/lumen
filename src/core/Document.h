@@ -98,7 +98,7 @@ public:
                          const QString &projectFilePath,
                          const QJsonObject &graphState,
                          const raw::RawDecodeOptions &opts, bool isRaw,
-                         const raw::ColorProfile &color);
+                         const raw::LensMetadata &meta);
 
     // Installs the RAW camera colour profile on every layer's TuneNode so white
     // balance is camera-accurate. `seedKelvin` moves the slider to the as-shot
@@ -145,6 +145,7 @@ public:
     QByteArray sourceBytes;      // original encoded source, for embedding in .lumen
     QString sourceName;          // original source file name
     QString sourcePath;          // for a sensible default export name
+    raw::LensMetadata meta;      // EXIF camera/lens + capture settings ("Image info")
 
     // --- Project & export ------------------------------------------------
     QString projectPath;         // current .lumen path (empty until saved/opened)

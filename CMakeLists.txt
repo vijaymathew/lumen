@@ -188,6 +188,8 @@ qt_add_executable(lumen
     src/ui/LayersPanel.cpp
     src/ui/AdjustmentsPanel.h
     src/ui/AdjustmentsPanel.cpp
+    src/ui/InfoPanel.h
+    src/ui/InfoPanel.cpp
     src/ui/MonoPanel.h
     src/ui/MonoPanel.cpp
     src/ui/GrainPanel.h
