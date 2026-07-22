@@ -76,6 +76,11 @@ public:
     ViewState viewState() const { return {m_zoom, m_pan}; }
     void setViewState(const ViewState &v);
 
+    // Absolute on-screen magnification as a percentage: 100 = one image pixel per
+    // physical (device) pixel. Derived from the fit-to-window scale times the
+    // fit-relative zoom, so it tracks window size too. 0 when no image is loaded.
+    int zoomPercent() const;
+
     // Centres and sets the fit-relative zoom (1.0 = fit-to-window; <1 leaves a
     // margin). The crop tool uses this to pull the frame in from the screen edges
     // so its handles are reachable.
@@ -141,6 +146,10 @@ signals:
     // Emitted when the zoom/pan transform changes, so on-canvas overlays (the
     // mask gizmo) can repaint against the new mapping.
     void viewChanged();
+    // Emitted only on interactive (wheel) zoom, carrying the new zoomPercent(),
+    // so the shell can flash a transient zoom read-out. Pan and programmatic
+    // view changes (tab restore, fit-to-window) don't fire this.
+    void zoomChanged(int percent);
 
 protected:
     void initialize(QRhiCommandBuffer *cb) override;

@@ -1060,5 +1060,16 @@ void CanvasWidget::zoomAt(float factor, const QPointF &cursorDevicePx)
     m_pan = zoommath::panForZoom(widget, image, m_zoom, newZoom, m_pan, cursorDevicePx);
     m_zoom = newZoom;
     emit viewChanged();
+    emit zoomChanged(zoomPercent()); // wheel-only read-out for the shell
     update();
+}
+
+int CanvasWidget::zoomPercent() const
+{
+    const QSizeF image = effectiveImageSize();
+    const QSizeF widget(width() * devicePixelRatioF(), height() * devicePixelRatioF());
+    if (image.isEmpty() || widget.isEmpty())
+        return 0;
+    const float scale = zoommath::fitScale(widget, image) * m_zoom;
+    return static_cast<int>(std::lround(scale * 100.0f));
 }

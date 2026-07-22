@@ -175,6 +175,8 @@ private:
     // and routes it to `onClose` — a pointer counterpart to the Esc/Enter close.
     void addPanelCloseButton(QWidget *panel, std::function<void()> onClose);
     void showHint(const QString &text);
+    // Flashes the transient zoom read-out ("NN%") and (re)arms its fade timer.
+    void flashZoomIndicator(int percent);
     // The persistent which-key legend for the current input mode. Shown in the
     // hint bar whenever the mode changes; transient showHint() messages override
     // it until the next mode change.
@@ -453,6 +455,9 @@ private:
     CropGizmo *m_cropGizmo = nullptr; // on-canvas crop rectangle editor
     double m_cropAspect = 0.0;        // active crop aspect (w/h; 0 = free), for straighten inset
     QLabel *m_hint = nullptr;
+    // Transient zoom read-out (a "%") that flashes on wheel zoom, then fades.
+    QLabel *m_zoomIndicator = nullptr;
+    QTimer *m_zoomTimer = nullptr; // hides the zoom read-out after it settles
     // Bottom-right cluster of glanceable view toggles (mirror the G/J/A keys).
     QWidget *m_viewToggles = nullptr;
     QLabel *m_clusterGrip = nullptr; // drag handle for the cluster

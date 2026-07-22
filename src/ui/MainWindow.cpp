@@ -1222,6 +1222,20 @@ MainWindow::MainWindow(QWidget *parent)
     m_hint->setText(modeHintText()); // Browse legend at startup
     m_hint->adjustSize();
 
+    // Transient zoom read-out: flashes "NN%" on wheel zoom, then fades out. Sits
+    // just above the hint bar (bottom-centre) and starts hidden.
+    m_zoomIndicator = new QLabel(this);
+    m_zoomIndicator->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_zoomIndicator->setStyleSheet(QStringLiteral(
+        "background: rgba(20,20,22,0.85); border-radius: 8px;"
+        "padding: 6px 14px; color: #f0f0f1; font-size: 13px; font-weight: 600;"));
+    m_zoomIndicator->hide();
+    m_zoomTimer = new QTimer(this);
+    m_zoomTimer->setSingleShot(true);
+    m_zoomTimer->setInterval(900); // long enough to read, short enough to be a flash
+    connect(m_zoomTimer, &QTimer::timeout, this, [this] { m_zoomIndicator->hide(); });
+    connect(m_canvas, &CanvasWidget::zoomChanged, this, &MainWindow::flashZoomIndicator);
+
     // View-toggle cluster, bottom-right. Glanceable on/off buttons for the
     // histogram, clipping warnings, and history (Adjustments) panel — the same
     // state the G / J / A keys and the palette flip. Buttons reflect current
@@ -4830,6 +4844,18 @@ void MainWindow::showHint(const QString &text)
     layoutOverlays();
 }
 
+void MainWindow::flashZoomIndicator(int percent)
+{
+    if (percent <= 0)
+        return; // no image loaded
+    m_zoomIndicator->setText(QStringLiteral("%1%").arg(percent));
+    m_zoomIndicator->adjustSize();
+    m_zoomIndicator->show();
+    m_zoomIndicator->raise();
+    layoutOverlays(); // re-centre for the new width
+    m_zoomTimer->start(); // (re)arm the fade
+}
+
 QString MainWindow::modeHintText() const
 {
     switch (m_input.mode()) {
@@ -4981,6 +5007,12 @@ void MainWindow::layoutOverlays()
 
     // Hint bar: bottom-centre.
     m_hint->move((width() - m_hint->width()) / 2, height() - m_hint->height() - 18);
+
+    // Zoom read-out: bottom-centre, stacked just above the hint bar.
+    if (m_zoomIndicator) {
+        const int y = height() - m_hint->height() - 18 - m_zoomIndicator->height() - 8;
+        m_zoomIndicator->move((width() - m_zoomIndicator->width()) / 2, y);
+    }
 
     // View-toggle cluster: bottom-right, opposite the histogram (bottom-left).
     positionViewToggles();
