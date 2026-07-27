@@ -77,7 +77,7 @@ LayersPanel::LayersPanel(QWidget *parent)
     m_showButton = new QPushButton(QStringLiteral("Show: Off"), m_maskSection);
     connect(m_showButton, &QPushButton::clicked, this, [this] {
         m_showMode = (m_showMode + 1) % 3;
-        static const char *labels[] = {"Show: Off", "Show: Red", "Show: Gray"};
+        static const char *labels[] = {"Show: Off", "Show: Green", "Show: Gray"};
         m_showButton->setText(QString::fromLatin1(labels[m_showMode]));
         emit maskShowChanged(m_showMode);
     });
@@ -497,7 +497,7 @@ void LayersPanel::setMaskState(const MaskSpec &mask, bool isBaseActive, int brus
     }
 
     m_showMode = showMode;
-    static const char *labels[] = {"Show: Off", "Show: Red", "Show: Gray"};
+    static const char *labels[] = {"Show: Off", "Show: Green", "Show: Gray"};
     m_showButton->setText(QString::fromLatin1(labels[std::clamp(showMode, 0, 2)]));
 }
 

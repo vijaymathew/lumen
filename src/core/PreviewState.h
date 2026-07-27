@@ -30,7 +30,7 @@ struct PreviewState {
     float selExposure = 0.0f;    // EV stops (vestigial)
     float selContrast = 1.0f;    // factor (vestigial)
     float selSaturation = 1.0f;  // factor (vestigial)
-    float selMaskView = 0.0f;    // preview-only: 0 off, 1 red overlay, 2 grayscale
+    float selMaskView = 0.0f;    // preview-only: 0 off, 1 green overlay, 2 grayscale
     float selMaskMode = 0.0f;    // 0 luminosity (parametric), 1 texture (uploaded mask)
     float selInvert = 0.0f;      // 1 = invert the mask
     float layerOpacity = 1.0f;   // this layer's blend onto the running result

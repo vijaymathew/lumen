@@ -1274,9 +1274,9 @@ MainWindow::MainWindow(QWidget *parent)
     // Labels carry the keyboard shortcut so the cluster is self-documenting (the
     // bottom hint bar no longer repeats G/J/A).
     m_histToggleBtn = addToggle(QStringLiteral("Histogram (G)"), [this] { toggleHistogram(); });
-    m_clipToggleBtn = addToggle(QStringLiteral("Clipping (J)"), [this] { toggleClipping(); });
+    m_clipToggleBtn = addToggle(QStringLiteral("Clipping (C)"), [this] { toggleClipping(); });
     m_historyToggleBtn =
-        addToggle(QStringLiteral("History (A)"), [this] { openAdjustmentsTool(); });
+        addToggle(QStringLiteral("History (Y)"), [this] { openAdjustmentsTool(); });
     m_infoToggleBtn = addToggle(QStringLiteral("Info (I)"), [this] { openInfoTool(); });
     // A one-shot action, not a toggle: it spawns a tab rather than flipping a
     // view state, so it's non-checkable (never paints the :checked highlight) and
@@ -5071,10 +5071,10 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         return;
     }
 
-    // View-toggle keys, available whenever an image is loaded (any mode): 'J'
-    // clipping, 'G' histo(G)ram, 'A' history (Adjustments panel), 'I' image info.
+    // View-toggle keys, available whenever an image is loaded (any mode): 'C'
+    // clipping, 'G' histo(G)ram, 'Y' histor(Y) (Adjustments panel), 'I' image info.
     // Their on/off state is mirrored in the bottom-right cluster and the hint legend.
-    if (e->key() == Qt::Key_J && !e->isAutoRepeat() && !doc().graph.source().isNull()) {
+    if (e->key() == Qt::Key_C && !e->isAutoRepeat() && !doc().graph.source().isNull()) {
         toggleClipping();
         return;
     }
@@ -5082,7 +5082,7 @@ void MainWindow::keyPressEvent(QKeyEvent *e)
         toggleHistogram();
         return;
     }
-    if (e->key() == Qt::Key_A && !e->isAutoRepeat() && !doc().graph.source().isNull()) {
+    if (e->key() == Qt::Key_Y && !e->isAutoRepeat() && !doc().graph.source().isNull()) {
         openAdjustmentsTool(); // toggles the history panel
         return;
     }

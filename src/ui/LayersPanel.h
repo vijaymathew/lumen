@@ -33,7 +33,7 @@ public:
 
     // Reflects the active layer's mask + brush state. `isBaseActive` hides the
     // mask section (the Base layer has no mask). `showMode` is the overlay state
-    // (0 off / 1 red / 2 gray).
+    // (0 off / 1 green / 2 gray).
     void setMaskState(const MaskSpec &mask, bool isBaseActive, int brushSize,
                       int brushHardness, bool brushAdd, int showMode);
     void setTargetColor(const QColor &color);     // after a canvas colour pick
@@ -56,7 +56,7 @@ signals:
     void maskRangeChanged(int lowPercent, int highPercent); // luminosity
     void maskColorRangeChanged(int percent);                // colour affinity
     void maskPickColorRequested();
-    void maskShowChanged(int mode); // overlay: 0 off, 1 red, 2 gray
+    void maskShowChanged(int mode); // overlay: 0 off, 1 green, 2 gray
     void brushSettingsChanged(int size, int hardness, bool add);
     void brushClearRequested();
     // Exclusive-zone editing (active layer). Tool: 0 select, 1 rect, 2 oval,
