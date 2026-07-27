@@ -344,8 +344,8 @@ void main()
             // so opacity has a visible effect while the mask is shown (identical
             // to before at selMaskOpacity = 1, vanishing at 0).
             vec3 overlaid = (ubuf.selMaskView < 1.5)
-                ? mix(col * 0.4, vec3(0.95, 0.2, 0.2), mask * 0.85) // red over dimmed
-                : vec3(mask);                                       // grayscale mask
+                ? mix(col * 0.4, vec3(0.2, 0.9, 0.4), mask * 0.85) // green over dimmed
+                : vec3(mask);                                      // grayscale mask
             col = mix(col, overlaid, ubuf.selMaskOpacity);
         }
     }
