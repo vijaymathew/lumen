@@ -2655,12 +2655,12 @@ void MainWindow::exportImage()
     const Image::ExportOptions exportOpts{dlg.quality(), dlg.bits(), dlg.longEdge(),
                                           dlg.colorSpace()};
 
-    // 2. Choose the path, defaulting to "<name>-edited.<ext>" in the last-used
-    //    export folder (falling back to next-to-the-source).
+    // 2. Choose the path, defaulting to "<name>.<ext>" in the last-used export
+    //    folder (falling back to next-to-the-source).
     const QFileInfo src(doc().sourcePath);
     const QString dir = lastDir(QStringLiteral("export"), src.dir().path());
-    const QString suggested = QDir(dir).filePath(
-        src.completeBaseName() + QStringLiteral("-edited.") + ext);
+    const QString suggested =
+        QDir(dir).filePath(src.completeBaseName() + QStringLiteral(".") + ext);
     const QString filter = QStringLiteral("%1 (*.%2)").arg(ext.toUpper(), ext);
     QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Export image"),
                                                 suggested, filter);
