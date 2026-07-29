@@ -147,13 +147,10 @@ public:
     QString sourcePath;          // for a sensible default export name
     raw::LensMetadata meta;      // EXIF camera/lens + capture settings ("Image info")
 
-    // --- Project & export ------------------------------------------------
+    // --- Project ---------------------------------------------------------
+    // (The export format/quality/size choices are a global preference, stored in
+    // QSettings by MainWindow, not per-document.)
     QString projectPath;         // current .lumen path (empty until saved/opened)
-    QString exportExt = QStringLiteral("jpg"); // remembered export format
-    int exportQuality = 90;                    // remembered export quality
-    int exportLongEdge = 0;                    // remembered long-edge cap (0 = full)
-    Image::ColorSpace exportColorSpace =       // remembered output colour space
-        Image::ColorSpace::SRGB;
 
     // --- Per-image view flags (preview-only) -----------------------------
     int maskView = 0;            // selective mask overlay

@@ -119,27 +119,43 @@ void ExportDialog::syncRows()
     m_longEdge->setEnabled(m_resize->isChecked());
 }
 
-void ExportDialog::setSelection(const QString &extension, int quality, int longEdge,
-                                Image::ColorSpace colorSpace)
+void ExportDialog::setSettings(const ExportSettings &s)
 {
     const int n = m_format->count();
     for (int i = 0; i < n; ++i) {
-        if (m_format->itemData(i).toString() == extension.toLower()) {
+        if (m_format->itemData(i).toString() == s.extension.toLower()) {
             m_format->setCurrentIndex(i);
             break;
         }
     }
-    if (quality >= 1 && quality <= 100)
-        m_quality->setValue(quality);
-    m_resize->setChecked(longEdge > 0);
-    if (longEdge > 0)
-        m_longEdge->setValue(longEdge);
+    if (s.quality >= 1 && s.quality <= 100)
+        m_quality->setValue(s.quality);
+    if (const int idx = m_bits->findData(s.bits); idx >= 0)
+        m_bits->setCurrentIndex(idx);
+    m_resize->setChecked(s.limitLongEdge);
+    if (s.longEdge >= m_longEdge->minimum() && s.longEdge <= m_longEdge->maximum())
+        m_longEdge->setValue(s.longEdge);
     if (m_colorSpace->isEnabled()) {
-        const int idx = m_colorSpace->findData(static_cast<int>(colorSpace));
+        const int idx = m_colorSpace->findData(static_cast<int>(s.colorSpace));
         if (idx >= 0)
             m_colorSpace->setCurrentIndex(idx);
     }
     syncRows();
+}
+
+ExportSettings ExportDialog::settings() const
+{
+    // Straight off the controls, ignoring the greying-out the format applies —
+    // this is what gets remembered, so switching to JPEG and back must not lose
+    // the depth, and unticking the resize box must not lose the pixel figure.
+    ExportSettings s;
+    s.extension = m_format->currentData().toString();
+    s.quality = m_quality->value();
+    s.bits = m_bits->currentData().toInt();
+    s.limitLongEdge = m_resize->isChecked();
+    s.longEdge = m_longEdge->value();
+    s.colorSpace = static_cast<Image::ColorSpace>(m_colorSpace->currentData().toInt());
+    return s;
 }
 
 QString ExportDialog::extension() const
