@@ -212,6 +212,35 @@ void saveRawDefaults(const raw::RawDecodeOptions &opts, const raw::RawLensDefaul
     s.setValue(QStringLiteral("raw/lensVignetting"), lens.vignetting);
 }
 
+// --- Export settings (global preference) ----------------------------------
+// What the Export dialog was last set to, kept across images and across runs —
+// people export the same way again and again, so the dialog should open where
+// they left it rather than back at the JPEG defaults.
+ExportSettings loadExportSettings()
+{
+    QSettings s;
+    ExportSettings e; // its members carry the first-run defaults
+    e.extension = s.value(QStringLiteral("export/format"), e.extension).toString();
+    e.quality = s.value(QStringLiteral("export/quality"), e.quality).toInt();
+    e.bits = s.value(QStringLiteral("export/bits"), e.bits).toInt();
+    e.limitLongEdge = s.value(QStringLiteral("export/limitLongEdge"), e.limitLongEdge).toBool();
+    e.longEdge = s.value(QStringLiteral("export/longEdge"), e.longEdge).toInt();
+    e.colorSpace = static_cast<Image::ColorSpace>(
+        s.value(QStringLiteral("export/colorSpace"), static_cast<int>(e.colorSpace)).toInt());
+    return e;
+}
+
+void saveExportSettings(const ExportSettings &e)
+{
+    QSettings s;
+    s.setValue(QStringLiteral("export/format"), e.extension);
+    s.setValue(QStringLiteral("export/quality"), e.quality);
+    s.setValue(QStringLiteral("export/bits"), e.bits);
+    s.setValue(QStringLiteral("export/limitLongEdge"), e.limitLongEdge);
+    s.setValue(QStringLiteral("export/longEdge"), e.longEdge);
+    s.setValue(QStringLiteral("export/colorSpace"), static_cast<int>(e.colorSpace));
+}
+
 // Dim opacity for overlays (0–255). A tuning value, not a fixed constant
 // (DESIGN.md §4.6): too dark loses context, too light hurts contrast.
 constexpr int kScrimAlpha = 140; // ~0.55
@@ -2615,34 +2644,30 @@ void MainWindow::exportImage()
         return;
     }
 
-    // 1. Choose format + quality + size + colour space.
+    // 1. Choose format + quality + size + colour space, opening on whatever the
+    //    last export used (remembered across runs).
     ExportDialog dlg(this);
-    dlg.setSelection(doc().exportExt, doc().exportQuality, doc().exportLongEdge, doc().exportColorSpace);
+    dlg.setSettings(loadExportSettings());
     if (dlg.exec() != QDialog::Accepted)
         return;
-    doc().exportExt = dlg.extension();
-    const int quality = dlg.quality();
-    if (quality >= 0)
-        doc().exportQuality = quality;
-    doc().exportLongEdge = dlg.longEdge();
-    doc().exportColorSpace = dlg.colorSpace();
-    const Image::ExportOptions exportOpts{quality, dlg.bits(), doc().exportLongEdge,
-                                          doc().exportColorSpace};
+    saveExportSettings(dlg.settings());
+    const QString ext = dlg.extension();
+    const Image::ExportOptions exportOpts{dlg.quality(), dlg.bits(), dlg.longEdge(),
+                                          dlg.colorSpace()};
 
-    // 2. Choose the path, defaulting to "<name>-edited.<ext>" in the last-used
-    //    export folder (falling back to next-to-the-source).
+    // 2. Choose the path, defaulting to "<name>.<ext>" in the last-used export
+    //    folder (falling back to next-to-the-source).
     const QFileInfo src(doc().sourcePath);
     const QString dir = lastDir(QStringLiteral("export"), src.dir().path());
-    const QString suggested = QDir(dir).filePath(
-        src.completeBaseName() + QStringLiteral("-edited.") + doc().exportExt);
-    const QString filter =
-        QStringLiteral("%1 (*.%2)").arg(doc().exportExt.toUpper(), doc().exportExt);
+    const QString suggested =
+        QDir(dir).filePath(src.completeBaseName() + QStringLiteral(".") + ext);
+    const QString filter = QStringLiteral("%1 (*.%2)").arg(ext.toUpper(), ext);
     QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Export image"),
                                                 suggested, filter);
     if (path.isEmpty())
         return;
     if (QFileInfo(path).suffix().isEmpty())
-        path += QStringLiteral(".") + doc().exportExt;
+        path += QStringLiteral(".") + ext;
 
     // 3. Show the "Exporting…" badge now, then defer the snapshot and the worker
     //    launch to the next event-loop tick. Returning first lets the Save dialog

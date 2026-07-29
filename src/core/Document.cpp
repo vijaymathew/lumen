@@ -140,6 +140,6 @@ void Document::initFromProject(const Image &source, const QByteArray &bytes,
         applyCameraProfile(meta.color, /*seedKelvin=*/false);
 
     projectPath = projectFilePath;
-    sourcePath = projectFilePath; // export defaults to "<project>-edited.<ext>"
+    sourcePath = projectFilePath; // export defaults to "<project>.<ext>"
     recoveryPath.clear();         // autosave now targets the user file
 }

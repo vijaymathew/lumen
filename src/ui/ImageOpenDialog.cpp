@@ -2,15 +2,19 @@
 
 #include "ui/ThumbnailProxyModel.h"
 
+#include <QAbstractItemView>
 #include <QComboBox>
 #include <QGuiApplication>
 #include <QLineEdit>
 #include <QListView>
+#include <QPoint>
 #include <QScreen>
+#include <QScrollBar>
 #include <QShowEvent>
 #include <QSize>
 #include <QSizePolicy>
 #include <QTreeView>
+#include <QVector>
 
 #include <algorithm>
 
@@ -41,7 +45,8 @@ ImageOpenDialog::ImageOpenDialog(QWidget *parent, const QString &caption,
 
     // Decorate image files with real thumbnails. The dialog wires our proxy on top
     // of its QFileSystemModel and takes ownership.
-    setProxyModel(new ThumbnailProxyModel(kThumbEdge));
+    auto *thumbs = new ThumbnailProxyModel(kThumbEdge);
+    setProxyModel(thumbs);
 
     // A detail (row) view: each row shows a thumbnail beside the name/size/date —
     // a clean, familiar layout that always shows file names and never leaves a
@@ -49,10 +54,22 @@ ImageOpenDialog::ImageOpenDialog(QWidget *parent, const QString &caption,
     // list/detail with the dialog's own buttons keeps the thumbnails.
     setViewMode(QFileDialog::Detail);
     const QSize iconSize(kRowIcon, kRowIcon);
+    QVector<QAbstractItemView *> views;
     if (auto *tree = findChild<QTreeView *>(QStringLiteral("treeView")))
-        tree->setIconSize(iconSize);
+        views << tree;
     if (auto *list = findChild<QListView *>(QStringLiteral("listView")))
-        list->setIconSize(iconSize);
+        views << list;
+    for (QAbstractItemView *view : views) {
+        view->setIconSize(iconSize);
+        // Keep the thumbnail queue pointed at whatever the user is looking at, so
+        // the visible files render first and top-down. Without this the queue is
+        // served in the order the view happens to ask for decorations, which
+        // starts at the *bottom* of the folder (Qt measures the last rows first
+        // to size the scrollbar).
+        connect(view->verticalScrollBar(), &QScrollBar::valueChanged, this, [thumbs, view] {
+            thumbs->setViewportAnchor(view->indexAt(QPoint(1, 1)).row());
+        });
+    }
 
     // Stop the "Look in" path combo and the filename edit from dictating the
     // dialog's minimum width. With some fonts/styles their content-derived
