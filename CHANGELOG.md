@@ -5,6 +5,56 @@ All notable changes to Lumen are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] — 2026-07-31
+
+### Added
+
+- **Image info panel** — a draggable card (<kbd>I</kbd>, or the view cluster)
+  showing the open image's file path and dimensions, and, for RAW, the
+  camera/lens identity and capture settings (focal length, aperture, shutter,
+  ISO, capture time) read from EXIF.
+- **Live-updating Adjustments panel** — the history list now follows edits as
+  they land, so a newly-active adjustment (e.g. dialling in Monochrome) shows
+  up without closing and reopening the panel.
+- **Zoom read-out** — wheel-zooming flashes the current magnification (e.g.
+  "125%") for a moment, then fades.
+- **Export settings are now remembered globally**, not per-document — the
+  Export dialog opens on whatever format, quality, bit depth, size limit, and
+  colour space you used last, across images and across app restarts.
+- Opening a RAW's embedded camera JPEG now decodes the *largest* preview the
+  file carries rather than LibRaw's small default thumbnail, so the comparison
+  opens at (or near) the RAW's own resolution.
+- Applying a preset now shows real progress: the busy badge reads "Applying
+  preset…" instead of a generic label, and dragging the preset's Amount slider
+  labels the same way once it settles.
+
+### Changed
+
+- Default keybindings: the clipping-warnings toggle moved from <kbd>J</kbd> to
+  <kbd>C</kbd>, and the Adjustments (history) panel from <kbd>A</kbd> to
+  <kbd>Y</kbd>. The bottom-right view cluster's labels reflect the new keys.
+- The selective-mask overlay is now green instead of red when shown (Layers
+  panel "Show" button, and the on-canvas overlay itself).
+- Export now suggests the source's own file name (e.g. `photo.jpg`) instead of
+  appending "-edited" (`photo-edited.jpg`).
+
+### Fixed
+
+- **Applying a preset, or any edit downstream of lens correction, could freeze
+  the UI for seconds** — every such change re-ran the full-resolution lens
+  warp even when neither the source pixels nor the lens node's own params had
+  moved since. It's now skipped unless something has actually changed.
+  Re-rendering the Presets browser's thumbnails after a preset is applied
+  (a full redraw of every built-in preset, since the change shifts every
+  cached one) is also deferred a tick, so the busy badge and the freshly
+  applied preview get to paint first.
+- **Thumbnails in the Open dialog rendered bottom of the folder first** — Qt
+  asks the proxy model for decorations in whatever order it measures rows
+  internally, which walks the last rows of a folder before the first to size
+  the scrollbar. Thumbnail requests are now queued and served nearest-the-
+  viewport first, so the files actually on screen render before the ones
+  scrolled past.
+
 ## [0.1.1] — 2026-07-17
 
 A fix-only release. The Lens & Perspective sliders were unusable and lens
@@ -140,6 +190,7 @@ and the interactive preview on the GPU. Your original is never touched.
   depth, output resize (long-edge), and colour management (sRGB, Display P3, or
   Adobe RGB with the matching ICC profile embedded).
 
+[0.1.2]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.2
 [0.1.1]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.1
 [0.1.0]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.0
 [0.0.1]: https://github.com/vijaymathew/lumen/releases/tag/v0.0.1
