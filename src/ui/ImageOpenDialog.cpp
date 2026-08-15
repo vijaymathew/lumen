@@ -1,102 +1,524 @@
 #include "ui/ImageOpenDialog.h"
 
+#include "core/ImageStatsCache.h"
+#include "ui/CarouselView.h"
+#include "ui/ImageGridView.h"
+#include "ui/ImageMetaPanel.h"
+#include "ui/ImageStatisticsDialog.h"
 #include "ui/ThumbnailProxyModel.h"
 
-#include <QAbstractItemView>
-#include <QComboBox>
+#include <QAction>
+#include <QClipboard>
+#include <QCompleter>
+#include <QDialogButtonBox>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QFileSystemModel>
 #include <QGuiApplication>
+#include <QHBoxLayout>
+#include <QItemSelectionModel>
 #include <QLineEdit>
-#include <QListView>
+#include <QMenu>
+#include <QMessageBox>
+#include <QMimeData>
 #include <QPoint>
+#include <QPushButton>
 #include <QScreen>
 #include <QScrollBar>
 #include <QShowEvent>
-#include <QSize>
-#include <QSizePolicy>
-#include <QTreeView>
-#include <QVector>
+#include <QStackedWidget>
+#include <QStandardPaths>
+#include <QTimer>
+#include <QToolButton>
+#include <QUrl>
+#include <QVBoxLayout>
+#include <QtConcurrent>
 
 #include <algorithm>
 
 namespace {
-// Thumbnails render at this longest edge and display a little smaller (QIcon
-// scales the cached pixmap down, keeping it crisp).
+// Thumbnails render at this longest edge (grid icons and filmstrip cells
+// alike); CarouselView's big preview loads separately, at a much larger edge.
 constexpr int kThumbEdge = 192;
-constexpr int kRowIcon = 96;
 // The size the dialog opens at (clamped to the screen for small displays).
-constexpr int kDialogW = 900;
-constexpr int kDialogH = 600;
+constexpr int kDialogW = 1040;
+constexpr int kDialogH = 680;
+// How long the user has to sit still in a folder before its statistics get
+// precomputed in the background. Long enough that idly flipping through a
+// few folders (or images, in Carousel) never triggers a scan nobody asked
+// for; short enough that by the time someone actually reaches for the
+// Statistics button, it's already there.
+constexpr int kStatsPrecomputeDelayMs = 3000;
+// While a folder stays open in the dialog, its precomputed statistics get
+// re-scanned on this cadence, so a folder the user sits in for a while (e.g.
+// while importing more photos into it elsewhere) doesn't show stats that
+// drift further and further from what's actually on disk.
+constexpr int kStatsRefreshIntervalMs = 5 * 60 * 1000;
 } // namespace
 
-ImageOpenDialog::ImageOpenDialog(QWidget *parent, const QString &caption,
-                                 const QString &dir, const QString &filter)
-    : QFileDialog(parent, caption, dir, filter)
+ImageOpenDialog::ImageOpenDialog(QWidget *parent, const QString &caption, const QString &dir,
+                                 const QStringList &nameFilters)
+    : QDialog(parent)
+    , m_nameFilters(nameFilters)
 {
-    // Thumbnails need Qt's own dialog (the native one exposes no model/views to
-    // extend), and we only ever open one existing file.
-    setOption(QFileDialog::DontUseNativeDialog, true);
-    // Our filter lists every extension (plus uppercase variants); showing that
-    // whole string in the "Files of type" combo stretches the dialog absurdly
-    // wide. Hide the pattern details so the combo just reads "Images".
-    setOption(QFileDialog::HideNameFilterDetails, true);
-    setFileMode(QFileDialog::ExistingFile);
-    setAcceptMode(QFileDialog::AcceptOpen);
-    resize(kDialogW, kDialogH); // a sensible default the long filter no longer distorts
+    setWindowTitle(caption);
+    resize(kDialogW, kDialogH);
 
-    // Decorate image files with real thumbnails. The dialog wires our proxy on top
-    // of its QFileSystemModel and takes ownership.
-    auto *thumbs = new ThumbnailProxyModel(kThumbEdge);
-    setProxyModel(thumbs);
+    // --- Model chain: QFileSystemModel -> ThumbnailProxyModel (decorates image
+    // files with real thumbnails, camera RAW included). Non-matching files are
+    // hidden outright (NameFilterDisables false); folders always show, so the
+    // dialog still browses like a normal file picker.
+    m_fsModel = new QFileSystemModel(this);
+    m_fsModel->setRootPath(QDir::rootPath());
+    m_fsModel->setFilter(QDir::AllDirs | QDir::Files | QDir::NoDotAndDotDot);
+    m_fsModel->setNameFilterDisables(false);
+    m_fsModel->setNameFilters(nameFilters);
 
-    // A detail (row) view: each row shows a thumbnail beside the name/size/date —
-    // a clean, familiar layout that always shows file names and never leaves a
-    // large empty grid. Both internal views get the larger icon size so toggling
-    // list/detail with the dialog's own buttons keeps the thumbnails.
-    setViewMode(QFileDialog::Detail);
-    const QSize iconSize(kRowIcon, kRowIcon);
-    QVector<QAbstractItemView *> views;
-    if (auto *tree = findChild<QTreeView *>(QStringLiteral("treeView")))
-        views << tree;
-    if (auto *list = findChild<QListView *>(QStringLiteral("listView")))
-        views << list;
-    for (QAbstractItemView *view : views) {
-        view->setIconSize(iconSize);
-        // Keep the thumbnail queue pointed at whatever the user is looking at, so
-        // the visible files render first and top-down. Without this the queue is
-        // served in the order the view happens to ask for decorations, which
-        // starts at the *bottom* of the folder (Qt measures the last rows first
-        // to size the scrollbar).
-        connect(view->verticalScrollBar(), &QScrollBar::valueChanged, this, [thumbs, view] {
-            thumbs->setViewportAnchor(view->indexAt(QPoint(1, 1)).row());
-        });
+    m_thumbModel = new ThumbnailProxyModel(kThumbEdge, this);
+    m_thumbModel->setSourceModel(m_fsModel);
+    // The folder just navigated to almost always populates asynchronously (a
+    // fresh QFileSystemModel root reports 0 rows until it finishes listing);
+    // catch it here rather than racing the row count at navigateTo() time.
+    connect(m_fsModel, &QFileSystemModel::directoryLoaded, this,
+            [this](const QString &path) { trySelectFirst(QDir(path).absolutePath()); });
+
+    // One selection model shared by the grid and the carousel's filmstrip, so
+    // switching views never loses what was selected or current.
+    m_selectionModel = new QItemSelectionModel(m_thumbModel, this);
+    connect(m_selectionModel, &QItemSelectionModel::selectionChanged, this,
+            &ImageOpenDialog::updateSelectionActions);
+
+    // --- Navigation bar: up, an editable/completing path box, quick jumps, and
+    // the view/statistics toggles.
+    m_upButton = new QToolButton(this);
+    m_upButton->setText(QStringLiteral("↑"));
+    m_upButton->setToolTip(QStringLiteral("Go to parent folder"));
+    connect(m_upButton, &QToolButton::clicked, this, &ImageOpenDialog::goUp);
+
+    m_pathEdit = new QLineEdit(this);
+    auto *completer = new QCompleter(m_fsModel, this);
+    m_pathEdit->setCompleter(completer);
+    connect(m_pathEdit, &QLineEdit::returnPressed, this, &ImageOpenDialog::onPathEdited);
+
+    auto *homeButton = new QToolButton(this);
+    homeButton->setText(QStringLiteral("Home"));
+    connect(homeButton, &QToolButton::clicked, this, [this] {
+        navigateTo(QStandardPaths::writableLocation(QStandardPaths::HomeLocation));
+    });
+    auto *picturesButton = new QToolButton(this);
+    picturesButton->setText(QStringLiteral("Pictures"));
+    connect(picturesButton, &QToolButton::clicked, this, [this] {
+        navigateTo(QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
+    });
+
+    m_viewToggle = new QToolButton(this);
+    m_viewToggle->setText(QStringLiteral("Carousel"));
+    m_viewToggle->setToolTip(QStringLiteral("Switch between thumbnail grid and carousel view"));
+    connect(m_viewToggle, &QToolButton::clicked, this, &ImageOpenDialog::toggleView);
+
+    auto *statsButton = new QToolButton(this);
+    statsButton->setText(QStringLiteral("Statistics…"));
+    connect(statsButton, &QToolButton::clicked, this, &ImageOpenDialog::showStatistics);
+
+    auto *navRow = new QHBoxLayout;
+    navRow->addWidget(m_upButton);
+    navRow->addWidget(m_pathEdit, 1);
+    navRow->addWidget(homeButton);
+    navRow->addWidget(picturesButton);
+    navRow->addSpacing(12);
+    navRow->addWidget(m_viewToggle);
+    navRow->addWidget(statsButton);
+
+    // --- The two browsing views, stacked; grid is shown first (thumbnails by
+    // default), both reading the same shared selection.
+    m_grid = new ImageGridView(this);
+    m_grid->setModel(m_thumbModel);
+    m_grid->setSelectionModel(m_selectionModel);
+    connect(m_grid, &QListView::activated, this, &ImageOpenDialog::onActivated);
+    connect(m_grid, &ImageGridView::deleteRequested, this, &ImageOpenDialog::deleteSelected);
+    connect(m_grid, &ImageGridView::copyRequested, this, &ImageOpenDialog::copySelected);
+    connect(m_grid, &QWidget::customContextMenuRequested, this,
+            [this](const QPoint &p) { showViewContextMenu(m_grid, p); });
+    // Keep the thumbnail queue pointed at whatever's on screen (see
+    // ThumbnailProxyModel) — without this, requests are served in the order the
+    // view happens to ask for decorations, not reading order.
+    connect(m_grid->verticalScrollBar(), &QScrollBar::valueChanged, this, [this] {
+        m_thumbModel->setViewportAnchor(m_grid->indexAt(QPoint(1, 1)).row());
+    });
+
+    m_carousel = new CarouselView(this);
+    m_carousel->setModel(m_thumbModel);
+    m_carousel->setSelectionModel(m_selectionModel);
+    connect(m_carousel, &CarouselView::activated, this, &ImageOpenDialog::onActivated);
+    connect(m_carousel, &CarouselView::deleteRequested, this, &ImageOpenDialog::deleteSelected);
+    connect(m_carousel, &CarouselView::copyRequested, this, &ImageOpenDialog::copySelected);
+    connect(m_carousel->filmstrip(), &QWidget::customContextMenuRequested, this,
+            [this](const QPoint &p) { showViewContextMenu(m_carousel->filmstrip(), p); });
+
+    m_viewStack = new QStackedWidget(this);
+    m_viewStack->addWidget(m_grid);     // index 0: default view
+    m_viewStack->addWidget(m_carousel); // index 1
+
+    m_metaPanel = new ImageMetaPanel(this);
+
+    auto *viewRow = new QHBoxLayout;
+    viewRow->setSpacing(0);
+    viewRow->addWidget(m_viewStack, 1);
+    viewRow->addWidget(m_metaPanel);
+
+    // --- Bottom row: multi-select actions, then the standard Open/Cancel box.
+    m_deleteButton = new QToolButton(this);
+    m_deleteButton->setText(QStringLiteral("Delete"));
+    m_deleteButton->setToolTip(QStringLiteral("Move the selected images to the trash"));
+    connect(m_deleteButton, &QToolButton::clicked, this, &ImageOpenDialog::deleteSelected);
+
+    m_copyButton = new QToolButton(this);
+    m_copyButton->setText(QStringLiteral("Copy"));
+    m_copyButton->setToolTip(QStringLiteral("Copy the selected images to the clipboard"));
+    connect(m_copyButton, &QToolButton::clicked, this, &ImageOpenDialog::copySelected);
+
+    m_buttons = new QDialogButtonBox(QDialogButtonBox::Open | QDialogButtonBox::Cancel, this);
+    connect(m_buttons, &QDialogButtonBox::accepted, this, &ImageOpenDialog::openSelected);
+    connect(m_buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+
+    auto *bottomRow = new QHBoxLayout;
+    bottomRow->addWidget(m_deleteButton);
+    bottomRow->addWidget(m_copyButton);
+    bottomRow->addStretch(1);
+    bottomRow->addWidget(m_buttons);
+
+    auto *layout = new QVBoxLayout(this);
+    layout->addLayout(navRow);
+    layout->addLayout(viewRow, 1);
+    layout->addLayout(bottomRow);
+
+    m_statsPrecomputeTimer = new QTimer(this);
+    m_statsPrecomputeTimer->setSingleShot(true);
+    m_statsPrecomputeTimer->setInterval(kStatsPrecomputeDelayMs);
+    connect(m_statsPrecomputeTimer, &QTimer::timeout, this,
+            [this] { startPrecomputeStats(); });
+
+    // Keeps whatever folder is currently open from drifting stale in the
+    // cache — fires for the lifetime of the dialog, not tied to any one
+    // folder, so it always refreshes wherever the user currently is.
+    m_statsRefreshTimer = new QTimer(this);
+    m_statsRefreshTimer->setInterval(kStatsRefreshIntervalMs);
+    connect(m_statsRefreshTimer, &QTimer::timeout, this,
+            [this] { startPrecomputeStats(/*force=*/true); });
+    m_statsRefreshTimer->start();
+
+    connect(&m_statsWatcher, &QFutureWatcher<imagestats::FolderStats>::finished, this, [this] {
+        // m_statsWatcher only ever tracks the *current* scan — starting a new
+        // one via setFuture() stops it watching the old one, so whatever
+        // fires here really did run to completion for m_statsPendingDir.
+        ImageStatsCache::instance().insert(m_statsPendingDir, m_statsWatcher.result());
+    });
+
+    updateSelectionActions();
+    navigateTo(QFileInfo(dir).isDir()
+                   ? dir
+                   : QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
+    m_grid->setFocus();
+}
+
+void ImageOpenDialog::navigateTo(const QString &path)
+{
+    const QString clean = QDir(path).absolutePath();
+    if (!QFileInfo(clean).isDir())
+        return;
+    m_currentDir = clean;
+    m_pathEdit->setText(clean);
+
+    const QModelIndex rootIdx = m_thumbModel->mapFromSource(m_fsModel->index(clean));
+    m_grid->setRootIndex(rootIdx);
+    m_carousel->setRootIndex(rootIdx);
+    m_thumbModel->setViewportAnchor(0);
+    m_selectionModel->clearSelection();
+
+    // QFileSystemModel populates a freshly-rooted folder asynchronously, so the
+    // row count here is usually still 0 — selecting "row 0" now would almost
+    // always no-op. selectFirstOnceLoaded (wired in the constructor) lands the
+    // selection once the folder actually has rows, so the carousel/meta panel
+    // show something without racing the model.
+    m_pendingSelectFirst = clean;
+    trySelectFirst(clean); // works immediately if the folder was already loaded
+
+    schedulePrecomputeStats();
+}
+
+void ImageOpenDialog::trySelectFirst(const QString &dir)
+{
+    if (m_pendingSelectFirst != dir)
+        return;
+    const QModelIndex rootIdx = m_thumbModel->mapFromSource(m_fsModel->index(dir));
+    const QModelIndex first = m_thumbModel->index(0, 0, rootIdx);
+    if (first.isValid()) {
+        m_selectionModel->setCurrentIndex(first, QItemSelectionModel::ClearAndSelect);
+        m_pendingSelectFirst.clear();
     }
+}
 
-    // Stop the "Look in" path combo and the filename edit from dictating the
-    // dialog's minimum width. With some fonts/styles their content-derived
-    // minimum grows to fit the full path, which becomes a floor the window can't
-    // shrink below (so it opens screen-wide and can't be dragged smaller). Let
-    // them shrink and elide instead; the layout still gives them ample space.
-    for (QComboBox *combo : findChildren<QComboBox *>()) {
-        combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-        combo->setMinimumContentsLength(10);
-        QSizePolicy sp = combo->sizePolicy();
-        sp.setHorizontalPolicy(QSizePolicy::Ignored); // content width no longer a floor
-        combo->setSizePolicy(sp);
-        combo->setMinimumWidth(90); // stay usable, but small
+void ImageOpenDialog::schedulePrecomputeStats()
+{
+    // Restart the debounce on every navigation — browsing through several
+    // folders in a row (or images, via the carousel's arrow keys) should
+    // never itself trigger a scan, only actually settling in one for a few
+    // seconds. Skip entirely if we already have a fresh-enough answer —
+    // "fresh" here just means "the periodic refresh timer will get to it",
+    // so revisiting a folder whose cache has gone stale rescans right away
+    // instead of waiting out the rest of the 5-minute cycle.
+    m_statsPrecomputeTimer->stop();
+    if (ImageStatsCache::instance().isStale(m_currentDir))
+        m_statsPrecomputeTimer->start();
+}
+
+void ImageOpenDialog::startPrecomputeStats(bool force)
+{
+    if (m_currentDir.isEmpty())
+        return;
+    if (!force && !ImageStatsCache::instance().isStale(m_currentDir))
+        return;
+
+    // Cap background scanning at one folder in flight: tell whatever scan is
+    // still running (for a folder the user has since left) to stop, so it
+    // isn't burning CPU against thumbnail decoding for a folder nobody's
+    // looking at anymore. Its result — even if it lands after this — is
+    // simply never collected (see the finished-connection: setFuture() below
+    // stops m_statsWatcher tracking it).
+    if (m_statsCancelFlag)
+        m_statsCancelFlag->store(true);
+
+    m_statsPendingDir = m_currentDir;
+    m_statsCancelFlag = std::make_shared<std::atomic_bool>(false);
+    const QString dir = m_currentDir;
+    auto cancelFlag = m_statsCancelFlag;
+    // Always the recursive scan — that's the Statistics dialog's default, and
+    // the only case this cache is consulted for (see showStatistics()).
+    m_statsWatcher.setFuture(QtConcurrent::run([dir, cancelFlag] {
+        return imagestats::computeFolderStats(
+            dir, /*recursive=*/true, /*progress=*/{},
+            [cancelFlag] { return cancelFlag->load(); });
+    }));
+}
+
+void ImageOpenDialog::goUp()
+{
+    QDir d(m_currentDir);
+    if (d.cdUp())
+        navigateTo(d.absolutePath());
+}
+
+void ImageOpenDialog::onPathEdited()
+{
+    const QString path = m_pathEdit->text();
+    if (QFileInfo(path).isDir())
+        navigateTo(path);
+    else
+        m_pathEdit->setText(m_currentDir); // not a folder — revert
+}
+
+void ImageOpenDialog::toggleView()
+{
+    const bool showingGrid = m_viewStack->currentWidget() == m_grid;
+    m_viewStack->setCurrentWidget(showingGrid ? static_cast<QWidget *>(m_carousel)
+                                              : static_cast<QWidget *>(m_grid));
+    m_viewToggle->setText(showingGrid ? QStringLiteral("Thumbnails")
+                                      : QStringLiteral("Carousel"));
+}
+
+QStringList ImageOpenDialog::selectedImagePaths() const
+{
+    // selectedRows() reconstructs each index via model()->index(row, 0, parent)
+    // and checks isSelected() on the result — which comes up empty here, since
+    // QFileSystemModel resorts once a freshly-opened folder finishes its async
+    // listing and that reconstruction doesn't land on the (now different) node
+    // the selection actually tracks. selectedIndexes() returns the tracked
+    // indices directly (kept valid across the resort by Qt's persistent-index
+    // machinery), so it doesn't hit that gap.
+    QStringList paths;
+    const QModelIndexList idxs = m_selectionModel->selectedIndexes();
+    paths.reserve(idxs.size());
+    for (const QModelIndex &idx : idxs) {
+        if (idx.column() != 0)
+            continue;
+        const QString path = idx.data(QFileSystemModel::FilePathRole).toString();
+        if (!path.isEmpty() && QFileInfo(path).isFile())
+            paths << path;
     }
-    if (auto *nameEdit = findChild<QLineEdit *>(QStringLiteral("fileNameEdit")))
-        nameEdit->setMinimumWidth(90);
+    return paths;
+}
+
+void ImageOpenDialog::updateSelectionActions()
+{
+    const QStringList paths = selectedImagePaths();
+    const bool hasSelection = !paths.isEmpty();
+    m_deleteButton->setEnabled(hasSelection);
+    m_copyButton->setEnabled(hasSelection);
+    if (QPushButton *openBtn = m_buttons->button(QDialogButtonBox::Open))
+        openBtn->setEnabled(hasSelection);
+    m_metaPanel->setSelection(paths);
+}
+
+QString ImageOpenDialog::pathAfterDeletion(const QStringList &deletedPaths) const
+{
+    const QModelIndexList sel = m_selectionModel->selectedIndexes();
+    int maxRow = -1;
+    QModelIndex parent;
+    for (const QModelIndex &idx : sel) {
+        if (idx.column() != 0)
+            continue;
+        if (idx.row() > maxRow) {
+            maxRow = idx.row();
+            parent = idx.parent();
+        }
+    }
+    if (maxRow < 0)
+        return {};
+
+    const auto pathAt = [this, &parent](int row) {
+        return m_thumbModel->index(row, 0, parent).data(QFileSystemModel::FilePathRole).toString();
+    };
+    // Prefer the next surviving image past the deletion — advancing forward
+    // through the folder, matching how most viewers handle "delete current".
+    const int rowCount = m_thumbModel->rowCount(parent);
+    for (int r = maxRow + 1; r < rowCount; ++r) {
+        const QString p = pathAt(r);
+        if (!p.isEmpty() && !deletedPaths.contains(p))
+            return p;
+    }
+    // Nothing survives after it (deletion reached the end of the folder) —
+    // fall back to the nearest surviving image before it.
+    for (int r = maxRow - 1; r >= 0; --r) {
+        const QString p = pathAt(r);
+        if (!p.isEmpty() && !deletedPaths.contains(p))
+            return p;
+    }
+    return {};
+}
+
+void ImageOpenDialog::deleteSelected()
+{
+    const QStringList paths = selectedImagePaths();
+    if (paths.isEmpty())
+        return;
+    const QString msg =
+        paths.size() == 1
+            ? QStringLiteral("Move \"%1\" to the trash?").arg(QFileInfo(paths.first()).fileName())
+            : QStringLiteral("Move %1 selected images to the trash?").arg(paths.size());
+    if (QMessageBox::question(this, QStringLiteral("Delete images"), msg,
+                              QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    // Computed before deletion, off the current (soon-to-change) selection —
+    // see pathAfterDeletion(). Qt's default behaviour when the current row is
+    // removed is to fall back to the *previous* row; we want the next image
+    // instead, so we set this explicitly once the trash operations are done.
+    const QString nextPath = pathAfterDeletion(paths);
+
+    int failed = 0;
+    for (const QString &p : paths) {
+        if (!QFile::moveToTrash(p))
+            ++failed;
+    }
+    if (failed > 0)
+        QMessageBox::warning(
+            this, QStringLiteral("Delete images"),
+            QStringLiteral("%1 of %2 file(s) could not be moved to the trash.")
+                .arg(failed)
+                .arg(paths.size()));
+    // QFileSystemModel's own filesystem watcher notices the removal and updates
+    // the views; nothing else to refresh here.
+    ImageStatsCache::instance().invalidate(m_currentDir); // stale — next scan re-caches it
+
+    if (!nextPath.isEmpty()) {
+        // Looked up by path, not by the (now possibly shifted) row — valid
+        // immediately regardless of whether the model has processed the
+        // deleted rows' removal yet.
+        const QModelIndex idx = m_thumbModel->mapFromSource(m_fsModel->index(nextPath));
+        if (idx.isValid())
+            m_selectionModel->setCurrentIndex(idx, QItemSelectionModel::ClearAndSelect);
+    }
+}
+
+void ImageOpenDialog::copySelected()
+{
+    const QStringList paths = selectedImagePaths();
+    if (paths.isEmpty())
+        return;
+    QList<QUrl> urls;
+    urls.reserve(paths.size());
+    for (const QString &p : paths)
+        urls << QUrl::fromLocalFile(p);
+    auto *data = new QMimeData;
+    data->setUrls(urls);
+    QGuiApplication::clipboard()->setMimeData(data);
+}
+
+void ImageOpenDialog::openSelected()
+{
+    const QStringList paths = selectedImagePaths();
+    if (paths.isEmpty())
+        return;
+    m_result = paths;
+    accept();
+}
+
+void ImageOpenDialog::showStatistics()
+{
+    // "Include subfolders" starts unchecked (see ImageStatisticsDialog), so
+    // opening this only ever needs a quick non-recursive listing up front —
+    // it consults ImageStatsCache itself if/when the box gets checked.
+    ImageStatisticsDialog dlg(m_currentDir, this);
+    dlg.exec();
+}
+
+void ImageOpenDialog::onActivated(const QModelIndex &index)
+{
+    const QString path = index.data(QFileSystemModel::FilePathRole).toString();
+    if (path.isEmpty())
+        return;
+    if (QFileInfo(path).isDir()) {
+        navigateTo(path);
+        return;
+    }
+    // Qt selects an item before activating it (double-click, or Enter on the
+    // current item), so the current selection *is* what was activated — for a
+    // multi-select-then-Enter, that means opening everything selected.
+    openSelected();
+}
+
+void ImageOpenDialog::showViewContextMenu(QAbstractItemView *view, const QPoint &pos)
+{
+    const bool hasSelection = !selectedImagePaths().isEmpty();
+    QMenu menu(this);
+    QAction *openAct = menu.addAction(QStringLiteral("Open"));
+    openAct->setEnabled(hasSelection);
+    menu.addSeparator();
+    QAction *copyAct = menu.addAction(QStringLiteral("Copy"));
+    copyAct->setEnabled(hasSelection);
+    QAction *deleteAct = menu.addAction(QStringLiteral("Move to Trash"));
+    deleteAct->setEnabled(hasSelection);
+
+    QAction *chosen = menu.exec(view->viewport()->mapToGlobal(pos));
+    if (chosen == openAct)
+        openSelected();
+    else if (chosen == copyAct)
+        copySelected();
+    else if (chosen == deleteAct)
+        deleteSelected();
 }
 
 void ImageOpenDialog::showEvent(QShowEvent *event)
 {
-    QFileDialog::showEvent(event);
+    QDialog::showEvent(event);
     if (m_sizedOnce)
         return;
     m_sizedOnce = true;
     // Some window managers restore a window's previous geometry on map, which
-    // would keep the dialog at whatever (over-wide) size it had before. Re-apply a
-    // normal size now that we're mapped, clamped to the screen, and centre it.
+    // would keep the dialog at whatever (over-wide) size it had before. Re-apply
+    // a normal size now that we're mapped, clamped to the screen, and centre it.
     int w = kDialogW, h = kDialogH;
     if (const QScreen *screen = QGuiApplication::screenAt(pos())
                                     ? QGuiApplication::screenAt(pos())
@@ -111,12 +533,11 @@ void ImageOpenDialog::showEvent(QShowEvent *event)
     }
 }
 
-QString ImageOpenDialog::getOpenFileName(QWidget *parent, const QString &caption,
-                                         const QString &dir, const QString &filter)
+QStringList ImageOpenDialog::getOpenFileNames(QWidget *parent, const QString &caption,
+                                              const QString &dir, const QStringList &nameFilters)
 {
-    ImageOpenDialog dlg(parent, caption, dir, filter);
+    ImageOpenDialog dlg(parent, caption, dir, nameFilters);
     if (dlg.exec() != QDialog::Accepted)
-        return QString();
-    const QStringList selected = dlg.selectedFiles();
-    return selected.isEmpty() ? QString() : selected.first();
+        return {};
+    return dlg.m_result;
 }

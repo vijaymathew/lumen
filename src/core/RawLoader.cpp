@@ -38,6 +38,10 @@ void fillMetadata(LibRaw &raw, raw::LensMetadata *meta)
     meta->captureTime = other.timestamp > 0
                             ? QDateTime::fromSecsSinceEpoch(other.timestamp)
                             : QDateTime();
+    // A sensor with a single colour channel (no Bayer/X-Trans filter) — true
+    // monochrome cameras like the Leica M Monochrom, not just a JPEG shot in a
+    // b/w picture style on an ordinary colour sensor.
+    meta->monochrome = id.colors == 1;
 }
 
 // Captures the camera colour matrices LibRaw computes (valid after dcraw_process)
@@ -150,6 +154,15 @@ const QStringList &raw::extensions()
 bool raw::isRawPath(const QString &path)
 {
     return extensions().contains(QFileInfo(path).suffix().toLower());
+}
+
+bool raw::readMetadata(const QString &path, LensMetadata *meta)
+{
+    LibRaw raw;
+    if (raw.open_file(path.toUtf8().constData()) != LIBRAW_SUCCESS)
+        return false;
+    fillMetadata(raw, meta);
+    return true;
 }
 
 Image raw::decodeFile(const QString &path, QString *error, LensMetadata *meta,

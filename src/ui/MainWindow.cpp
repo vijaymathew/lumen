@@ -2610,10 +2610,9 @@ void MainWindow::openImageDialog()
     const QString dir = lastDir(
         QStringLiteral("openImage"),
         QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
-    // Build the filter from a single extension list, including UPPERCASE
-    // variants — native file dialogs glob case-sensitively and cameras usually
-    // write uppercase RAW extensions (.CR2, .NEF…). An "All files" fallback lets
-    // the user pick anything we didn't enumerate.
+    // Glob patterns, including UPPERCASE variants — QFileSystemModel's name
+    // filters match case-sensitively and cameras usually write uppercase RAW
+    // extensions (.CR2, .NEF…).
     QStringList exts{QStringLiteral("jpg"),  QStringLiteral("jpeg"),
                      QStringLiteral("png"),  QStringLiteral("tif"),
                      QStringLiteral("tiff"), QStringLiteral("webp")};
@@ -2621,16 +2620,18 @@ void MainWindow::openImageDialog()
     QStringList patterns;
     for (const QString &e : std::as_const(exts))
         patterns << QStringLiteral("*.%1").arg(e) << QStringLiteral("*.%1").arg(e.toUpper());
-    const QString filter = QStringLiteral("Images (%1);;All files (*)")
-                               .arg(patterns.join(QLatin1Char(' ')));
-    // Our own preview dialog (not the native one) so every format — RAW included
-    // — shows a consistent thumbnail as the user browses.
-    const QString path =
-        ImageOpenDialog::getOpenFileName(this, QStringLiteral("Open image"), dir, filter);
-    if (!path.isEmpty()) {
-        rememberDir(QStringLiteral("openImage"), path);
+    // Our own picker dialog (not the native one) so every format — RAW included
+    // — shows a consistent thumbnail as the user browses. Multi-select opens
+    // each chosen image in its own tab, same as dropping several files at once.
+    const QStringList paths = ImageOpenDialog::getOpenFileNames(
+        this, QStringLiteral("Open image"), dir, patterns);
+    bool any = false;
+    for (const QString &path : paths) {
         openPath(path);
+        any = true;
     }
+    if (any)
+        rememberDir(QStringLiteral("openImage"), paths.first());
 }
 
 void MainWindow::exportImage()
