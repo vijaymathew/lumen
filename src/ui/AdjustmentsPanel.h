@@ -1,7 +1,8 @@
 #pragma once
 
+#include "ui/FloatingToolPanel.h"
+
 #include <QVector>
-#include <QWidget>
 
 class QCheckBox;
 class QLabel;
@@ -13,7 +14,7 @@ class QVBoxLayout;
 // preview the image up to that point. A header toggle flips Before/After (original
 // vs edited). The panel is purely a view: MainWindow owns the data, pushes rows via
 // setItems(), and acts on the emitted row index.
-class AdjustmentsPanel : public QWidget {
+class AdjustmentsPanel : public FloatingToolPanel {
     Q_OBJECT
 
 public:
@@ -34,12 +35,6 @@ signals:
     void toggleRequested(int index, bool on);
     void deleteRequested(int index);
     void viewUpToRequested(int index);  // show the image up to this adjustment
-    void closed();
-
-protected:
-    void mousePressEvent(QMouseEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
-    void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
     void clearRows();
@@ -48,7 +43,4 @@ private:
     QLabel *m_empty = nullptr;       // "No adjustments yet" placeholder
     QVBoxLayout *m_listLayout = nullptr;
     QVector<QWidget *> m_rows;
-
-    bool m_dragging = false;
-    QPoint m_dragOffset;
 };

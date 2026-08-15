@@ -1,9 +1,10 @@
 #pragma once
 
+#include "ui/FloatingToolPanel.h"
+
 #include <QPixmap>
 #include <QString>
 #include <QVector>
-#include <QWidget>
 
 class QLabel;
 class QSlider;
@@ -14,7 +15,7 @@ class QVBoxLayout;
 // the current photo with that preset applied. Clicking a card emits
 // applyRequested(id); MainWindow owns the presets and does the actual apply +
 // thumbnail rendering (the panel is purely presentational).
-class PresetsPanel : public QWidget {
+class PresetsPanel : public FloatingToolPanel {
     Q_OBJECT
 
 public:
@@ -46,17 +47,9 @@ signals:
     void deleteRequested(const QString &id);
     void amountChanged(int percent); // live drag of the Amount slider
 
-protected:
-    void mousePressEvent(QMouseEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
-    void mouseReleaseEvent(QMouseEvent *event) override;
-
 private:
     QWidget *m_list = nullptr;    // holds the rows
     QVBoxLayout *m_listLayout = nullptr;
     QSlider *m_amount = nullptr;
     QLabel *m_amountValue = nullptr;
-
-    bool m_dragging = false;
-    QPoint m_dragOffset;
 };

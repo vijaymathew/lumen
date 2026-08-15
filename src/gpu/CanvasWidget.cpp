@@ -123,7 +123,7 @@ void CanvasWidget::clearImage()
 
 void CanvasWidget::setFitZoom(float zoom)
 {
-    m_zoom = std::clamp(zoom, 0.05f, 40.0f);
+    m_zoom = std::clamp(zoom, zoommath::kMinZoom, zoommath::kMaxZoom);
     m_pan = {0.0, 0.0};
     emit viewChanged();
     update();
@@ -907,9 +907,9 @@ void CanvasWidget::emitBrushCursor(QPointF widgetPos)
     const QSizeF widget(width() * dpr, height() * dpr);
     const QSizeF image = effectiveImageSize();
     const QSizeF disp = zoommath::displayedSize(widget, image, m_zoom);
-    // Match MainWindow::brushAt: radius = (size/100)*0.3 of the image's smaller
-    // displayed dimension. Convert device px back to logical for the overlay.
-    const double f = (m_brushCursorSize / 100.0) * 0.3;
+    // Match MainWindow::brushAt (see kBrushRadiusScale). Convert device px back
+    // to logical for the overlay.
+    const double f = (m_brushCursorSize / 100.0) * kBrushRadiusScale;
     const double outerLogical = f * std::min(disp.width(), disp.height()) / dpr;
     const double innerLogical = outerLogical * m_brushCursorHardness;
     emit brushCursorMoved(widgetPos, outerLogical, innerLogical, true);
@@ -1053,7 +1053,7 @@ void CanvasWidget::zoomAt(float factor, const QPointF &cursorDevicePx)
     if (image.isEmpty() || widget.isEmpty())
         return;
 
-    const float newZoom = std::clamp(m_zoom * factor, 0.05f, 40.0f);
+    const float newZoom = std::clamp(m_zoom * factor, zoommath::kMinZoom, zoommath::kMaxZoom);
     if (newZoom == m_zoom)
         return;
 

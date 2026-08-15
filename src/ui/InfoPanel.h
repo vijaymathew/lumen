@@ -1,8 +1,8 @@
 #pragma once
 
-#include <QString>
+#include "ui/FloatingToolPanel.h"
+
 #include <QVector>
-#include <QWidget>
 
 class QGridLayout;
 class QLabel;
@@ -12,7 +12,7 @@ class QLabel;
 // settings. It's purely a view — MainWindow gathers the values from the active
 // Document and pushes them as label/value rows via setRows(). Draggable, like
 // the other corner overlays; toggled from the bottom-right view cluster.
-class InfoPanel : public QWidget {
+class InfoPanel : public FloatingToolPanel {
     Q_OBJECT
 
 public:
@@ -27,18 +27,10 @@ public:
     void setRows(const QVector<Row> &rows);
     void reveal(); // show + raise
 
-protected:
-    void mousePressEvent(QMouseEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
-    void mouseReleaseEvent(QMouseEvent *event) override;
-
 private:
     void clearRows();
 
     QLabel *m_empty = nullptr;      // "No image open" placeholder
     QGridLayout *m_grid = nullptr;
     QVector<QWidget *> m_cells;     // label + value widgets, cleared on rebuild
-
-    bool m_dragging = false;
-    QPoint m_dragOffset;
 };

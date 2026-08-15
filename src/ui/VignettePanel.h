@@ -1,8 +1,7 @@
 #pragma once
 
 #include "core/Vignette.h" // VignetteParams
-
-#include <QWidget>
+#include "ui/FloatingToolPanel.h"
 
 class QLabel;
 class QPushButton;
@@ -12,7 +11,7 @@ class QSlider;
 // an enable toggle plus Amount / Midpoint / Roundness / Feather sliders. Like
 // GrainPanel it drives a live GPU op (the present pass), so valuesChanged() just
 // refreshes the preview — no base re-bake. Closes on Esc/Enter.
-class VignettePanel : public QWidget {
+class VignettePanel : public FloatingToolPanel {
     Q_OBJECT
 
 public:
@@ -22,16 +21,8 @@ public:
 
 signals:
     void valuesChanged(const VignetteParams &values);
-    void closed();
-
-protected:
-    bool eventFilter(QObject *watched, QEvent *event) override;
-    void mousePressEvent(QMouseEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
-    void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
-    QSlider *addRow(const QString &name, int min, int max, QLabel **valueOut);
     void onChanged();
     void refreshLabels();
     VignetteParams currentValues() const;
@@ -45,7 +36,4 @@ private:
     QLabel *m_midpointValue = nullptr;
     QLabel *m_roundnessValue = nullptr;
     QLabel *m_featherValue = nullptr;
-
-    bool m_dragging = false;
-    QPoint m_dragOffset;
 };

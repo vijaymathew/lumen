@@ -4576,7 +4576,8 @@ void MainWindow::brushAt(const QPointF &norm)
     const int h = m_brushMask.height;
     const float cx = static_cast<float>(norm.x()) * (w - 1);
     const float cy = static_cast<float>(norm.y()) * (h - 1);
-    const float radius = std::max(1.0f, (m_brushSize / 100.0f) * 0.3f * std::min(w, h));
+    const float radius = std::max(
+        1.0f, (m_brushSize / 100.0f) * CanvasWidget::kBrushRadiusScale * std::min(w, h));
     const float hardness = m_brushHardness / 100.0f;
     const bool heal = (m_brushTarget == BrushTarget::Heal);
 

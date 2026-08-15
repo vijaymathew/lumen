@@ -33,6 +33,12 @@ class CanvasWidget : public QRhiWidget {
     Q_OBJECT
 
 public:
+    // Brush radius = (size/100) * kBrushRadiusScale * the image's smaller
+    // displayed dimension. Shared with MainWindow::brushAt, which stamps into
+    // the actual mask at this same radius — the cursor overlay drawn here has
+    // to agree with it exactly, or the ring wouldn't match what gets painted.
+    static constexpr float kBrushRadiusScale = 0.3f;
+
     explicit CanvasWidget(QWidget *parent = nullptr);
 
     // Swaps in a new image. The upload happens lazily on the next render. By

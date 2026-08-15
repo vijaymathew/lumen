@@ -5,7 +5,6 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QMouseEvent>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -26,14 +25,14 @@ constexpr int kColour = MaskSpec::Colour;
 } // namespace
 
 LayersPanel::LayersPanel(QWidget *parent)
-    : QWidget(parent)
+    : FloatingToolPanel(QStringLiteral("layersPanel"), QStringLiteral("Layers"), kPanelWidth,
+                        parent)
 {
-    setObjectName(QStringLiteral("layersPanel"));
-    setAttribute(Qt::WA_StyledBackground, true);
-    setFixedWidth(kPanelWidth);
-
-    auto *title = new QLabel(QStringLiteral("Layers"), this);
-    title->setObjectName(QStringLiteral("toolTitle"));
+    // Keep the panel sized to its content so sub-sections shown/hidden with the
+    // mask type never get compressed (which would clip slider labels).
+    contentLayout()->setSizeConstraint(QLayout::SetMinimumSize);
+    contentLayout()->setContentsMargins(14, 12, 14, 14);
+    contentLayout()->setSpacing(8);
 
     auto *rows = new QWidget(this);
     m_rowsLayout = new QVBoxLayout(rows);
@@ -328,37 +327,22 @@ LayersPanel::LayersPanel(QWidget *parent)
     maskLayout->addWidget(m_invertButton);
     maskLayout->addWidget(m_zoneSection);
 
-    auto *layout = new QVBoxLayout(this);
-    // Keep the panel sized to its content so sub-sections shown/hidden with the
-    // mask type never get compressed (which would clip slider labels).
-    layout->setSizeConstraint(QLayout::SetMinimumSize);
-    layout->setContentsMargins(14, 12, 14, 14);
-    layout->setSpacing(8);
-    layout->addWidget(title);
-    layout->addWidget(rows);
-    layout->addLayout(buttons);
-    layout->addLayout(opacityHeader);
-    layout->addWidget(m_opacity);
-    layout->addWidget(m_maskSection);
+    contentLayout()->addWidget(rows);
+    contentLayout()->addLayout(buttons);
+    contentLayout()->addLayout(opacityHeader);
+    contentLayout()->addWidget(m_opacity);
+    contentLayout()->addWidget(m_maskSection);
 
-    setStyleSheet(QStringLiteral(R"(
-        #layersPanel { background: #1c1c1f; border: 1px solid #38383d; border-radius: 10px; }
-        #toolTitle { color: #e8e8ea; font-size: 13px; }
-        #rowName { color: #b4b4b8; font-size: 12px; }
-        #rowValue { color: #d6d6d9; font-size: 12px; }
+    appendStyleSheet(QStringLiteral(R"(
         #swatch { border: 1px solid #38383d; border-radius: 4px; background: #000; }
         QPushButton {
-            background: #2a2a2e; color: #e8e8ea; border: 1px solid #38383d;
-            border-radius: 6px; padding: 3px 6px; font-size: 11px;
+            padding: 3px 6px; font-size: 11px;
         }
-        QPushButton:hover { background: #34343a; }
         QPushButton[active="true"] { background: #3a3550; border-color: #7F77DD; }
-        QPushButton:checked { background: #3a3550; border-color: #7F77DD; }
         QPushButton:disabled { color: #6a6a6e; }
     )"));
 
     m_addButton->setChecked(true);
-    hide();
 }
 
 QSlider *LayersPanel::addSlider(QVBoxLayout *layout, const QString &name, int min,
@@ -537,36 +521,6 @@ void LayersPanel::setBrushParams(int size, int hardness)
     m_brushHardness->setValue(hardness);
     m_brushSizeValue->setText(QString::number(size));
     m_brushHardnessValue->setText(QString::number(hardness));
-}
-
-void LayersPanel::mousePressEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = true;
-        m_dragOffset = event->pos();
-        setCursor(Qt::ClosedHandCursor);
-    }
-}
-
-void LayersPanel::mouseMoveEvent(QMouseEvent *event)
-{
-    if (!m_dragging || !parentWidget())
-        return;
-    const QPoint cursorInParent =
-        parentWidget()->mapFromGlobal(event->globalPosition().toPoint());
-    QPoint topLeft = cursorInParent - m_dragOffset;
-    const QRect bounds = parentWidget()->rect();
-    topLeft.setX(std::clamp(topLeft.x(), 0, bounds.width() - width()));
-    topLeft.setY(std::clamp(topLeft.y(), 0, bounds.height() - height()));
-    move(topLeft);
-}
-
-void LayersPanel::mouseReleaseEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = false;
-        unsetCursor();
-    }
 }
 
 bool LayersPanel::eventFilter(QObject *watched, QEvent *event)

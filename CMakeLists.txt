@@ -170,6 +170,8 @@ qt_add_executable(lumen
     src/gpu/CanvasWidget.h
     src/gpu/CanvasWidget.cpp
     src/gpu/ZoomMath.h
+    src/ui/FloatingToolPanel.h
+    src/ui/FloatingToolPanel.cpp
     src/input/InputController.h
     src/input/InputController.cpp
     src/input/CommandPalette.h
@@ -339,7 +341,9 @@ if(BUILD_TESTING)
     qt_add_executable(presets_gui_smoke
         tests/presets_gui_smoke.cpp
         src/ui/PresetsPanel.h
-        src/ui/PresetsPanel.cpp)
+        src/ui/PresetsPanel.cpp
+        src/ui/FloatingToolPanel.h
+        src/ui/FloatingToolPanel.cpp)
     target_link_libraries(presets_gui_smoke PRIVATE lumen_core Qt6::Widgets)
 
     add_executable(tune_node_test tests/tune_node_test.cpp)

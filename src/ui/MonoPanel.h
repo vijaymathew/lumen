@@ -1,8 +1,7 @@
 #pragma once
 
 #include "core/MonoNode.h" // MonoValues
-
-#include <QWidget>
+#include "ui/FloatingToolPanel.h"
 
 class QLabel;
 class QPushButton;
@@ -12,7 +11,7 @@ class QSlider;
 // enable toggle, filter presets, an 8-color B&W mixer (how each colour renders
 // as a tone), and toning (strength + hue). It mirrors TonePanel — drives the
 // live preview via valuesChanged() and closes on Esc/Enter.
-class MonoPanel : public QWidget {
+class MonoPanel : public FloatingToolPanel {
     Q_OBJECT
 
 public:
@@ -22,16 +21,8 @@ public:
 
 signals:
     void valuesChanged(const MonoValues &values);
-    void closed();
-
-protected:
-    bool eventFilter(QObject *watched, QEvent *event) override;
-    void mousePressEvent(QMouseEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
-    void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
-    QSlider *addRow(const QString &name, int min, int max, QLabel **valueOut);
     void onChanged();
     void refreshLabels();
     MonoValues currentValues() const;
@@ -53,7 +44,4 @@ private:
     void applyPreset(const float bands[8]);
     // Applies a split-tone preset (shadow hue/sat, highlight hue/sat, balance).
     void applyTonePreset(float shHue, float shSat, float hiHue, float hiSat, float balance);
-
-    bool m_dragging = false;
-    QPoint m_dragOffset;
 };

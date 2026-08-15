@@ -1,14 +1,10 @@
 #include "ui/LensPanel.h"
 
-#include <QHBoxLayout>
-#include <QKeyEvent>
 #include <QLabel>
-#include <QMouseEvent>
 #include <QPushButton>
 #include <QSlider>
 #include <QVBoxLayout>
 
-#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -16,28 +12,17 @@ constexpr int kPanelWidth = 260;
 } // namespace
 
 LensPanel::LensPanel(QWidget *parent)
-    : QWidget(parent)
+    : FloatingToolPanel(QStringLiteral("lensPanel"), QStringLiteral("Lens & Perspective"),
+                        kPanelWidth, parent)
 {
-    setObjectName(QStringLiteral("lensPanel"));
-    setAttribute(Qt::WA_StyledBackground, true);
-    setFixedWidth(kPanelWidth);
-
-    auto *title = new QLabel(QStringLiteral("Lens & Perspective"), this);
-    title->setObjectName(QStringLiteral("toolTitle"));
-
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(16, 14, 16, 16);
-    layout->setSpacing(10);
-    layout->addWidget(title);
-
     m_detected = new QLabel(this);
     m_detected->setObjectName(QStringLiteral("detected"));
     m_detected->setWordWrap(true);
-    layout->addWidget(m_detected);
+    contentLayout()->addWidget(m_detected);
 
     auto *autoHeader = new QLabel(QStringLiteral("Automatic"), this);
     autoHeader->setObjectName(QStringLiteral("section"));
-    layout->addWidget(autoHeader);
+    contentLayout()->addWidget(autoHeader);
 
     m_distortion = addToggle(QStringLiteral("Distortion"));
     m_distortionAmount = addRow(QStringLiteral("Amount"), 0, 100, &m_distortionValue);
@@ -47,34 +32,23 @@ LensPanel::LensPanel(QWidget *parent)
 
     auto *perspHeader = new QLabel(QStringLiteral("Perspective"), this);
     perspHeader->setObjectName(QStringLiteral("section"));
-    layout->addWidget(perspHeader);
+    contentLayout()->addWidget(perspHeader);
 
     m_keystoneV = addRow(QStringLiteral("Vertical"), -45, 45, &m_keystoneVValue);
     m_keystoneH = addRow(QStringLiteral("Horizontal"), -45, 45, &m_keystoneHValue);
     m_rotate = addRow(QStringLiteral("Rotate"), -45, 45, &m_rotateValue);
     m_scale = addRow(QStringLiteral("Zoom"), 25, 400, &m_scaleValue); // /100
 
-    setStyleSheet(QStringLiteral(R"(
-        #lensPanel {
-            background: #1c1c1f;
-            border: 1px solid #38383d;
-            border-radius: 10px;
-        }
-        #toolTitle { color: #e8e8ea; font-size: 13px; }
+    for (QSlider *s : {m_distortionAmount, m_vignettingAmount, m_keystoneV, m_keystoneH, m_rotate,
+                       m_scale})
+        connect(s, &QSlider::valueChanged, this, &LensPanel::onChanged);
+
+    appendStyleSheet(QStringLiteral(R"(
         #section { color: #8a8a90; font-size: 11px; text-transform: uppercase; }
         #detected { color: #b4b4b8; font-size: 12px; }
-        #rowName { color: #b4b4b8; font-size: 12px; }
-        #rowValue { color: #d6d6d9; font-size: 12px; }
-        QPushButton {
-            background: #2a2a2e; color: #e8e8ea; border: 1px solid #38383d;
-            border-radius: 6px; padding: 4px 8px; font-size: 12px; text-align: left;
-        }
-        QPushButton:hover { background: #34343a; }
-        QPushButton:checked { background: #3a3550; border-color: #7F77DD; }
+        QPushButton { text-align: left; }
         QPushButton:disabled { color: #6a6a70; }
     )"));
-
-    hide();
 }
 
 QPushButton *LensPanel::addToggle(const QString &text)
@@ -82,34 +56,8 @@ QPushButton *LensPanel::addToggle(const QString &text)
     auto *btn = new QPushButton(text, this);
     btn->setCheckable(true);
     connect(btn, &QPushButton::toggled, this, &LensPanel::onChanged);
-    static_cast<QVBoxLayout *>(layout())->addWidget(btn);
+    contentLayout()->addWidget(btn);
     return btn;
-}
-
-QSlider *LensPanel::addRow(const QString &name, int min, int max, QLabel **valueOut)
-{
-    auto *header = new QHBoxLayout;
-    header->setContentsMargins(0, 0, 0, 0);
-    auto *nameLabel = new QLabel(name, this);
-    nameLabel->setObjectName(QStringLiteral("rowName"));
-    auto *valueLabel = new QLabel(this);
-    valueLabel->setObjectName(QStringLiteral("rowValue"));
-    valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    header->addWidget(nameLabel);
-    header->addStretch(1);
-    header->addWidget(valueLabel);
-
-    auto *slider = new QSlider(Qt::Horizontal, this);
-    slider->setRange(min, max);
-    slider->installEventFilter(this);
-    connect(slider, &QSlider::valueChanged, this, &LensPanel::onChanged);
-
-    auto *layout = static_cast<QVBoxLayout *>(this->layout());
-    layout->addLayout(header);
-    layout->addWidget(slider);
-
-    *valueOut = valueLabel;
-    return slider;
 }
 
 LensCorrectionNode::Params LensPanel::currentParams() const
@@ -180,51 +128,4 @@ void LensPanel::onChanged()
 {
     refreshLabels();
     emit paramsChanged(currentParams());
-}
-
-void LensPanel::mousePressEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = true;
-        m_dragOffset = event->pos();
-        setCursor(Qt::ClosedHandCursor);
-    }
-}
-
-void LensPanel::mouseMoveEvent(QMouseEvent *event)
-{
-    if (!m_dragging || !parentWidget())
-        return;
-    const QPoint cursorInParent =
-        parentWidget()->mapFromGlobal(event->globalPosition().toPoint());
-    QPoint topLeft = cursorInParent - m_dragOffset;
-    const QRect bounds = parentWidget()->rect();
-    topLeft.setX(std::clamp(topLeft.x(), 0, bounds.width() - width()));
-    topLeft.setY(std::clamp(topLeft.y(), 0, bounds.height() - height()));
-    move(topLeft);
-}
-
-void LensPanel::mouseReleaseEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = false;
-        unsetCursor();
-    }
-}
-
-bool LensPanel::eventFilter(QObject *watched, QEvent *event)
-{
-    if (event->type() == QEvent::KeyPress) {
-        auto *ke = static_cast<QKeyEvent *>(event);
-        switch (ke->key()) {
-        case Qt::Key_Escape:
-        case Qt::Key_Return:
-        case Qt::Key_Enter:
-            emit closed();
-            return true;
-        default:
-            break;
-        }
-    }
-    return QWidget::eventFilter(watched, event);
 }

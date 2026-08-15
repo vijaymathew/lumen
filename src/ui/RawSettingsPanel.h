@@ -1,9 +1,7 @@
 #pragma once
 
 #include "core/RawLoader.h" // raw::RawDecodeOptions, raw::RawLensDefaults
-
-#include <QVector>
-#include <QWidget>
+#include "ui/FloatingToolPanel.h"
 
 class QButtonGroup;
 class QLabel;
@@ -16,7 +14,7 @@ class QSlider;
 // auto-corrections. Each change is the new global default; for the open RAW the
 // decode knobs trigger a re-decode and the lens toggles update its lens node.
 // Closes on Esc/Enter.
-class RawSettingsPanel : public QWidget {
+class RawSettingsPanel : public FloatingToolPanel {
     Q_OBJECT
 
 public:
@@ -26,13 +24,6 @@ public:
 
 signals:
     void valuesChanged(const raw::RawDecodeOptions &opts, const raw::RawLensDefaults &lens);
-    void closed();
-
-protected:
-    bool eventFilter(QObject *watched, QEvent *event) override;
-    void mousePressEvent(QMouseEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
-    void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
     // Builds a labelled row of mutually-exclusive buttons; `values[i]` is the
@@ -54,7 +45,4 @@ private:
     QPushButton *m_lensDistortion = nullptr;
     QPushButton *m_lensTca = nullptr;
     QPushButton *m_lensVignetting = nullptr;
-
-    bool m_dragging = false;
-    QPoint m_dragOffset;
 };

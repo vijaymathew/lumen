@@ -1,10 +1,10 @@
 #pragma once
 
 #include "core/MaskSpec.h"
+#include "ui/FloatingToolPanel.h"
 
 #include <QColor>
 #include <QVector>
-#include <QWidget>
 
 class QLabel;
 class QPushButton;
@@ -17,7 +17,7 @@ class QVBoxLayout;
 // the whole Mask section drive the active layer. Mask types: None / Gradient /
 // Radial (edited on-canvas via MaskGizmo) and Luminosity / Colour / Brush
 // (edited here). Tone for a masked layer is the normal Tone tool.
-class LayersPanel : public QWidget {
+class LayersPanel : public FloatingToolPanel {
     Q_OBJECT
 
 public:
@@ -69,10 +69,10 @@ signals:
     void overlayVisibilityChanged(bool visible);
 
 protected:
-    void mousePressEvent(QMouseEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
-    void mouseReleaseEvent(QMouseEvent *event) override;
     // Catches a double-click on a layer-name button to start inline renaming.
+    // (Drag-to-move and the base Esc/Enter-closes filter are inherited from
+    // FloatingToolPanel; this panel has no closed() signal to emit, so nothing
+    // here calls closesOnEscape().)
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
@@ -129,7 +129,4 @@ private:
     QLabel *m_zoneFeatherValue = nullptr;
     QLabel *m_zoneCount = nullptr;
     bool m_zoneSubtract = false;
-
-    bool m_dragging = false;
-    QPoint m_dragOffset;
 };

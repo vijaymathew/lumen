@@ -39,10 +39,17 @@ public:
     const Image &source() const { return m_source; }
 
     // --- Layers ------------------------------------------------------------
+    // Const and non-const overloads, so a `const EditGraph&` genuinely can't
+    // mutate a layer through these — holding one used to be no guarantee at
+    // all, since the previous single (const-qualified) overload still handed
+    // back a mutable Layer&.
     int layerCount() const { return static_cast<int>(m_layers.size()); }
-    Layer &layer(int index) const { return *m_layers[index]; }
-    Layer &baseLayer() const { return *m_layers.front(); }
-    Layer &activeLayer() const { return *m_layers[m_activeLayer]; }
+    Layer &layer(int index) { return *m_layers[index]; }
+    const Layer &layer(int index) const { return *m_layers[index]; }
+    Layer &baseLayer() { return *m_layers.front(); }
+    const Layer &baseLayer() const { return *m_layers.front(); }
+    Layer &activeLayer() { return *m_layers[m_activeLayer]; }
+    const Layer &activeLayer() const { return *m_layers[m_activeLayer]; }
     int activeLayerIndex() const { return m_activeLayer; }
     void setActiveLayer(int index);
     Layer &addLayer(const QString &name = QStringLiteral("Layer"));

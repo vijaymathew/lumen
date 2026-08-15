@@ -3,14 +3,11 @@
 #include "core/TuneNode.h"
 
 #include <QHBoxLayout>
-#include <QKeyEvent>
 #include <QLabel>
-#include <QMouseEvent>
 #include <QPushButton>
 #include <QSlider>
 #include <QVBoxLayout>
 
-#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -21,51 +18,33 @@ constexpr int kPanelWidth = 248;
 } // namespace
 
 TonePanel::TonePanel(QWidget *parent)
-    : QWidget(parent)
+    : FloatingToolPanel(QStringLiteral("tonePanel"), QStringLiteral("Tone"), kPanelWidth, parent)
 {
-    setObjectName(QStringLiteral("tonePanel"));
-    // A bare QWidget needs this to paint its stylesheet background.
-    setAttribute(Qt::WA_StyledBackground, true);
-    setFixedWidth(kPanelWidth);
-
-    auto *title = new QLabel(QStringLiteral("Tone"), this);
-    title->setObjectName(QStringLiteral("toolTitle"));
-
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(16, 14, 16, 16);
-    layout->setSpacing(10);
-    layout->addWidget(title);
-
     m_exposure = addRow(QStringLiteral("Exposure"),
                         static_cast<int>(TuneNode::kMinExposure * kExposureScale),
                         static_cast<int>(TuneNode::kMaxExposure * kExposureScale),
                         &m_exposureValue);
-    m_contrast = addRow(QStringLiteral("Contrast"),
-                        static_cast<int>(TuneNode::kMinAmount),
+    m_contrast = addRow(QStringLiteral("Contrast"), static_cast<int>(TuneNode::kMinAmount),
                         static_cast<int>(TuneNode::kMaxAmount), &m_contrastValue);
-    m_highlights = addRow(QStringLiteral("Highlights"),
-                          static_cast<int>(TuneNode::kMinAmount),
+    m_highlights = addRow(QStringLiteral("Highlights"), static_cast<int>(TuneNode::kMinAmount),
                           static_cast<int>(TuneNode::kMaxAmount), &m_highlightsValue);
-    m_shadows = addRow(QStringLiteral("Shadows"),
-                       static_cast<int>(TuneNode::kMinAmount),
+    m_shadows = addRow(QStringLiteral("Shadows"), static_cast<int>(TuneNode::kMinAmount),
                        static_cast<int>(TuneNode::kMaxAmount), &m_shadowsValue);
-    m_whites = addRow(QStringLiteral("Whites"),
-                      static_cast<int>(TuneNode::kMinAmount),
+    m_whites = addRow(QStringLiteral("Whites"), static_cast<int>(TuneNode::kMinAmount),
                       static_cast<int>(TuneNode::kMaxAmount), &m_whitesValue);
-    m_blacks = addRow(QStringLiteral("Blacks"),
-                      static_cast<int>(TuneNode::kMinAmount),
+    m_blacks = addRow(QStringLiteral("Blacks"), static_cast<int>(TuneNode::kMinAmount),
                       static_cast<int>(TuneNode::kMaxAmount), &m_blacksValue);
-    m_saturation = addRow(QStringLiteral("Saturation"),
-                          static_cast<int>(TuneNode::kMinAmount),
+    m_saturation = addRow(QStringLiteral("Saturation"), static_cast<int>(TuneNode::kMinAmount),
                           static_cast<int>(TuneNode::kMaxAmount), &m_saturationValue);
-    m_vibrance = addRow(QStringLiteral("Vibrance"),
-                        static_cast<int>(TuneNode::kMinAmount),
+    m_vibrance = addRow(QStringLiteral("Vibrance"), static_cast<int>(TuneNode::kMinAmount),
                         static_cast<int>(TuneNode::kMaxAmount), &m_vibranceValue);
-    m_kelvin = addRow(QStringLiteral("Temperature"),
-                      static_cast<int>(TuneNode::kMinKelvin),
+    m_kelvin = addRow(QStringLiteral("Temperature"), static_cast<int>(TuneNode::kMinKelvin),
                       static_cast<int>(TuneNode::kMaxKelvin), &m_kelvinValue);
     m_tint = addRow(QStringLiteral("Tint"), static_cast<int>(TuneNode::kMinAmount),
                     static_cast<int>(TuneNode::kMaxAmount), &m_tintValue);
+    for (QSlider *s : {m_exposure, m_contrast, m_highlights, m_shadows, m_whites, m_blacks,
+                       m_saturation, m_vibrance, m_kelvin, m_tint})
+        connect(s, &QSlider::valueChanged, this, &TonePanel::onSliderChanged);
 
     // White-balance helpers: "As shot" resets temperature/tint to the camera's
     // as-shot point; the picker arms the canvas eyedropper for a neutral patch.
@@ -80,21 +59,11 @@ TonePanel::TonePanel(QWidget *parent)
     m_wbPicker->setCursor(Qt::PointingHandCursor);
     wbButtons->addWidget(m_wbAsShot);
     wbButtons->addWidget(m_wbPicker);
-    static_cast<QVBoxLayout *>(this->layout())->addLayout(wbButtons);
-    connect(m_wbAsShot, &QPushButton::clicked, this,
-            &TonePanel::whiteBalanceResetRequested);
-    connect(m_wbPicker, &QPushButton::clicked, this,
-            &TonePanel::whiteBalancePickRequested);
+    contentLayout()->addLayout(wbButtons);
+    connect(m_wbAsShot, &QPushButton::clicked, this, &TonePanel::whiteBalanceResetRequested);
+    connect(m_wbPicker, &QPushButton::clicked, this, &TonePanel::whiteBalancePickRequested);
 
-    setStyleSheet(QStringLiteral(R"(
-        #tonePanel {
-            background: #1c1c1f;
-            border: 1px solid #38383d;
-            border-radius: 10px;
-        }
-        #toolTitle { color: #e8e8ea; font-size: 13px; }
-        #rowName { color: #b4b4b8; font-size: 12px; }
-        #rowValue { color: #d6d6d9; font-size: 12px; }
+    appendStyleSheet(QStringLiteral(R"(
         #wbButton {
             color: #d6d6d9; font-size: 12px;
             background: #2a2a2e; border: 1px solid #3c3c42;
@@ -103,34 +72,6 @@ TonePanel::TonePanel(QWidget *parent)
         #wbButton:hover { background: #34343a; }
         #wbButton:pressed { background: #3c3c44; }
     )"));
-
-    hide();
-}
-
-QSlider *TonePanel::addRow(const QString &name, int min, int max, QLabel **valueOut)
-{
-    auto *header = new QHBoxLayout;
-    header->setContentsMargins(0, 0, 0, 0);
-    auto *nameLabel = new QLabel(name, this);
-    nameLabel->setObjectName(QStringLiteral("rowName"));
-    auto *valueLabel = new QLabel(this);
-    valueLabel->setObjectName(QStringLiteral("rowValue"));
-    valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    header->addWidget(nameLabel);
-    header->addStretch(1);
-    header->addWidget(valueLabel);
-
-    auto *slider = new QSlider(Qt::Horizontal, this);
-    slider->setRange(min, max);
-    slider->installEventFilter(this);
-    connect(slider, &QSlider::valueChanged, this, &TonePanel::onSliderChanged);
-
-    auto *layout = static_cast<QVBoxLayout *>(this->layout());
-    layout->addLayout(header);
-    layout->addWidget(slider);
-
-    *valueOut = valueLabel;
-    return slider;
 }
 
 ToneValues TonePanel::currentValues() const
@@ -204,57 +145,4 @@ void TonePanel::onSliderChanged()
 {
     refreshLabels();
     emit valuesChanged(currentValues());
-}
-
-void TonePanel::mousePressEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = true;
-        m_dragOffset = event->pos();
-        setCursor(Qt::ClosedHandCursor);
-    }
-}
-
-void TonePanel::mouseMoveEvent(QMouseEvent *event)
-{
-    if (!m_dragging || !parentWidget())
-        return;
-
-    const QPoint cursorInParent =
-        parentWidget()->mapFromGlobal(event->globalPosition().toPoint());
-    QPoint topLeft = cursorInParent - m_dragOffset;
-
-    const QRect bounds = parentWidget()->rect();
-    topLeft.setX(std::clamp(topLeft.x(), 0, bounds.width() - width()));
-    topLeft.setY(std::clamp(topLeft.y(), 0, bounds.height() - height()));
-    move(topLeft);
-}
-
-void TonePanel::mouseReleaseEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = false;
-        unsetCursor();
-    }
-}
-
-bool TonePanel::eventFilter(QObject *watched, QEvent *event)
-{
-    if (event->type() == QEvent::KeyPress
-        && (watched == m_exposure || watched == m_contrast || watched == m_saturation
-            || watched == m_vibrance || watched == m_kelvin || watched == m_tint
-            || watched == m_highlights || watched == m_shadows || watched == m_whites
-            || watched == m_blacks)) {
-        auto *ke = static_cast<QKeyEvent *>(event);
-        switch (ke->key()) {
-        case Qt::Key_Escape:
-        case Qt::Key_Return:
-        case Qt::Key_Enter:
-            emit closed();
-            return true;
-        default:
-            break;
-        }
-    }
-    return QWidget::eventFilter(watched, event);
 }

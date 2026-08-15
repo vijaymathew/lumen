@@ -2,9 +2,7 @@
 
 #include <QButtonGroup>
 #include <QHBoxLayout>
-#include <QKeyEvent>
 #include <QLabel>
-#include <QMouseEvent>
 #include <QPushButton>
 #include <QSlider>
 #include <QVBoxLayout>
@@ -28,43 +26,17 @@ int highlightIndexOf(int value)
 } // namespace
 
 RawSettingsPanel::RawSettingsPanel(QWidget *parent)
-    : QWidget(parent)
+    : FloatingToolPanel(QStringLiteral("rawPanel"), QStringLiteral("RAW Defaults"), kPanelWidth,
+                        parent)
 {
-    setObjectName(QStringLiteral("rawPanel"));
-    setAttribute(Qt::WA_StyledBackground, true);
-    setFixedWidth(kPanelWidth);
-
-    auto *title = new QLabel(QStringLiteral("RAW Defaults"), this);
-    title->setObjectName(QStringLiteral("toolTitle"));
-
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(16, 14, 16, 16);
-    layout->setSpacing(10);
-    layout->addWidget(title);
-
     m_autoBright = new QPushButton(QStringLiteral("Auto-brightness"), this);
     m_autoBright->setCheckable(true);
     connect(m_autoBright, &QPushButton::toggled, this, &RawSettingsPanel::onChanged);
-    layout->addWidget(m_autoBright);
+    contentLayout()->addWidget(m_autoBright);
 
-    {
-        auto *header = new QHBoxLayout;
-        header->setContentsMargins(0, 0, 0, 0);
-        auto *nameLabel = new QLabel(QStringLiteral("Clip threshold"), this);
-        nameLabel->setObjectName(QStringLiteral("rowName"));
-        m_thresholdValue = new QLabel(this);
-        m_thresholdValue->setObjectName(QStringLiteral("rowValue"));
-        m_thresholdValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        header->addWidget(nameLabel);
-        header->addStretch(1);
-        header->addWidget(m_thresholdValue);
-        layout->addLayout(header);
-        m_threshold = new QSlider(Qt::Horizontal, this);
-        m_threshold->setRange(1, 100); // value/1000 → 0.001..0.1
-        m_threshold->installEventFilter(this);
-        connect(m_threshold, &QSlider::valueChanged, this, &RawSettingsPanel::onChanged);
-        layout->addWidget(m_threshold);
-    }
+    m_threshold = addRow(QStringLiteral("Clip threshold"), 1, 100, &m_thresholdValue);
+    // value/1000 → 0.001..0.1
+    connect(m_threshold, &QSlider::valueChanged, this, &RawSettingsPanel::onChanged);
 
     m_highlight = addButtonRow(QStringLiteral("Highlights"),
                                {QStringLiteral("Clip"), QStringLiteral("Blend"),
@@ -79,7 +51,7 @@ RawSettingsPanel::RawSettingsPanel(QWidget *parent)
 
     auto *lensLabel = new QLabel(QStringLiteral("Lens corrections"), this);
     lensLabel->setObjectName(QStringLiteral("rowName"));
-    layout->addWidget(lensLabel);
+    contentLayout()->addWidget(lensLabel);
     auto *lensRow = new QHBoxLayout;
     lensRow->setContentsMargins(0, 0, 0, 0);
     lensRow->setSpacing(4);
@@ -91,41 +63,21 @@ RawSettingsPanel::RawSettingsPanel(QWidget *parent)
         connect(b, &QPushButton::toggled, this, &RawSettingsPanel::onChanged);
         lensRow->addWidget(b);
     }
-    layout->addLayout(lensRow);
+    contentLayout()->addLayout(lensRow);
 
     auto *reset = new QPushButton(QStringLiteral("Reset to defaults"), this);
     connect(reset, &QPushButton::clicked, this, [this] {
         setControls(raw::RawDecodeOptions{}, raw::RawLensDefaults{}); // historical baseline
         onChanged(); // re-decode the open RAW + restore default lens corrections
     });
-    layout->addWidget(reset);
-
-    setStyleSheet(QStringLiteral(R"(
-        #rawPanel {
-            background: #1c1c1f;
-            border: 1px solid #38383d;
-            border-radius: 10px;
-        }
-        #toolTitle { color: #e8e8ea; font-size: 13px; }
-        #rowName { color: #b4b4b8; font-size: 12px; }
-        #rowValue { color: #d6d6d9; font-size: 12px; }
-        QPushButton {
-            background: #2a2a2e; color: #e8e8ea; border: 1px solid #38383d;
-            border-radius: 6px; padding: 4px 8px; font-size: 12px;
-        }
-        QPushButton:hover { background: #34343a; }
-        QPushButton:checked { background: #3a3550; border-color: #7F77DD; }
-    )"));
-
-    hide();
+    contentLayout()->addWidget(reset);
 }
 
 QButtonGroup *RawSettingsPanel::addButtonRow(const QString &name, const QStringList &labels)
 {
     auto *nameLabel = new QLabel(name, this);
     nameLabel->setObjectName(QStringLiteral("rowName"));
-    auto *layout = static_cast<QVBoxLayout *>(this->layout());
-    layout->addWidget(nameLabel);
+    contentLayout()->addWidget(nameLabel);
 
     auto *row = new QHBoxLayout;
     row->setContentsMargins(0, 0, 0, 0);
@@ -138,7 +90,7 @@ QButtonGroup *RawSettingsPanel::addButtonRow(const QString &name, const QStringL
         group->addButton(b, i);
         row->addWidget(b);
     }
-    layout->addLayout(row);
+    contentLayout()->addLayout(row);
     connect(group, &QButtonGroup::idClicked, this, [this](int) { onChanged(); });
     return group;
 }
@@ -209,51 +161,4 @@ void RawSettingsPanel::onChanged()
 {
     refreshLabels();
     emit valuesChanged(currentOptions(), currentLens());
-}
-
-void RawSettingsPanel::mousePressEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = true;
-        m_dragOffset = event->pos();
-        setCursor(Qt::ClosedHandCursor);
-    }
-}
-
-void RawSettingsPanel::mouseMoveEvent(QMouseEvent *event)
-{
-    if (!m_dragging || !parentWidget())
-        return;
-    const QPoint cursorInParent =
-        parentWidget()->mapFromGlobal(event->globalPosition().toPoint());
-    QPoint topLeft = cursorInParent - m_dragOffset;
-    const QRect bounds = parentWidget()->rect();
-    topLeft.setX(std::clamp(topLeft.x(), 0, bounds.width() - width()));
-    topLeft.setY(std::clamp(topLeft.y(), 0, bounds.height() - height()));
-    move(topLeft);
-}
-
-void RawSettingsPanel::mouseReleaseEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = false;
-        unsetCursor();
-    }
-}
-
-bool RawSettingsPanel::eventFilter(QObject *watched, QEvent *event)
-{
-    if (event->type() == QEvent::KeyPress) {
-        auto *ke = static_cast<QKeyEvent *>(event);
-        switch (ke->key()) {
-        case Qt::Key_Escape:
-        case Qt::Key_Return:
-        case Qt::Key_Enter:
-            emit closed();
-            return true;
-        default:
-            break;
-        }
-    }
-    return QWidget::eventFilter(watched, event);
 }
