@@ -1,9 +1,7 @@
 #include "ui/CropPanel.h"
 
 #include <QHBoxLayout>
-#include <QKeyEvent>
 #include <QLabel>
-#include <QMouseEvent>
 #include <QPushButton>
 #include <QSlider>
 #include <QVBoxLayout>
@@ -32,23 +30,12 @@ const AspectPreset kAspects[] = {
 } // namespace
 
 CropPanel::CropPanel(QWidget *parent)
-    : QWidget(parent)
+    : FloatingToolPanel(QStringLiteral("cropPanel"), QStringLiteral("Crop & Rotate"), kPanelWidth,
+                        parent)
 {
-    setObjectName(QStringLiteral("cropPanel"));
-    setAttribute(Qt::WA_StyledBackground, true);
-    setFixedWidth(kPanelWidth);
-
-    auto *title = new QLabel(QStringLiteral("Crop & Rotate"), this);
-    title->setObjectName(QStringLiteral("toolTitle"));
-
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(16, 14, 16, 16);
-    layout->setSpacing(10);
-    layout->addWidget(title);
-
     auto *aspectLabel = new QLabel(QStringLiteral("Aspect"), this);
     aspectLabel->setObjectName(QStringLiteral("rowName"));
-    layout->addWidget(aspectLabel);
+    contentLayout()->addWidget(aspectLabel);
     auto *aspectRow1 = new QHBoxLayout;
     auto *aspectRow2 = new QHBoxLayout;
     aspectRow1->setContentsMargins(0, 0, 0, 0);
@@ -68,12 +55,12 @@ CropPanel::CropPanel(QWidget *parent)
         ++i;
     }
     m_aspectButtons[0]->setChecked(true); // Free
-    layout->addLayout(aspectRow1);
-    layout->addLayout(aspectRow2);
+    contentLayout()->addLayout(aspectRow1);
+    contentLayout()->addLayout(aspectRow2);
 
     auto *orientLabel = new QLabel(QStringLiteral("Orient"), this);
     orientLabel->setObjectName(QStringLiteral("rowName"));
-    layout->addWidget(orientLabel);
+    contentLayout()->addWidget(orientLabel);
     auto *rotRow = new QHBoxLayout;
     rotRow->setContentsMargins(0, 0, 0, 0);
     rotRow->setSpacing(4);
@@ -91,7 +78,7 @@ CropPanel::CropPanel(QWidget *parent)
     rotRow->addWidget(rotCW);
     rotRow->addWidget(m_flipH);
     rotRow->addWidget(m_flipV);
-    layout->addLayout(rotRow);
+    contentLayout()->addLayout(rotRow);
 
     // Straighten: a fine tilt slider (level-the-horizon), with a live degree read-out.
     auto *straightenHeader = new QHBoxLayout;
@@ -103,7 +90,7 @@ CropPanel::CropPanel(QWidget *parent)
     m_straightenValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     straightenHeader->addWidget(straightenLabel);
     straightenHeader->addWidget(m_straightenValue);
-    layout->addLayout(straightenHeader);
+    contentLayout()->addLayout(straightenHeader);
 
     m_straighten = new QSlider(Qt::Horizontal, this);
     m_straighten->setRange(-kStraightenRange, kStraightenRange);
@@ -115,24 +102,17 @@ CropPanel::CropPanel(QWidget *parent)
         m_straightenValue->setText(straightenText(deg));
         emit straightenChanged(deg);
     });
-    layout->addWidget(m_straighten);
+    contentLayout()->addWidget(m_straighten);
 
     auto *reset = new QPushButton(QStringLiteral("Reset crop"), this);
     connect(reset, &QPushButton::clicked, this, [this] {
         selectAspectButton(0);
         emit resetRequested();
     });
-    layout->addWidget(reset);
+    contentLayout()->addWidget(reset);
 
-    setStyleSheet(QStringLiteral(R"(
-        #cropPanel {
-            background: #1c1c1f;
-            border: 1px solid #38383d;
-            border-radius: 10px;
-        }
-        #toolTitle { color: #e8e8ea; font-size: 13px; }
-        #rowName { color: #b4b4b8; font-size: 12px; }
-        #rowValue { color: #e8e8ea; font-size: 12px; }
+    appendStyleSheet(QStringLiteral(R"(
+        #rowValue { color: #e8e8ea; }
         QSlider::groove:horizontal {
             height: 4px; background: #38383d; border-radius: 2px;
         }
@@ -141,15 +121,7 @@ CropPanel::CropPanel(QWidget *parent)
             margin: -6px 0; border-radius: 7px;
         }
         QSlider::handle:horizontal:hover { background: #ffffff; }
-        QPushButton {
-            background: #2a2a2e; color: #e8e8ea; border: 1px solid #38383d;
-            border-radius: 6px; padding: 4px 8px; font-size: 12px;
-        }
-        QPushButton:hover { background: #34343a; }
-        QPushButton:checked { background: #3a3550; border-color: #7F77DD; }
     )"));
-
-    hide();
 }
 
 void CropPanel::selectAspectButton(int index)
@@ -175,47 +147,4 @@ void CropPanel::reveal(const CropState &crop, double originalAspect)
     show();
     raise();
     setFocus(Qt::ShortcutFocusReason);
-}
-
-void CropPanel::mousePressEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = true;
-        m_dragOffset = event->pos();
-        setCursor(Qt::ClosedHandCursor);
-    }
-}
-
-void CropPanel::mouseMoveEvent(QMouseEvent *event)
-{
-    if (!m_dragging || !parentWidget())
-        return;
-    const QPoint cursorInParent =
-        parentWidget()->mapFromGlobal(event->globalPosition().toPoint());
-    QPoint topLeft = cursorInParent - m_dragOffset;
-    const QRect bounds = parentWidget()->rect();
-    topLeft.setX(std::clamp(topLeft.x(), 0, bounds.width() - width()));
-    topLeft.setY(std::clamp(topLeft.y(), 0, bounds.height() - height()));
-    move(topLeft);
-}
-
-void CropPanel::mouseReleaseEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = false;
-        unsetCursor();
-    }
-}
-
-bool CropPanel::eventFilter(QObject *watched, QEvent *event)
-{
-    if (event->type() == QEvent::KeyPress) {
-        auto *ke = static_cast<QKeyEvent *>(event);
-        if (ke->key() == Qt::Key_Escape || ke->key() == Qt::Key_Return
-            || ke->key() == Qt::Key_Enter) {
-            emit closed();
-            return true;
-        }
-    }
-    return QWidget::eventFilter(watched, event);
 }

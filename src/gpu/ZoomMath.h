@@ -13,6 +13,11 @@
 // `pan`, centred in the widget.
 namespace zoommath {
 
+// The zoom range every zoom-setting call site clamps to (CanvasWidget::setZoom
+// and its wheel handler) — shared so the two never drift apart.
+constexpr float kMinZoom = 0.05f;
+constexpr float kMaxZoom = 40.0f;
+
 // Scale that fits the whole image inside the widget at zoom 1.
 inline float fitScale(QSizeF widget, QSizeF image)
 {

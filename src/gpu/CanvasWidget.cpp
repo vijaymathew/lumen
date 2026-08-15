@@ -1,5 +1,6 @@
 #include "gpu/CanvasWidget.h"
 
+#include "gpu/CropViewTransform.h"
 #include "gpu/ZoomMath.h"
 
 #include <QFile>
@@ -123,7 +124,7 @@ void CanvasWidget::clearImage()
 
 void CanvasWidget::setFitZoom(float zoom)
 {
-    m_zoom = std::clamp(zoom, 0.05f, 40.0f);
+    m_zoom = std::clamp(zoom, zoommath::kMinZoom, zoommath::kMaxZoom);
     m_pan = {0.0, 0.0};
     emit viewChanged();
     update();
@@ -570,103 +571,46 @@ void CanvasWidget::setClipping(bool on)
     update();
 }
 
+namespace {
+// CanvasWidget::CropViewMode -> cropview::ViewMode. Kept as a tiny local
+// mapper so CropViewTransform.h has no dependency on CanvasWidget.h.
+cropview::ViewMode toViewMode(CanvasWidget::CropViewMode mode)
+{
+    switch (mode) {
+    case CanvasWidget::CropApplied:
+        return cropview::ViewMode::Applied;
+    case CanvasWidget::CropEditing:
+        return cropview::ViewMode::Editing;
+    case CanvasWidget::CropMaskEdit:
+        return cropview::ViewMode::MaskEdit;
+    case CanvasWidget::CropNone:
+    default:
+        return cropview::ViewMode::None;
+    }
+}
+} // namespace
+
 QSizeF CanvasWidget::effectiveImageSize() const
 {
-    const double W = m_textureSize.width(), H = m_textureSize.height();
-    if (m_cropView == CropNone || m_textureSize.isEmpty())
-        return {W, H};
-    const bool swap = (m_crop.rotation == 90 || m_crop.rotation == 270);
-    const double ow = swap ? H : W;
-    const double oh = swap ? W : H;
-    if (m_cropView == CropEditing || m_cropView == CropMaskEdit)
-        return {ow, oh}; // oriented full frame (rect ignored while editing)
-    return {ow * m_crop.rect.width(), oh * m_crop.rect.height()}; // oriented + crop
+    return cropview::effectiveImageSize(m_textureSize, m_crop, toViewMode(m_cropView));
 }
 
 QMatrix4x4 CanvasWidget::cropTexXform() const
 {
-    // Maps the present output unit-quad (uo,vo) → source texcoord, encoding
-    // crop + orientation. Mirrors core applyCrop (flip → rotate → extract). Built
-    // as FlipUndo * RotInv * Crop (Crop applied to the vector first).
-    QMatrix4x4 m; // identity
-    if (m_cropView == CropNone)
-        return m;
-
-    // Crop: output unit → oriented frame. Editing/mask-edit show the full oriented
-    // frame (crop rect ignored); Applied extracts the crop rect.
-    QRectF rect = (m_cropView == CropEditing || m_cropView == CropMaskEdit)
-                      ? QRectF(0, 0, 1, 1)
-                      : m_crop.rect;
-    QMatrix4x4 crop;
-    crop.translate(rect.x(), rect.y());
-    crop.scale(rect.width(), rect.height());
-
-    // RotInv: oriented → pre-rotation (flipped-source) normalized coords.
-    QMatrix4x4 rotInv;
-    switch (m_crop.rotation) {
-    case 90: // (u,v) -> (v, 1-u)
-        rotInv = QMatrix4x4(0, 1, 0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1);
-        break;
-    case 180: // (u,v) -> (1-u, 1-v)
-        rotInv = QMatrix4x4(-1, 0, 0, 1, 0, -1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1);
-        break;
-    case 270: // (u,v) -> (1-v, u)
-        rotInv = QMatrix4x4(0, -1, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
-        break;
-    default:
-        break; // 0 → identity
-    }
-
-    // StraightenInv: undo the fine tilt in the oriented frame. The rotation is
-    // done in pixel space (about the frame centre) so the non-square normalized
-    // frame isn't sheared. Mirrors applyCrop's vips_rotate (verified: the undo
-    // angle is -straighten). Applied for the browse and crop-edit views; the
-    // mask-edit view stays upright, since masks live in the un-oriented source
-    // and are addressed through this same matrix (see sourceNormFromOriented).
-    QMatrix4x4 straightenInv;
-    if (std::abs(m_crop.straighten) > 1e-6 && !m_textureSize.isEmpty()
-        && (m_cropView == CropApplied || m_cropView == CropEditing)) {
-        const bool swap = (m_crop.rotation == 90 || m_crop.rotation == 270);
-        const float ow = swap ? m_textureSize.height() : m_textureSize.width();
-        const float oh = swap ? m_textureSize.width() : m_textureSize.height();
-        straightenInv.translate(0.5f, 0.5f);
-        straightenInv.scale(1.0f / ow, 1.0f / oh);
-        straightenInv.rotate(static_cast<float>(-m_crop.straighten), 0.0f, 0.0f, 1.0f);
-        straightenInv.scale(ow, oh);
-        straightenInv.translate(-0.5f, -0.5f);
-    }
-
-    // FlipUndo: flips were applied to the source before rotation; undo in source.
-    QMatrix4x4 flipUndo;
-    if (m_crop.flipH) {
-        flipUndo.translate(1.0f, 0.0f);
-        flipUndo.scale(-1.0f, 1.0f);
-    }
-    if (m_crop.flipV) {
-        flipUndo.translate(0.0f, 1.0f);
-        flipUndo.scale(1.0f, -1.0f);
-    }
-
-    return flipUndo * rotInv * straightenInv * crop;
+    return cropview::texXform(m_textureSize, m_crop, toViewMode(m_cropView));
 }
 
 QPointF CanvasWidget::sourceNormFromOriented(QPointF orientedNorm) const
 {
-    if (m_cropView != CropMaskEdit)
-        return orientedNorm;
     // cropTexXform maps an oriented [0,1] point to its source texcoord; with the
     // full-frame rect this is pure orientation (rotation + flip), so the image the
     // user sees rotated is edited against the correct un-oriented source pixels.
-    return cropTexXform().map(orientedNorm);
+    return cropview::sourceNormFromOriented(orientedNorm, cropTexXform(), toViewMode(m_cropView));
 }
 
 QPointF CanvasWidget::orientedNormFromSource(QPointF sourceNorm) const
 {
-    if (m_cropView != CropMaskEdit)
-        return sourceNorm;
-    bool invertible = false;
-    const QMatrix4x4 inv = cropTexXform().inverted(&invertible);
-    return invertible ? inv.map(sourceNorm) : sourceNorm;
+    return cropview::orientedNormFromSource(sourceNorm, cropTexXform(), toViewMode(m_cropView));
 }
 
 QMatrix4x4 CanvasWidget::computeMvp(const QSize &targetPixels)
@@ -693,11 +637,19 @@ QMatrix4x4 CanvasWidget::computeMvp(const QSize &targetPixels)
 
 void CanvasWidget::render(QRhiCommandBuffer *cb)
 {
+    // keepAlive lives here, not inside updateGpuResources(), so it survives
+    // until the batch is actually submitted below (inside recordPasses()) —
+    // see the comment on updateGpuResources() in the header.
+    QImage keepAlive;
+    QRhiResourceUpdateBatch *u = updateGpuResources(keepAlive);
+    recordPasses(cb, u);
+}
+
+QRhiResourceUpdateBatch *CanvasWidget::updateGpuResources(QImage &keepAlive)
+{
     QRhi *r = rhi();
     QRhiResourceUpdateBatch *u = r->nextResourceUpdateBatch();
 
-    // Keep the converted image alive until after the pass is submitted below.
-    QImage keepAlive;
     if (m_textureDirty && !m_pendingImage.isNull()) {
         keepAlive = m_pendingImage.convertToFormat(QImage::Format_RGBA8888);
         const QSize s = keepAlive.size();
@@ -780,6 +732,12 @@ void CanvasWidget::render(QRhiCommandBuffer *cb)
         m_lut3dDirty = false;
     }
 
+    return u;
+}
+
+void CanvasWidget::recordPasses(QRhiCommandBuffer *cb, QRhiResourceUpdateBatch *u)
+{
+    QRhi *r = rhi();
     ensureOffscreen();
     ensurePipeline();
 
@@ -907,9 +865,9 @@ void CanvasWidget::emitBrushCursor(QPointF widgetPos)
     const QSizeF widget(width() * dpr, height() * dpr);
     const QSizeF image = effectiveImageSize();
     const QSizeF disp = zoommath::displayedSize(widget, image, m_zoom);
-    // Match MainWindow::brushAt: radius = (size/100)*0.3 of the image's smaller
-    // displayed dimension. Convert device px back to logical for the overlay.
-    const double f = (m_brushCursorSize / 100.0) * 0.3;
+    // Match MainWindow::brushAt (see kBrushRadiusScale). Convert device px back
+    // to logical for the overlay.
+    const double f = (m_brushCursorSize / 100.0) * kBrushRadiusScale;
     const double outerLogical = f * std::min(disp.width(), disp.height()) / dpr;
     const double innerLogical = outerLogical * m_brushCursorHardness;
     emit brushCursorMoved(widgetPos, outerLogical, innerLogical, true);
@@ -1053,7 +1011,7 @@ void CanvasWidget::zoomAt(float factor, const QPointF &cursorDevicePx)
     if (image.isEmpty() || widget.isEmpty())
         return;
 
-    const float newZoom = std::clamp(m_zoom * factor, 0.05f, 40.0f);
+    const float newZoom = std::clamp(m_zoom * factor, zoommath::kMinZoom, zoommath::kMaxZoom);
     if (newZoom == m_zoom)
         return;
 

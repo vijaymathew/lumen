@@ -2,10 +2,7 @@
 
 #include <QColor>
 #include <QGridLayout>
-#include <QHBoxLayout>
-#include <QKeyEvent>
 #include <QLabel>
-#include <QMouseEvent>
 #include <QPushButton>
 #include <QSlider>
 #include <QVBoxLayout>
@@ -29,20 +26,9 @@ const Band kBands[8] = {
 } // namespace
 
 ColorMixerPanel::ColorMixerPanel(QWidget *parent)
-    : QWidget(parent)
+    : FloatingToolPanel(QStringLiteral("colorMixerPanel"), QStringLiteral("Color Mixer (HSL)"),
+                        kPanelWidth, parent)
 {
-    setObjectName(QStringLiteral("colorMixerPanel"));
-    setAttribute(Qt::WA_StyledBackground, true);
-    setFixedWidth(kPanelWidth);
-
-    auto *title = new QLabel(QStringLiteral("Color Mixer (HSL)"), this);
-    title->setObjectName(QStringLiteral("toolTitle"));
-
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(16, 14, 16, 16);
-    layout->setSpacing(10);
-    layout->addWidget(title);
-
     // Eight colour swatches, two rows of four; picking one loads its sliders.
     auto *swatches = new QGridLayout;
     swatches->setContentsMargins(0, 0, 0, 0);
@@ -66,11 +52,11 @@ ColorMixerPanel::ColorMixerPanel(QWidget *parent)
         m_bandBtn[i] = b;
         swatches->addWidget(b, i / 4, i % 4);
     }
-    layout->addLayout(swatches);
+    contentLayout()->addLayout(swatches);
 
     m_bandLabel = new QLabel(this);
     m_bandLabel->setObjectName(QStringLiteral("rowName"));
-    layout->addWidget(m_bandLabel);
+    contentLayout()->addWidget(m_bandLabel);
 
     m_hue = addRow(QStringLiteral("Hue"), static_cast<int>(ColorMixerNode::kMinAmount),
                    static_cast<int>(ColorMixerNode::kMaxAmount), &m_hueValue);
@@ -78,45 +64,8 @@ ColorMixerPanel::ColorMixerPanel(QWidget *parent)
                    static_cast<int>(ColorMixerNode::kMaxAmount), &m_satValue);
     m_lum = addRow(QStringLiteral("Luminance"), static_cast<int>(ColorMixerNode::kMinAmount),
                    static_cast<int>(ColorMixerNode::kMaxAmount), &m_lumValue);
-
-    setStyleSheet(QStringLiteral(R"(
-        #colorMixerPanel {
-            background: #1c1c1f;
-            border: 1px solid #38383d;
-            border-radius: 10px;
-        }
-        #toolTitle { color: #e8e8ea; font-size: 13px; }
-        #rowName { color: #b4b4b8; font-size: 12px; }
-        #rowValue { color: #d6d6d9; font-size: 12px; }
-    )"));
-
-    hide();
-}
-
-QSlider *ColorMixerPanel::addRow(const QString &name, int min, int max, QLabel **valueOut)
-{
-    auto *header = new QHBoxLayout;
-    header->setContentsMargins(0, 0, 0, 0);
-    auto *nameLabel = new QLabel(name, this);
-    nameLabel->setObjectName(QStringLiteral("rowName"));
-    auto *valueLabel = new QLabel(this);
-    valueLabel->setObjectName(QStringLiteral("rowValue"));
-    valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    header->addWidget(nameLabel);
-    header->addStretch(1);
-    header->addWidget(valueLabel);
-
-    auto *slider = new QSlider(Qt::Horizontal, this);
-    slider->setRange(min, max);
-    slider->installEventFilter(this);
-    connect(slider, &QSlider::valueChanged, this, &ColorMixerPanel::onSliderChanged);
-
-    auto *layout = static_cast<QVBoxLayout *>(this->layout());
-    layout->addLayout(header);
-    layout->addWidget(slider);
-
-    *valueOut = valueLabel;
-    return slider;
+    for (QSlider *s : {m_hue, m_sat, m_lum})
+        connect(s, &QSlider::valueChanged, this, &ColorMixerPanel::onSliderChanged);
 }
 
 void ColorMixerPanel::selectBand(int index)
@@ -164,52 +113,4 @@ void ColorMixerPanel::onSliderChanged()
     m_values.lum[m_selected] = static_cast<float>(m_lum->value());
     refreshLabels();
     emit valuesChanged(m_values);
-}
-
-void ColorMixerPanel::mousePressEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = true;
-        m_dragOffset = event->pos();
-        setCursor(Qt::ClosedHandCursor);
-    }
-}
-
-void ColorMixerPanel::mouseMoveEvent(QMouseEvent *event)
-{
-    if (!m_dragging || !parentWidget())
-        return;
-    const QPoint cursorInParent =
-        parentWidget()->mapFromGlobal(event->globalPosition().toPoint());
-    QPoint topLeft = cursorInParent - m_dragOffset;
-    const QRect bounds = parentWidget()->rect();
-    topLeft.setX(std::clamp(topLeft.x(), 0, bounds.width() - width()));
-    topLeft.setY(std::clamp(topLeft.y(), 0, bounds.height() - height()));
-    move(topLeft);
-}
-
-void ColorMixerPanel::mouseReleaseEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = false;
-        unsetCursor();
-    }
-}
-
-bool ColorMixerPanel::eventFilter(QObject *watched, QEvent *event)
-{
-    if (event->type() == QEvent::KeyPress
-        && (watched == m_hue || watched == m_sat || watched == m_lum)) {
-        auto *ke = static_cast<QKeyEvent *>(event);
-        switch (ke->key()) {
-        case Qt::Key_Escape:
-        case Qt::Key_Return:
-        case Qt::Key_Enter:
-            emit closed();
-            return true;
-        default:
-            break;
-        }
-    }
-    return QWidget::eventFilter(watched, event);
 }

@@ -1,8 +1,7 @@
 #pragma once
 
 #include "core/LensCorrectionNode.h" // Params
-
-#include <QWidget>
+#include "ui/FloatingToolPanel.h"
 
 class QLabel;
 class QPushButton;
@@ -17,7 +16,7 @@ class QSlider;
 //
 // The panel only edits correction parameters; the lens *identity* (camera/lens
 // model, focal, aperture…) is carried verbatim from the node it was revealed for.
-class LensPanel : public QWidget {
+class LensPanel : public FloatingToolPanel {
     Q_OBJECT
 
 public:
@@ -30,16 +29,8 @@ public:
 
 signals:
     void paramsChanged(const LensCorrectionNode::Params &params);
-    void closed();
-
-protected:
-    bool eventFilter(QObject *watched, QEvent *event) override;
-    void mousePressEvent(QMouseEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
-    void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
-    QSlider *addRow(const QString &name, int min, int max, QLabel **valueOut);
     QPushButton *addToggle(const QString &text);
     void onChanged();
     void refreshLabels();
@@ -64,7 +55,4 @@ private:
     QLabel *m_rotateValue = nullptr;
     QSlider *m_scale = nullptr;
     QLabel *m_scaleValue = nullptr;
-
-    bool m_dragging = false;
-    QPoint m_dragOffset;
 };

@@ -1,9 +1,9 @@
 #pragma once
 
 #include "core/CropState.h"
+#include "ui/FloatingToolPanel.h"
 
 #include <QVector>
-#include <QWidget>
 
 class QLabel;
 class QPushButton;
@@ -13,7 +13,7 @@ class QSlider;
 // 90° rotate (CW/CCW), horizontal/vertical flip, a fine straighten slider, and
 // reset. It fires granular actions; MainWindow applies them to the graph's
 // CropState. Closes on Esc/Enter.
-class CropPanel : public QWidget {
+class CropPanel : public FloatingToolPanel {
     Q_OBJECT
 
 public:
@@ -29,13 +29,6 @@ signals:
     void flipRequested(bool horizontal);
     void straightenChanged(double degrees); // fine tilt, [-45, 45]
     void resetRequested();
-    void closed();
-
-protected:
-    bool eventFilter(QObject *watched, QEvent *event) override;
-    void mousePressEvent(QMouseEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
-    void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
     void selectAspectButton(int index);
@@ -46,7 +39,4 @@ private:
     QSlider *m_straighten = nullptr;
     QLabel *m_straightenValue = nullptr;
     double m_originalAspect = 1.0;
-
-    bool m_dragging = false;
-    QPoint m_dragOffset;
 };

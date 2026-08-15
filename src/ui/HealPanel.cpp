@@ -2,27 +2,17 @@
 
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QMouseEvent>
 #include <QPushButton>
 #include <QSlider>
 #include <QVBoxLayout>
-
-#include <algorithm>
 
 namespace {
 constexpr int kPanelWidth = 248;
 }
 
 HealPanel::HealPanel(QWidget *parent)
-    : QWidget(parent)
+    : FloatingToolPanel(QStringLiteral("healPanel"), QStringLiteral("Heal"), kPanelWidth, parent)
 {
-    setObjectName(QStringLiteral("healPanel"));
-    setAttribute(Qt::WA_StyledBackground, true);
-    setFixedWidth(kPanelWidth);
-
-    auto *title = new QLabel(QStringLiteral("Heal"), this);
-    title->setObjectName(QStringLiteral("toolTitle"));
-
     m_addButton = new QPushButton(QStringLiteral("Paint"), this);
     m_subButton = new QPushButton(QStringLiteral("Erase"), this);
     m_addButton->setCheckable(true);
@@ -48,15 +38,11 @@ HealPanel::HealPanel(QWidget *parent)
     modeRow->addWidget(m_subButton);
     modeRow->addStretch(1);
     modeRow->addWidget(clear);
+    contentLayout()->addLayout(modeRow);
 
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(16, 14, 16, 16);
-    layout->setSpacing(8);
-    layout->addWidget(title);
-    layout->addLayout(modeRow);
-    m_size = addRow(QStringLiteral("Size"), 30, &m_sizeValue);
+    m_size = addBrushRow(QStringLiteral("Size"), 30, &m_sizeValue);
     m_size->setToolTip(QStringLiteral("Hold S and scroll the wheel over the image"));
-    m_hardness = addRow(QStringLiteral("Hardness"), 50, &m_hardnessValue);
+    m_hardness = addBrushRow(QStringLiteral("Hardness"), 50, &m_hardnessValue);
     m_hardness->setToolTip(QStringLiteral("Hold H and scroll the wheel over the image"));
 
     // Fill quality: Detailed (Criminisi exemplar) vs Fast (Telea diffusion).
@@ -71,7 +57,7 @@ HealPanel::HealPanel(QWidget *parent)
     qualityRow->setContentsMargins(0, 0, 0, 0);
     qualityRow->addWidget(m_qualityButton);
     qualityRow->addStretch(1);
-    layout->addLayout(qualityRow);
+    contentLayout()->addLayout(qualityRow);
 
     auto *hint = new QLabel(
         QStringLiteral("paint over a blemish · S / H + scroll resize the brush · "
@@ -79,41 +65,33 @@ HealPanel::HealPanel(QWidget *parent)
         this);
     hint->setObjectName(QStringLiteral("section"));
     hint->setWordWrap(true);
-    layout->addWidget(hint);
+    contentLayout()->addWidget(hint);
 
-    setStyleSheet(QStringLiteral(R"(
-        #healPanel {
-            background: #1c1c1f; border: 1px solid #38383d; border-radius: 10px;
-        }
-        #toolTitle { color: #e8e8ea; font-size: 13px; }
+    appendStyleSheet(QStringLiteral(R"(
         #section { color: #8a8a90; font-size: 11px; }
-        #rowName { color: #b4b4b8; font-size: 12px; }
-        #rowValue { color: #d6d6d9; font-size: 12px; }
-        QPushButton {
-            background: #2a2a2e; color: #e8e8ea; border: 1px solid #38383d;
-            border-radius: 6px; padding: 2px 8px; font-size: 11px;
-        }
-        QPushButton:hover { background: #34343a; }
-        QPushButton:checked { background: #3a3550; border-color: #7F77DD; }
+        QPushButton { padding: 2px 8px; font-size: 11px; }
     )"));
-
-    hide();
 }
 
-QSlider *HealPanel::addRow(const QString &name, int def, QLabel **valueOut)
+// Deliberately not FloatingToolPanel::addRow(): that installs an event filter
+// that consumes Esc/Return/Enter to emit closed() — which HealPanel doesn't
+// have. It closes via the normal keyPress bubbling to MainWindow instead
+// (there's no per-tool closed() signal for it to intercept and eat), so its
+// sliders must not swallow that key first.
+QSlider *HealPanel::addBrushRow(const QString &name, int def, QLabel **valueOut)
 {
     auto *header = new QHBoxLayout;
     header->setContentsMargins(0, 0, 0, 0);
-    auto *nameLabel = new QLabel(name);
+    auto *nameLabel = new QLabel(name, this);
     nameLabel->setObjectName(QStringLiteral("rowName"));
-    auto *valueLabel = new QLabel(QString::number(def));
+    auto *valueLabel = new QLabel(QString::number(def), this);
     valueLabel->setObjectName(QStringLiteral("rowValue"));
     valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     header->addWidget(nameLabel);
     header->addStretch(1);
     header->addWidget(valueLabel);
 
-    auto *slider = new QSlider(Qt::Horizontal);
+    auto *slider = new QSlider(Qt::Horizontal, this);
     slider->setRange(1, 100);
     slider->setValue(def);
     connect(slider, &QSlider::valueChanged, this, [this, valueLabel](int v) {
@@ -121,9 +99,8 @@ QSlider *HealPanel::addRow(const QString &name, int def, QLabel **valueOut)
         emitSettings();
     });
 
-    auto *l = static_cast<QVBoxLayout *>(layout());
-    l->addLayout(header);
-    l->addWidget(slider);
+    contentLayout()->addLayout(header);
+    contentLayout()->addWidget(slider);
     *valueOut = valueLabel;
     return slider;
 }
@@ -163,34 +140,4 @@ void HealPanel::setBrushParams(int size, int hardness)
     m_hardness->setValue(hardness);
     m_sizeValue->setText(QString::number(size));
     m_hardnessValue->setText(QString::number(hardness));
-}
-
-void HealPanel::mousePressEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = true;
-        m_dragOffset = event->pos();
-        setCursor(Qt::ClosedHandCursor);
-    }
-}
-
-void HealPanel::mouseMoveEvent(QMouseEvent *event)
-{
-    if (!m_dragging || !parentWidget())
-        return;
-    const QPoint cursorInParent =
-        parentWidget()->mapFromGlobal(event->globalPosition().toPoint());
-    QPoint topLeft = cursorInParent - m_dragOffset;
-    const QRect bounds = parentWidget()->rect();
-    topLeft.setX(std::clamp(topLeft.x(), 0, bounds.width() - width()));
-    topLeft.setY(std::clamp(topLeft.y(), 0, bounds.height() - height()));
-    move(topLeft);
-}
-
-void HealPanel::mouseReleaseEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = false;
-        unsetCursor();
-    }
 }

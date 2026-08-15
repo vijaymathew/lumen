@@ -5,13 +5,10 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
-#include <QMouseEvent>
 #include <QScrollArea>
 #include <QSlider>
 #include <QToolButton>
 #include <QVBoxLayout>
-
-#include <algorithm>
 
 namespace {
 constexpr int kPanelWidth = 260;
@@ -21,15 +18,9 @@ constexpr int kMaxListHeight = 460; // scroll beyond this
 } // namespace
 
 PresetsPanel::PresetsPanel(QWidget *parent)
-    : QWidget(parent)
+    : FloatingToolPanel(QStringLiteral("presetsPanel"), QStringLiteral("Presets"), kPanelWidth,
+                        parent)
 {
-    setObjectName(QStringLiteral("presetsPanel"));
-    setAttribute(Qt::WA_StyledBackground, true);
-    setFixedWidth(kPanelWidth);
-
-    auto *title = new QLabel(QStringLiteral("Presets"), this);
-    title->setObjectName(QStringLiteral("toolTitle"));
-
     // Amount: blends the applied preset toward the original (its layer opacity).
     auto *amountLabel = new QLabel(QStringLiteral("Amount"), this);
     amountLabel->setObjectName(QStringLiteral("rowName"));
@@ -41,7 +32,11 @@ PresetsPanel::PresetsPanel(QWidget *parent)
     amountHeader->addWidget(amountLabel);
     amountHeader->addStretch(1);
     amountHeader->addWidget(m_amountValue);
+    contentLayout()->addLayout(amountHeader);
 
+    // Hand-built (not FloatingToolPanel::addRow()): this panel has no closed()
+    // signal, it closes via the normal keyPress bubbling to MainWindow, so its
+    // slider must not install an event filter that would eat Esc/Enter first.
     m_amount = new QSlider(Qt::Horizontal, this);
     m_amount->setRange(0, 100);
     m_amount->setValue(100);
@@ -50,6 +45,7 @@ PresetsPanel::PresetsPanel(QWidget *parent)
         if (!m_amount->signalsBlocked())
             emit amountChanged(v);
     });
+    contentLayout()->addWidget(m_amount);
 
     // The rows live inside a scroll area so a long library stays usable.
     m_list = new QWidget;
@@ -65,22 +61,9 @@ PresetsPanel::PresetsPanel(QWidget *parent)
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setMaximumHeight(kMaxListHeight);
+    contentLayout()->addWidget(scroll);
 
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(16, 14, 16, 16);
-    layout->setSpacing(10);
-    layout->addWidget(title);
-    layout->addLayout(amountHeader);
-    layout->addWidget(m_amount);
-    layout->addWidget(scroll);
-
-    setStyleSheet(QStringLiteral(R"(
-        #presetsPanel {
-            background: #1c1c1f;
-            border: 1px solid #38383d;
-            border-radius: 10px;
-        }
-        #toolTitle { color: #e8e8ea; font-size: 13px; }
+    appendStyleSheet(QStringLiteral(R"(
         #presetsScroll { background: transparent; }
         #sectionHeader {
             color: #8a8a90; font-size: 11px; font-weight: bold;
@@ -95,8 +78,6 @@ PresetsPanel::PresetsPanel(QWidget *parent)
             border: 2px solid #5a8dee; background: #26303f; color: #ffffff;
         }
     )"));
-
-    hide();
 }
 
 void PresetsPanel::setItems(const QVector<Item> &items)
@@ -181,34 +162,4 @@ void PresetsPanel::setAmount(int percent)
     const QSignalBlocker block(m_amount); // seed without emitting amountChanged
     m_amount->setValue(percent);
     m_amountValue->setText(QStringLiteral("%1%").arg(m_amount->value()));
-}
-
-void PresetsPanel::mousePressEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = true;
-        m_dragOffset = event->pos();
-        setCursor(Qt::ClosedHandCursor);
-    }
-}
-
-void PresetsPanel::mouseMoveEvent(QMouseEvent *event)
-{
-    if (!m_dragging || !parentWidget())
-        return;
-    const QPoint cursorInParent =
-        parentWidget()->mapFromGlobal(event->globalPosition().toPoint());
-    QPoint topLeft = cursorInParent - m_dragOffset;
-    const QRect bounds = parentWidget()->rect();
-    topLeft.setX(std::clamp(topLeft.x(), 0, bounds.width() - width()));
-    topLeft.setY(std::clamp(topLeft.y(), 0, bounds.height() - height()));
-    move(topLeft);
-}
-
-void PresetsPanel::mouseReleaseEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = false;
-        unsetCursor();
-    }
 }

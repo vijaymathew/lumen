@@ -1,11 +1,10 @@
 #pragma once
 
 #include "core/ColorGradeNode.h"
-
-#include <QPoint>
-#include <QWidget>
+#include "ui/FloatingToolPanel.h"
 
 class QCheckBox;
+class QHBoxLayout;
 class QSlider;
 class ColorWheel;
 
@@ -14,7 +13,7 @@ class ColorWheel;
 // slider, plus an enable toggle. It drives the live preview via valuesChanged()
 // and closes on Esc/Enter. Tool panels float (DESIGN.md §4.6) — draggable
 // anywhere but the wheels/sliders.
-class ColorGradePanel : public QWidget {
+class ColorGradePanel : public FloatingToolPanel {
     Q_OBJECT
 
 public:
@@ -24,19 +23,13 @@ public:
 
 signals:
     void valuesChanged(const ColorGradeValues &values);
-    void closed();
-
-protected:
-    bool eventFilter(QObject *watched, QEvent *event) override;
-    void mousePressEvent(QMouseEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
-    void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
     struct Wheel {
         ColorWheel *wheel = nullptr;
         QSlider *master = nullptr;
     };
+    Wheel addColumn(QHBoxLayout *wheels, const QString &name);
     void onChanged();
     ColorGradeValues currentValues() const;
 
@@ -44,7 +37,4 @@ private:
     Wheel m_lift;
     Wheel m_gamma;
     Wheel m_gain;
-
-    bool m_dragging = false;
-    QPoint m_dragOffset;
 };

@@ -3,37 +3,24 @@
 #include <QCheckBox>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QMouseEvent>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
-
-#include <algorithm>
 
 namespace {
 constexpr int kPanelWidth = 260;
 }
 
 AdjustmentsPanel::AdjustmentsPanel(QWidget *parent)
-    : QWidget(parent)
+    : FloatingToolPanel(QStringLiteral("adjustmentsPanel"), QStringLiteral("Adjustments"),
+                        kPanelWidth, parent)
 {
-    setObjectName(QStringLiteral("adjustmentsPanel"));
-    setAttribute(Qt::WA_StyledBackground, true);
-    setFixedWidth(kPanelWidth);
-
-    auto *title = new QLabel(QStringLiteral("Adjustments"), this);
-    title->setObjectName(QStringLiteral("toolTitle"));
-
     m_compare = new QPushButton(QStringLiteral("Before / After"), this);
     m_compare->setCheckable(true);
     m_compare->setToolTip(QStringLiteral("Show the original (\\)"));
     connect(m_compare, &QPushButton::toggled, this, &AdjustmentsPanel::compareToggled);
-
-    auto *headerRow = new QHBoxLayout;
-    headerRow->setContentsMargins(0, 0, 0, 0);
-    headerRow->addWidget(title);
-    headerRow->addStretch(1);
-    headerRow->addWidget(m_compare);
+    headerRow()->addStretch(1);
+    headerRow()->addWidget(m_compare);
 
     m_empty = new QLabel(QStringLiteral("No adjustments yet"), this);
     m_empty->setObjectName(QStringLiteral("rowName"));
@@ -42,26 +29,10 @@ AdjustmentsPanel::AdjustmentsPanel(QWidget *parent)
     m_listLayout->setContentsMargins(0, 0, 0, 0);
     m_listLayout->setSpacing(4);
 
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(16, 14, 16, 16);
-    layout->setSpacing(10);
-    layout->addLayout(headerRow);
-    layout->addWidget(m_empty);
-    layout->addLayout(m_listLayout);
+    contentLayout()->addWidget(m_empty);
+    contentLayout()->addLayout(m_listLayout);
 
-    setStyleSheet(QStringLiteral(R"(
-        #adjustmentsPanel {
-            background: #1c1c1f;
-            border: 1px solid #38383d;
-            border-radius: 10px;
-        }
-        #toolTitle { color: #e8e8ea; font-size: 13px; }
-        #rowName { color: #b4b4b8; font-size: 12px; }
-        QPushButton {
-            background: #2a2a2e; color: #e8e8ea; border: 1px solid #38383d;
-            border-radius: 6px; padding: 3px 10px; font-size: 12px;
-        }
-        QPushButton:hover { background: #34343a; }
+    appendStyleSheet(QStringLiteral(R"(
         QPushButton:checked { background: #3a5a8a; border-color: #4a6aa0; }
         QPushButton#adjName { text-align: left; border: none; background: transparent;
                               padding: 3px 6px; }
@@ -70,8 +41,6 @@ AdjustmentsPanel::AdjustmentsPanel(QWidget *parent)
         QPushButton#adjDelete { padding: 2px 8px; color: #d08a8a; }
         QPushButton#adjDelete:hover { background: #4a2a2a; }
     )"));
-
-    hide();
 }
 
 void AdjustmentsPanel::clearRows()
@@ -134,34 +103,4 @@ void AdjustmentsPanel::reveal()
     adjustSize();
     show();
     raise();
-}
-
-void AdjustmentsPanel::mousePressEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = true;
-        m_dragOffset = event->pos();
-        setCursor(Qt::ClosedHandCursor);
-    }
-}
-
-void AdjustmentsPanel::mouseMoveEvent(QMouseEvent *event)
-{
-    if (!m_dragging || !parentWidget())
-        return;
-    const QPoint cursorInParent =
-        parentWidget()->mapFromGlobal(event->globalPosition().toPoint());
-    QPoint topLeft = cursorInParent - m_dragOffset;
-    const QRect bounds = parentWidget()->rect();
-    topLeft.setX(std::clamp(topLeft.x(), 0, bounds.width() - width()));
-    topLeft.setY(std::clamp(topLeft.y(), 0, bounds.height() - height()));
-    move(topLeft);
-}
-
-void AdjustmentsPanel::mouseReleaseEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = false;
-        unsetCursor();
-    }
 }

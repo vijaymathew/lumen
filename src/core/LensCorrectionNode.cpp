@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #ifdef LUMEN_HAVE_LENSFUN
@@ -295,7 +296,7 @@ Image LensCorrectionNode::apply(const Image &input) const
     if (doAuto && m_params.vignetting && bands >= 3) {
         float crop = 0;
         if (const lfLens *lens = findLens(m_params, crop)) {
-            auto *mod = new lfModifier(lens, crop, w, h);
+            auto mod = std::make_unique<lfModifier>(lens, crop, w, h);
             mod->Initialize(lens, LF_PF_F32, m_params.focalLength, m_params.aperture,
                             m_params.focusDistance > 0 ? m_params.focusDistance : 1000.0f,
                             1.0f, lens->Type, LF_MODIFY_VIGNETTING, false);
@@ -312,7 +313,6 @@ Image LensCorrectionNode::apply(const Image &input) const
             if (amt < 0.999f)
                 for (long long i = 0; i < n * bands; ++i)
                     px[i] = orig[i] + amt * (px[i] - orig[i]);
-            delete mod;
         }
     }
 #endif
@@ -345,7 +345,7 @@ Image LensCorrectionNode::apply(const Image &input) const
             const bool wantTca = m_params.tca;
             if (wantTca)
                 flags |= LF_MODIFY_TCA;
-            auto *mod = new lfModifier(lens, crop, w, h);
+            auto mod = std::make_unique<lfModifier>(lens, crop, w, h);
             const int got = mod->Initialize(
                 lens, LF_PF_F32, m_params.focalLength, m_params.aperture,
                 m_params.focusDistance > 0 ? m_params.focusDistance : 1000.0f, 1.0f,
@@ -407,7 +407,6 @@ Image LensCorrectionNode::apply(const Image &input) const
                     }
                 }
             }
-            delete mod;
         }
     }
 #endif

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <QWidget>
+#include "ui/FloatingToolPanel.h"
 
 class QLabel;
 class QPushButton;
@@ -11,7 +11,7 @@ class QSlider;
 // and Hardness control the brush. The actual inpainting happens on stroke end /
 // commit in MainWindow; the painting reuses the shared brush + session-undo
 // infrastructure.
-class HealPanel : public QWidget {
+class HealPanel : public FloatingToolPanel {
     Q_OBJECT
 
 public:
@@ -27,13 +27,8 @@ signals:
     void clearRequested();
     void qualityChanged(bool highQuality);
 
-protected:
-    void mousePressEvent(QMouseEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
-    void mouseReleaseEvent(QMouseEvent *event) override;
-
 private:
-    QSlider *addRow(const QString &name, int def, QLabel **valueOut);
+    QSlider *addBrushRow(const QString &name, int def, QLabel **valueOut);
     void emitSettings();
 
     QPushButton *m_addButton = nullptr;
@@ -45,7 +40,4 @@ private:
     QLabel *m_sizeValue = nullptr;
     QLabel *m_hardnessValue = nullptr;
     bool m_add = true;
-
-    bool m_dragging = false;
-    QPoint m_dragOffset;
 };
