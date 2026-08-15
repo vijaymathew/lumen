@@ -69,6 +69,7 @@ struct LensMetadata {
     float iso = 0;           // ISO speed (0 = unknown)
     float shutter = 0;       // exposure time in seconds (0 = unknown)
     QDateTime captureTime;   // capture timestamp (invalid = unknown)
+    bool monochrome = false; // true for monochrome-sensor cameras (e.g. Leica M Monochrom)
     ColorProfile color;      // camera colour matrices for white balance
 };
 
@@ -78,6 +79,12 @@ const QStringList &extensions();
 
 // True if `path`'s extension is a known camera-RAW format (case-insensitive).
 bool isRawPath(const QString &path);
+
+// Reads just the camera/lens identity and capture settings from a RAW's header —
+// no unpack, no demosaic — so it's cheap enough to call for every file in a
+// folder (the image picker's metadata panel and folder statistics use this).
+// False if the file couldn't be opened/parsed by LibRaw.
+bool readMetadata(const QString &path, LensMetadata *meta);
 
 // Decodes a RAW file to a 16-bit sRGB Image. Null Image + *error on failure. When
 // `meta` is non-null it receives the camera/lens identity from EXIF. `opts`

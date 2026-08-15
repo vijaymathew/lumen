@@ -146,6 +146,8 @@ add_library(lumen_core STATIC
     src/core/DefringeNode.cpp
     src/core/Histogram.h
     src/core/Histogram.cpp
+    src/core/ImageStats.h
+    src/core/ImageStats.cpp
 )
 target_include_directories(lumen_core PUBLIC src)
 target_link_libraries(lumen_core PUBLIC Qt6::Core Qt6::Gui PkgConfig::VIPS PkgConfig::LIBRAW)
@@ -222,6 +224,14 @@ qt_add_executable(lumen
     src/ui/ExportDialog.cpp
     src/ui/ImageOpenDialog.h
     src/ui/ImageOpenDialog.cpp
+    src/ui/ImageGridView.h
+    src/ui/ImageGridView.cpp
+    src/ui/CarouselView.h
+    src/ui/CarouselView.cpp
+    src/ui/ImageMetaPanel.h
+    src/ui/ImageMetaPanel.cpp
+    src/ui/ImageStatisticsDialog.h
+    src/ui/ImageStatisticsDialog.cpp
     src/ui/ThumbnailProxyModel.h
     src/ui/ThumbnailProxyModel.cpp
     src/ui/AppIcon.h
@@ -481,4 +491,9 @@ if(BUILD_TESTING)
     target_link_libraries(grain_test PRIVATE lumen_core)
     target_compile_options(grain_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME grain_test COMMAND grain_test)
+
+    add_executable(imagestats_test tests/imagestats_test.cpp)
+    target_link_libraries(imagestats_test PRIVATE lumen_core)
+    target_compile_options(imagestats_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME imagestats_test COMMAND imagestats_test)
 endif()
