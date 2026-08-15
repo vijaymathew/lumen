@@ -2909,7 +2909,14 @@ void MainWindow::refreshLayersPanel()
 
 void MainWindow::reseedOpenPanels()
 {
-    // Guarded: a layer may not carry every node type (e.g. a selective layer).
+    // Re-shows whatever tool is currently open with the document's current
+    // values — called after anything that can change them out from under an
+    // open panel without going through that panel itself: switching tabs,
+    // binding a freshly-opened document, a history (undo/redo) navigation, or
+    // an explicit "reset to neutral". The first six are per-*layer* nodes, so
+    // they're guarded (a layer may not carry every node type, e.g. a
+    // selective layer); the rest are per-*document* state, always present
+    // once the doc has RAW/lens/crop context to reveal.
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
             m_tonePanel->reveal(toneValuesOf(t));
@@ -2933,6 +2940,24 @@ void MainWindow::reseedOpenPanels()
     if (m_colorGradePanel->isVisible()) {
         if (auto *g = activeColorGrade())
             m_colorGradePanel->reveal(g->values());
+    }
+    if (m_lensPanel->isVisible() && doc().lens) {
+        m_lensPanel->reveal(doc().lens->params(), doc().lens->lensMatched(),
+                            doc().lens->matchedLensName());
+    }
+    if (m_sharpenPanel->isVisible() && doc().sharpen)
+        m_sharpenPanel->reveal(doc().sharpen->values());
+    if (m_denoisePanel->isVisible() && doc().denoise)
+        m_denoisePanel->reveal(doc().denoise->values());
+    if (m_defringePanel->isVisible() && doc().defringe)
+        m_defringePanel->reveal(doc().defringe->values());
+    if (m_grainPanel->isVisible() && doc().grain)
+        m_grainPanel->reveal(doc().grain->values());
+    if (m_vignettePanel->isVisible())
+        m_vignettePanel->reveal(doc().graph.vignette());
+    if (m_cropPanel->isVisible()) {
+        m_cropPanel->reveal(doc().graph.crop(), sourceAspect());
+        m_cropGizmo->setRect(doc().graph.crop().rect);
     }
 }
 
@@ -3099,75 +3124,68 @@ void MainWindow::setOverlayGeometryVisible(bool visible)
                      : QStringLiteral("Overlay shapes hidden"));
 }
 
-void MainWindow::openToneTool()
+// --- Shared open/close boilerplate for the ToolActive-mode tool panels -----
+
+void MainWindow::positionToolPanel(QWidget *panel)
 {
     m_input.setMode(InputController::Mode::ToolActive);
-    // Default position: top-right with a margin. The user can drag it from here.
-    m_tonePanel->adjustSize();
-    const int margin = 18;
-    m_tonePanel->move(width() - m_tonePanel->width() - margin, margin);
-    m_tonePanel->reveal(toneValuesOf(activeTune()));
+    panel->adjustSize();
+    constexpr int margin = 18;
+    panel->move(width() - panel->width() - margin, margin);
 }
 
-void MainWindow::closeToneTool()
+void MainWindow::finishToolClose(QWidget *panel)
 {
-    m_tonePanel->hide();
+    panel->hide();
     doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
 
+void MainWindow::openToneTool()
+{
+    positionToolPanel(m_tonePanel);
+    m_tonePanel->reveal(toneValuesOf(activeTune()));
+}
+
+void MainWindow::closeToneTool()
+{
+    finishToolClose(m_tonePanel);
+}
+
 void MainWindow::openCurvesTool()
 {
-    m_input.setMode(InputController::Mode::ToolActive);
-    m_curvesPanel->adjustSize();
-    const int margin = 18;
-    m_curvesPanel->move(width() - m_curvesPanel->width() - margin, margin);
+    positionToolPanel(m_curvesPanel);
     m_curvesPanel->reveal(activeCurves()->curves());
 }
 
 void MainWindow::closeCurvesTool()
 {
-    m_curvesPanel->hide();
-    doc().graph.commit();
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    finishToolClose(m_curvesPanel);
 }
 
 void MainWindow::openLooksTool()
 {
-    m_input.setMode(InputController::Mode::ToolActive);
-    m_looksPanel->adjustSize();
-    const int margin = 18;
-    m_looksPanel->move(width() - m_looksPanel->width() - margin, margin);
+    positionToolPanel(m_looksPanel);
     m_looksPanel->reveal(QFileInfo(activeLut()->sourcePath()).fileName(), activeLut()->intensity());
 }
 
 void MainWindow::closeLooksTool()
 {
-    m_looksPanel->hide();
-    doc().graph.commit();
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    finishToolClose(m_looksPanel);
 }
 
 void MainWindow::openPresetsTool()
 {
-    m_input.setMode(InputController::Mode::ToolActive);
     m_presetsPanel->setAmount(doc().presetAmount); // reflect the current blend
-    refreshPresetThumbnails();                 // preview each look against the current photo
-    m_presetsPanel->adjustSize();
-    const int margin = 18;
-    m_presetsPanel->move(width() - m_presetsPanel->width() - margin, margin);
+    refreshPresetThumbnails(); // preview each look against the current photo
+    positionToolPanel(m_presetsPanel);
     m_presetsPanel->reveal();
 }
 
 void MainWindow::closePresetsTool()
 {
-    m_presetsPanel->hide();
-    doc().graph.commit(); // capture any live Amount-slider change as one undo step
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    finishToolClose(m_presetsPanel); // also captures any live Amount-slider change
 }
 
 void MainWindow::invalidatePresetThumbCache()
@@ -3376,166 +3394,118 @@ bool MainWindow::applyPresetStructure(int amountPct)
 
 void MainWindow::openMonoTool()
 {
-    m_input.setMode(InputController::Mode::ToolActive);
     // Most layers carry a mono node; a layer added by another tool (e.g. a
     // selective layer) may not, so add one on demand.
     if (!activeMono()) {
         doc().graph.addNode(std::make_unique<MonoNode>());
         doc().graph.commit();
     }
-    m_monoPanel->adjustSize();
-    const int margin = 18;
-    m_monoPanel->move(width() - m_monoPanel->width() - margin, margin);
+    positionToolPanel(m_monoPanel);
     m_monoPanel->reveal(activeMono()->values());
 }
 
 void MainWindow::closeMonoTool()
 {
-    m_monoPanel->hide();
-    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    finishToolClose(m_monoPanel);
 }
 
 void MainWindow::openColorMixerTool()
 {
-    m_input.setMode(InputController::Mode::ToolActive);
     // Most layers carry a colour-mixer node; a layer added by another tool may
     // not, so add one on demand.
     if (!activeColorMixer()) {
         doc().graph.addNode(std::make_unique<ColorMixerNode>());
         doc().graph.commit();
     }
-    m_colorMixerPanel->adjustSize();
-    const int margin = 18;
-    m_colorMixerPanel->move(width() - m_colorMixerPanel->width() - margin, margin);
+    positionToolPanel(m_colorMixerPanel);
     m_colorMixerPanel->reveal(activeColorMixer()->values());
 }
 
 void MainWindow::closeColorMixerTool()
 {
-    m_colorMixerPanel->hide();
-    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    finishToolClose(m_colorMixerPanel);
 }
 
 void MainWindow::openColorGradeTool()
 {
-    m_input.setMode(InputController::Mode::ToolActive);
     // A layer added by another tool may not carry a colour-grade node yet.
     if (!activeColorGrade()) {
         doc().graph.addNode(std::make_unique<ColorGradeNode>());
         doc().graph.commit();
     }
-    m_colorGradePanel->adjustSize();
-    const int margin = 18;
-    m_colorGradePanel->move(width() - m_colorGradePanel->width() - margin, margin);
+    positionToolPanel(m_colorGradePanel);
     m_colorGradePanel->reveal(activeColorGrade()->values());
 }
 
 void MainWindow::closeColorGradeTool()
 {
-    m_colorGradePanel->hide();
-    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    finishToolClose(m_colorGradePanel);
 }
 
 void MainWindow::openLensTool()
 {
     if (!doc().lens)
         return;
-    m_input.setMode(InputController::Mode::ToolActive);
-    m_lensPanel->adjustSize();
-    const int margin = 18;
-    m_lensPanel->move(width() - m_lensPanel->width() - margin, margin);
-    const LensCorrectionNode::Params &p = doc().lens->params();
+    positionToolPanel(m_lensPanel);
     // Show the matched Lensfun profile name (which, for fixed-lens compacts,
     // comes from the camera rather than an EXIF lens string).
-    m_lensPanel->reveal(p, doc().lens->lensMatched(), doc().lens->matchedLensName());
+    m_lensPanel->reveal(doc().lens->params(), doc().lens->lensMatched(),
+                        doc().lens->matchedLensName());
 }
 
 void MainWindow::closeLensTool()
 {
-    m_lensPanel->hide();
-    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    finishToolClose(m_lensPanel);
 }
 
 void MainWindow::openSharpenTool()
 {
     if (!doc().sharpen)
         return;
-    m_input.setMode(InputController::Mode::ToolActive);
-    m_sharpenPanel->adjustSize();
-    const int margin = 18;
-    m_sharpenPanel->move(width() - m_sharpenPanel->width() - margin, margin);
+    positionToolPanel(m_sharpenPanel);
     m_sharpenPanel->reveal(doc().sharpen->values());
 }
 
 void MainWindow::closeSharpenTool()
 {
-    m_sharpenPanel->hide();
-    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    finishToolClose(m_sharpenPanel);
 }
 
 void MainWindow::openStructureTool()
 {
     if (!doc().structure)
         return;
-    m_input.setMode(InputController::Mode::ToolActive);
-    m_structurePanel->adjustSize();
-    const int margin = 18;
-    m_structurePanel->move(width() - m_structurePanel->width() - margin, margin);
+    positionToolPanel(m_structurePanel);
     m_structurePanel->reveal(doc().structure->values());
 }
 
 void MainWindow::closeStructureTool()
 {
-    m_structurePanel->hide();
-    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    finishToolClose(m_structurePanel);
 }
 
 void MainWindow::openGrainTool()
 {
     if (!doc().grain)
         return;
-    m_input.setMode(InputController::Mode::ToolActive);
-    m_grainPanel->adjustSize();
-    const int margin = 18;
-    m_grainPanel->move(width() - m_grainPanel->width() - margin, margin);
+    positionToolPanel(m_grainPanel);
     m_grainPanel->reveal(doc().grain->values());
 }
 
 void MainWindow::closeGrainTool()
 {
-    m_grainPanel->hide();
-    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    finishToolClose(m_grainPanel);
 }
 
 void MainWindow::openVignetteTool()
 {
-    m_input.setMode(InputController::Mode::ToolActive);
-    m_vignettePanel->adjustSize();
-    const int margin = 18;
-    m_vignettePanel->move(width() - m_vignettePanel->width() - margin, margin);
+    positionToolPanel(m_vignettePanel);
     m_vignettePanel->reveal(doc().graph.vignette());
 }
 
 void MainWindow::closeVignetteTool()
 {
-    m_vignettePanel->hide();
-    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    finishToolClose(m_vignettePanel);
 }
 
 void MainWindow::updateTitle(const QString &document)
@@ -3568,10 +3538,7 @@ QRectF MainWindow::straightenSafeCropRect(const CropState &c) const
 
 void MainWindow::openCropTool()
 {
-    m_input.setMode(InputController::Mode::ToolActive);
-    m_cropPanel->adjustSize();
-    const int margin = 18;
-    m_cropPanel->move(width() - m_cropPanel->width() - margin, margin);
+    positionToolPanel(m_cropPanel);
     m_cropPanel->reveal(doc().graph.crop(), sourceAspect());
     m_cropAspect = 0.0;
     m_cropGizmo->setAspect(0.0); // free until the user picks a preset
@@ -3587,14 +3554,11 @@ void MainWindow::openCropTool()
 
 void MainWindow::closeCropTool()
 {
-    m_cropPanel->hide();
     m_cropGizmo->hide();
-    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
-    m_input.setMode(InputController::Mode::Browse);
+    finishToolClose(m_cropPanel);
     updateCropView(); // Applied (if cropped) or None
     m_canvas->resetView(); // fit the (now cropped) result to the window
     updatePreview();
-    m_canvas->setFocus();
 }
 
 void MainWindow::updateCropView()
@@ -3622,61 +3586,43 @@ void MainWindow::openDenoiseTool()
 {
     if (!doc().denoise)
         return;
-    m_input.setMode(InputController::Mode::ToolActive);
-    m_denoisePanel->adjustSize();
-    const int margin = 18;
-    m_denoisePanel->move(width() - m_denoisePanel->width() - margin, margin);
+    positionToolPanel(m_denoisePanel);
     m_denoisePanel->reveal(doc().denoise->values());
 }
 
 void MainWindow::closeDenoiseTool()
 {
-    m_denoisePanel->hide();
-    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    finishToolClose(m_denoisePanel);
 }
 
 void MainWindow::openDefringeTool()
 {
     if (!doc().defringe)
         return;
-    m_input.setMode(InputController::Mode::ToolActive);
-    m_defringePanel->adjustSize();
-    const int margin = 18;
-    m_defringePanel->move(width() - m_defringePanel->width() - margin, margin);
+    positionToolPanel(m_defringePanel);
     m_defringePanel->reveal(doc().defringe->values());
 }
 
 void MainWindow::closeDefringeTool()
 {
-    m_defringePanel->hide();
-    doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    finishToolClose(m_defringePanel);
 }
 
 void MainWindow::openRawTool()
 {
-    m_input.setMode(InputController::Mode::ToolActive);
-    m_rawPanel->adjustSize();
-    const int margin = 18;
-    m_rawPanel->move(width() - m_rawPanel->width() - margin, margin);
+    positionToolPanel(m_rawPanel);
     m_rawPanel->reveal(doc().rawOptions, m_rawLensDefaults);
 }
 
 void MainWindow::closeRawTool()
 {
-    m_rawPanel->hide();
     // Flush a pending debounced re-decode so closing doesn't drop the last change
     // (it runs in the background, with the busy badge).
     if (m_redecodeTimer->isActive()) {
         m_redecodeTimer->stop();
         redecodeCurrent();
     }
-    doc().graph.commit(); // capture any lens-correction toggle as one undo step
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    finishToolClose(m_rawPanel); // captures any lens-correction toggle as one undo step
 }
 
 void MainWindow::toggleHistogram()
@@ -4292,10 +4238,7 @@ void MainWindow::endMaskBrushSession()
 
 void MainWindow::openHealTool()
 {
-    m_input.setMode(InputController::Mode::ToolActive);
-    m_healPanel->adjustSize();
-    const int margin = 18;
-    m_healPanel->move(width() - m_healPanel->width() - margin, margin);
+    positionToolPanel(m_healPanel);
     m_healPanel->reveal(m_brushSize, m_brushHardness, m_brushAdd, doc().heal->highQuality());
 
     // Restore the heal session from the node (may be empty).
@@ -4314,7 +4257,6 @@ void MainWindow::openHealTool()
 
 void MainWindow::closeHealTool()
 {
-    m_healPanel->hide();
     m_canvas->setBrushMode(false);
     m_brushTarget = BrushTarget::None;
     m_healPainting = false;
@@ -4323,9 +4265,7 @@ void MainWindow::closeHealTool()
     updateCropView(); // back to the cropped browse view
     refreshBaseImage();
     updatePreview();
-    doc().graph.commit();
-    m_input.setMode(InputController::Mode::Browse);
-    m_canvas->setFocus();
+    finishToolClose(m_healPanel);
 }
 
 void MainWindow::refreshBaseImage(bool keepView)
@@ -4713,44 +4653,38 @@ void MainWindow::onColorPicked(const QPointF &norm)
 
 void MainWindow::closeActiveTool()
 {
-    if (m_tonePanel->isVisible())
-        closeToneTool();
-    else if (m_curvesPanel->isVisible())
-        closeCurvesTool();
-    else if (m_looksPanel->isVisible())
-        closeLooksTool();
-    else if (m_presetsPanel->isVisible())
-        closePresetsTool();
-    else if (m_monoPanel->isVisible())
-        closeMonoTool();
-    else if (m_colorMixerPanel->isVisible())
-        closeColorMixerTool();
-    else if (m_colorGradePanel->isVisible())
-        closeColorGradeTool();
-    else if (m_lensPanel->isVisible())
-        closeLensTool();
-    else if (m_sharpenPanel->isVisible())
-        closeSharpenTool();
-    else if (m_structurePanel->isVisible())
-        closeStructureTool();
-    else if (m_denoisePanel->isVisible())
-        closeDenoiseTool();
-    else if (m_defringePanel->isVisible())
-        closeDefringeTool();
-    else if (m_rawPanel->isVisible())
-        closeRawTool();
-    else if (m_grainPanel->isVisible())
-        closeGrainTool();
-    else if (m_vignettePanel->isVisible())
-        closeVignetteTool();
-    else if (m_cropPanel->isVisible())
-        closeCropTool();
-    else if (m_healPanel->isVisible())
-        closeHealTool();
-    else {
-        m_input.setMode(InputController::Mode::Browse);
-        m_canvas->setFocus();
+    // Table-driven dispatch by visibility — at most one of these is ever shown
+    // at a time (opening any of them closes whichever was open first).
+    const struct {
+        QWidget *panel;
+        void (MainWindow::*close)();
+    } tools[] = {
+        {m_tonePanel, &MainWindow::closeToneTool},
+        {m_curvesPanel, &MainWindow::closeCurvesTool},
+        {m_looksPanel, &MainWindow::closeLooksTool},
+        {m_presetsPanel, &MainWindow::closePresetsTool},
+        {m_monoPanel, &MainWindow::closeMonoTool},
+        {m_colorMixerPanel, &MainWindow::closeColorMixerTool},
+        {m_colorGradePanel, &MainWindow::closeColorGradeTool},
+        {m_lensPanel, &MainWindow::closeLensTool},
+        {m_sharpenPanel, &MainWindow::closeSharpenTool},
+        {m_structurePanel, &MainWindow::closeStructureTool},
+        {m_denoisePanel, &MainWindow::closeDenoiseTool},
+        {m_defringePanel, &MainWindow::closeDefringeTool},
+        {m_rawPanel, &MainWindow::closeRawTool},
+        {m_grainPanel, &MainWindow::closeGrainTool},
+        {m_vignettePanel, &MainWindow::closeVignetteTool},
+        {m_cropPanel, &MainWindow::closeCropTool},
+        {m_healPanel, &MainWindow::closeHealTool},
+    };
+    for (const auto &t : tools) {
+        if (t.panel->isVisible()) {
+            (this->*t.close)();
+            return;
+        }
     }
+    m_input.setMode(InputController::Mode::Browse);
+    m_canvas->setFocus();
 }
 
 void MainWindow::doUndo()
@@ -4785,50 +4719,8 @@ void MainWindow::afterHistoryChange()
         m_brushMask = doc().heal->healMask(); // sync session to restored state
         m_brushUndo.clear();
     }
-    // If a tool is open, reseed its control from the restored state (guarded —
-    // a layer may not carry every node type, e.g. a selective layer has tune only).
-    if (m_tonePanel->isVisible()) {
-        if (auto *t = activeTune())
-            m_tonePanel->reveal(toneValuesOf(t));
-    }
-    if (m_curvesPanel->isVisible()) {
-        if (auto *c = activeCurves())
-            m_curvesPanel->reveal(c->curves());
-    }
-    if (m_looksPanel->isVisible()) {
-        if (auto *l = activeLut())
-            m_looksPanel->reveal(QFileInfo(l->sourcePath()).fileName(), l->intensity());
-    }
-    if (m_monoPanel->isVisible()) {
-        if (auto *mono = activeMono())
-            m_monoPanel->reveal(mono->values());
-    }
-    if (m_colorMixerPanel->isVisible()) {
-        if (auto *cm = activeColorMixer())
-            m_colorMixerPanel->reveal(cm->values());
-    }
-    if (m_colorGradePanel->isVisible()) {
-        if (auto *g = activeColorGrade())
-            m_colorGradePanel->reveal(g->values());
-    }
-    if (m_lensPanel->isVisible() && doc().lens) {
-        m_lensPanel->reveal(doc().lens->params(), doc().lens->lensMatched(),
-                            doc().lens->matchedLensName());
-    }
-    if (m_sharpenPanel->isVisible() && doc().sharpen)
-        m_sharpenPanel->reveal(doc().sharpen->values());
-    if (m_denoisePanel->isVisible() && doc().denoise)
-        m_denoisePanel->reveal(doc().denoise->values());
-    if (m_defringePanel->isVisible() && doc().defringe)
-        m_defringePanel->reveal(doc().defringe->values());
-    if (m_grainPanel->isVisible() && doc().grain)
-        m_grainPanel->reveal(doc().grain->values());
-    if (m_vignettePanel->isVisible())
-        m_vignettePanel->reveal(doc().graph.vignette());
-    if (m_cropPanel->isVisible()) {
-        m_cropPanel->reveal(doc().graph.crop(), sourceAspect());
-        m_cropGizmo->setRect(doc().graph.crop().rect);
-    }
+    // If a tool is open, reseed its control from the restored state.
+    reseedOpenPanels();
     updateCropView(); // push the restored crop/orientation to the canvas
     updateHistogram(); // reflect the restored state (no-op when hidden)
     // If a mask brush is active, resync the working mask to the restored state.

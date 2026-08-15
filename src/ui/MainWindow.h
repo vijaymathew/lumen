@@ -262,6 +262,14 @@ private:
     MonoNode *activeMono() const;
     ColorGradeNode *activeColorGrade() const;
     ColorMixerNode *activeColorMixer() const;
+    // Shared open/close boilerplate for the ToolActive-mode panels below: enter
+    // ToolActive and dock the panel top-right (positionToolPanel — called after
+    // the caller's own "does this doc even have the node" guard, since a couple
+    // of tools bail before ever entering ToolActive); hide + commit + back to
+    // Browse + refocus the canvas (finishToolClose — the last step of every
+    // close*Tool, even the ones with their own extra teardown first).
+    void positionToolPanel(QWidget *panel);
+    void finishToolClose(QWidget *panel);
     void openToneTool();
     void closeToneTool();
     void openCurvesTool();
