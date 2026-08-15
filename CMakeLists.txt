@@ -170,6 +170,7 @@ qt_add_executable(lumen
     src/gpu/CanvasWidget.h
     src/gpu/CanvasWidget.cpp
     src/gpu/ZoomMath.h
+    src/gpu/CropViewTransform.h
     src/ui/FloatingToolPanel.h
     src/ui/FloatingToolPanel.cpp
     src/input/InputController.h
@@ -381,6 +382,12 @@ if(BUILD_TESTING)
     target_link_libraries(zoom_test PRIVATE lumen_core)
     target_compile_options(zoom_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME zoom_test COMMAND zoom_test)
+
+    # CropViewTransform is a header in src/gpu; lumen_core exposes the src include dir.
+    add_executable(cropviewtransform_test tests/cropviewtransform_test.cpp)
+    target_link_libraries(cropviewtransform_test PRIVATE lumen_core)
+    target_compile_options(cropviewtransform_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME cropviewtransform_test COMMAND cropviewtransform_test)
 
     add_executable(curves_test tests/curves_test.cpp)
     target_link_libraries(curves_test PRIVATE lumen_core)

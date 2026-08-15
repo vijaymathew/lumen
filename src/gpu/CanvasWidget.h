@@ -180,6 +180,15 @@ private:
         std::unique_ptr<QRhiShaderResourceBindings> srb;
     };
 
+    // render()'s two halves: upload whatever GPU resources are dirty (texture,
+    // masks, LUTs) into a fresh update batch — `keepAlive` is an out-param
+    // because the source image must stay alive until the batch this function
+    // returns is actually submitted, which happens inside recordPasses(),
+    // called right after in render(); then record the actual pass sequence
+    // (base layer → extra layers, ping-ponging offscreen A/B → present).
+    QRhiResourceUpdateBatch *updateGpuResources(QImage &keepAlive);
+    void recordPasses(QRhiCommandBuffer *cb, QRhiResourceUpdateBatch *u);
+
     void ensurePipeline();
     void ensureOffscreen(); // offscreen targets sized to the image
     void buildSrb();
