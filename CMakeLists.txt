@@ -148,6 +148,8 @@ add_library(lumen_core STATIC
     src/core/Histogram.cpp
     src/core/ImageStats.h
     src/core/ImageStats.cpp
+    src/core/ImageStatsCache.h
+    src/core/ImageStatsCache.cpp
 )
 target_include_directories(lumen_core PUBLIC src)
 target_link_libraries(lumen_core PUBLIC Qt6::Core Qt6::Gui PkgConfig::VIPS PkgConfig::LIBRAW)
@@ -496,4 +498,9 @@ if(BUILD_TESTING)
     target_link_libraries(imagestats_test PRIVATE lumen_core)
     target_compile_options(imagestats_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME imagestats_test COMMAND imagestats_test)
+
+    add_executable(imagestatscache_test tests/imagestatscache_test.cpp)
+    target_link_libraries(imagestatscache_test PRIVATE lumen_core)
+    target_compile_options(imagestatscache_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME imagestatscache_test COMMAND imagestatscache_test)
 endif()

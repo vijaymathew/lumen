@@ -4,7 +4,6 @@
 
 #include <QDialog>
 #include <QFutureWatcher>
-#include <QHash>
 #include <QModelIndex>
 #include <QString>
 #include <QStringList>
@@ -38,7 +37,10 @@ class ThumbnailProxyModel;
 //  - a metadata sidebar (ImageMetaPanel) shows the current selection's info;
 //  - a "Statistics" button opens a recursive folder scan (ImageStatisticsDialog),
 //    precomputed in the background (see schedulePrecomputeStats) after the user
-//    has sat in a folder a few seconds, so opening it is usually instant.
+//    has sat in a folder a few seconds, so opening it is usually instant. The
+//    result lives in ImageStatsCache for as long as Lumen runs, and is
+//    refreshed on a timer while its folder stays open (see
+//    kStatsRefreshIntervalMs) so it doesn't drift far from the real filesystem.
 class ImageOpenDialog : public QDialog {
     Q_OBJECT
 
@@ -70,12 +72,18 @@ private:
 
     // Background folder-statistics precompute (see .cpp for the full story):
     // schedulePrecomputeStats() debounces navigation into startPrecomputeStats(),
-    // which runs the recursive scan on a worker thread and caches the result so
-    // showStatistics() can usually skip straight to the cached answer.
+    // which runs the recursive scan on a worker thread and stores the result in
+    // ImageStatsCache so showStatistics() can usually skip straight to the
+    // cached answer. `force` bypasses the "already fresh" check — used by the
+    // periodic refresh timer to re-scan the folder currently open regardless.
     void schedulePrecomputeStats();
-    void startPrecomputeStats();
+    void startPrecomputeStats(bool force = false);
 
     QStringList selectedImagePaths() const; // files only, directories excluded
+    // The file to land the selection on after deleting `deletedPaths`: the
+    // next surviving image past the last (highest-row) one being deleted, or
+    // the nearest surviving one before it if the deletion reached the end.
+    QString pathAfterDeletion(const QStringList &deletedPaths) const;
 
     QFileSystemModel *m_fsModel = nullptr;
     ThumbnailProxyModel *m_thumbModel = nullptr;
@@ -99,10 +107,12 @@ private:
     QStringList m_result;
     bool m_sizedOnce = false;
 
-    // Background statistics precompute.
-    QTimer *m_statsPrecomputeTimer = nullptr;
+    // Background statistics precompute — the cache itself (ImageStatsCache) is
+    // a process-lifetime singleton shared across dialog instances; these are
+    // just this dialog's handle on whatever scan it currently has in flight.
+    QTimer *m_statsPrecomputeTimer = nullptr; // debounces navigation before scanning
+    QTimer *m_statsRefreshTimer = nullptr;    // periodically re-scans the open folder
     QFutureWatcher<imagestats::FolderStats> m_statsWatcher;
-    QHash<QString, imagestats::FolderStats> m_statsCache; // dir -> recursive scan result
-    QString m_statsPendingDir;                            // dir the in-flight scan is for
-    std::shared_ptr<std::atomic_bool> m_statsCancelFlag;  // tells that scan to stop early
+    QString m_statsPendingDir;                           // dir the in-flight scan is for
+    std::shared_ptr<std::atomic_bool> m_statsCancelFlag; // tells that scan to stop early
 };

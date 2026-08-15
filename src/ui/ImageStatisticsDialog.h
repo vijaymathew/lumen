@@ -6,28 +6,23 @@
 #include <QFutureWatcher>
 #include <QString>
 
-#include <optional>
-
 class QCheckBox;
 class QLabel;
 class QVBoxLayout;
 
-// "Statistics" for the currently browsed folder in ImageOpenDialog: a
-// recursive-by-default scan (see imagestats::computeFolderStats) rendered as
-// simple percentage bars — focal length spread, color vs. monochrome split,
-// and a camera breakdown. The scan runs off the UI thread; toggling "include
-// subfolders" re-scans.
+// "Statistics" for the currently browsed folder in ImageOpenDialog: a scan
+// (see imagestats::computeFolderStats) rendered as simple percentage bars —
+// focal length spread, color vs. monochrome split, and a camera breakdown.
+// "Include subfolders" starts unchecked (a plain listing of the current
+// folder is instant; a recursive scan of a large library isn't); checking it
+// consults ImageStatsCache first, so if ImageOpenDialog already precomputed
+// the recursive scan for this folder in the background, the result is
+// usually instant there too. The scan runs off the UI thread either way.
 class ImageStatisticsDialog : public QDialog {
     Q_OBJECT
 
 public:
-    // `precomputed`, if set, is shown immediately instead of scanning —
-    // ImageOpenDialog precomputes the recursive scan in the background while
-    // the user browses, so opening this dialog is usually instant. Only valid
-    // for the recursive case (the checkbox's default); unchecking it always
-    // triggers a fresh scan.
-    ImageStatisticsDialog(const QString &rootDir, QWidget *parent = nullptr,
-                          const std::optional<imagestats::FolderStats> &precomputed = std::nullopt);
+    ImageStatisticsDialog(const QString &rootDir, QWidget *parent = nullptr);
 
 private:
     void startScan();

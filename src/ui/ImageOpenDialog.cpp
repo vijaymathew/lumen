@@ -1,5 +1,6 @@
 #include "ui/ImageOpenDialog.h"
 
+#include "core/ImageStatsCache.h"
 #include "ui/CarouselView.h"
 #include "ui/ImageGridView.h"
 #include "ui/ImageMetaPanel.h"
@@ -50,6 +51,11 @@ constexpr int kDialogH = 680;
 // for; short enough that by the time someone actually reaches for the
 // Statistics button, it's already there.
 constexpr int kStatsPrecomputeDelayMs = 3000;
+// While a folder stays open in the dialog, its precomputed statistics get
+// re-scanned on this cadence, so a folder the user sits in for a while (e.g.
+// while importing more photos into it elsewhere) doesn't show stats that
+// drift further and further from what's actually on disk.
+constexpr int kStatsRefreshIntervalMs = 5 * 60 * 1000;
 } // namespace
 
 ImageOpenDialog::ImageOpenDialog(QWidget *parent, const QString &caption, const QString &dir,
@@ -192,12 +198,22 @@ ImageOpenDialog::ImageOpenDialog(QWidget *parent, const QString &caption, const 
     m_statsPrecomputeTimer->setSingleShot(true);
     m_statsPrecomputeTimer->setInterval(kStatsPrecomputeDelayMs);
     connect(m_statsPrecomputeTimer, &QTimer::timeout, this,
-            &ImageOpenDialog::startPrecomputeStats);
+            [this] { startPrecomputeStats(); });
+
+    // Keeps whatever folder is currently open from drifting stale in the
+    // cache — fires for the lifetime of the dialog, not tied to any one
+    // folder, so it always refreshes wherever the user currently is.
+    m_statsRefreshTimer = new QTimer(this);
+    m_statsRefreshTimer->setInterval(kStatsRefreshIntervalMs);
+    connect(m_statsRefreshTimer, &QTimer::timeout, this,
+            [this] { startPrecomputeStats(/*force=*/true); });
+    m_statsRefreshTimer->start();
+
     connect(&m_statsWatcher, &QFutureWatcher<imagestats::FolderStats>::finished, this, [this] {
         // m_statsWatcher only ever tracks the *current* scan — starting a new
         // one via setFuture() stops it watching the old one, so whatever
         // fires here really did run to completion for m_statsPendingDir.
-        m_statsCache.insert(m_statsPendingDir, m_statsWatcher.result());
+        ImageStatsCache::instance().insert(m_statsPendingDir, m_statsWatcher.result());
     });
 
     updateSelectionActions();
@@ -249,15 +265,20 @@ void ImageOpenDialog::schedulePrecomputeStats()
     // Restart the debounce on every navigation — browsing through several
     // folders in a row (or images, via the carousel's arrow keys) should
     // never itself trigger a scan, only actually settling in one for a few
-    // seconds. Skip entirely if we already have an answer for this folder.
+    // seconds. Skip entirely if we already have a fresh-enough answer —
+    // "fresh" here just means "the periodic refresh timer will get to it",
+    // so revisiting a folder whose cache has gone stale rescans right away
+    // instead of waiting out the rest of the 5-minute cycle.
     m_statsPrecomputeTimer->stop();
-    if (!m_statsCache.contains(m_currentDir))
+    if (ImageStatsCache::instance().isStale(m_currentDir))
         m_statsPrecomputeTimer->start();
 }
 
-void ImageOpenDialog::startPrecomputeStats()
+void ImageOpenDialog::startPrecomputeStats(bool force)
 {
-    if (m_currentDir.isEmpty() || m_statsCache.contains(m_currentDir))
+    if (m_currentDir.isEmpty())
+        return;
+    if (!force && !ImageStatsCache::instance().isStale(m_currentDir))
         return;
 
     // Cap background scanning at one folder in flight: tell whatever scan is
@@ -340,6 +361,43 @@ void ImageOpenDialog::updateSelectionActions()
     m_metaPanel->setSelection(paths);
 }
 
+QString ImageOpenDialog::pathAfterDeletion(const QStringList &deletedPaths) const
+{
+    const QModelIndexList sel = m_selectionModel->selectedIndexes();
+    int maxRow = -1;
+    QModelIndex parent;
+    for (const QModelIndex &idx : sel) {
+        if (idx.column() != 0)
+            continue;
+        if (idx.row() > maxRow) {
+            maxRow = idx.row();
+            parent = idx.parent();
+        }
+    }
+    if (maxRow < 0)
+        return {};
+
+    const auto pathAt = [this, &parent](int row) {
+        return m_thumbModel->index(row, 0, parent).data(QFileSystemModel::FilePathRole).toString();
+    };
+    // Prefer the next surviving image past the deletion — advancing forward
+    // through the folder, matching how most viewers handle "delete current".
+    const int rowCount = m_thumbModel->rowCount(parent);
+    for (int r = maxRow + 1; r < rowCount; ++r) {
+        const QString p = pathAt(r);
+        if (!p.isEmpty() && !deletedPaths.contains(p))
+            return p;
+    }
+    // Nothing survives after it (deletion reached the end of the folder) —
+    // fall back to the nearest surviving image before it.
+    for (int r = maxRow - 1; r >= 0; --r) {
+        const QString p = pathAt(r);
+        if (!p.isEmpty() && !deletedPaths.contains(p))
+            return p;
+    }
+    return {};
+}
+
 void ImageOpenDialog::deleteSelected()
 {
     const QStringList paths = selectedImagePaths();
@@ -354,6 +412,12 @@ void ImageOpenDialog::deleteSelected()
                               QMessageBox::No) != QMessageBox::Yes)
         return;
 
+    // Computed before deletion, off the current (soon-to-change) selection —
+    // see pathAfterDeletion(). Qt's default behaviour when the current row is
+    // removed is to fall back to the *previous* row; we want the next image
+    // instead, so we set this explicitly once the trash operations are done.
+    const QString nextPath = pathAfterDeletion(paths);
+
     int failed = 0;
     for (const QString &p : paths) {
         if (!QFile::moveToTrash(p))
@@ -367,7 +431,16 @@ void ImageOpenDialog::deleteSelected()
                 .arg(paths.size()));
     // QFileSystemModel's own filesystem watcher notices the removal and updates
     // the views; nothing else to refresh here.
-    m_statsCache.remove(m_currentDir); // stale now — a fresh scan will re-cache it
+    ImageStatsCache::instance().invalidate(m_currentDir); // stale — next scan re-caches it
+
+    if (!nextPath.isEmpty()) {
+        // Looked up by path, not by the (now possibly shifted) row — valid
+        // immediately regardless of whether the model has processed the
+        // deleted rows' removal yet.
+        const QModelIndex idx = m_thumbModel->mapFromSource(m_fsModel->index(nextPath));
+        if (idx.isValid())
+            m_selectionModel->setCurrentIndex(idx, QItemSelectionModel::ClearAndSelect);
+    }
 }
 
 void ImageOpenDialog::copySelected()
@@ -395,19 +468,21 @@ void ImageOpenDialog::openSelected()
 
 void ImageOpenDialog::showStatistics()
 {
-    const auto cached = m_statsCache.constFind(m_currentDir);
-    if (cached == m_statsCache.constEnd() && m_statsCancelFlag
-        && m_statsPendingDir == m_currentDir) {
+    // Only use the cache if it's fresh — a known-stale entry (older than
+    // kStatsRefreshIntervalMs) is treated the same as a miss, so this always
+    // shows data at least as fresh as the periodic refresh promises.
+    const bool fresh = !ImageStatsCache::instance().isStale(m_currentDir);
+    const std::optional<imagestats::FolderStats> cached =
+        fresh ? ImageStatsCache::instance().get(m_currentDir) : std::nullopt;
+
+    if (!cached && m_statsCancelFlag && m_statsPendingDir == m_currentDir) {
         // A precompute for this exact folder is already running — the dialog
         // is about to scan it itself, so let the background one go rather
         // than pay for both at once.
         m_statsCancelFlag->store(true);
     }
 
-    ImageStatisticsDialog dlg(m_currentDir, this,
-                             cached != m_statsCache.constEnd()
-                                 ? std::optional(cached.value())
-                                 : std::nullopt);
+    ImageStatisticsDialog dlg(m_currentDir, this, cached);
     dlg.exec();
 }
 
