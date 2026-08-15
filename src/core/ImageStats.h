@@ -51,8 +51,12 @@ struct FolderStats {
 // Recursively (when `recursive`) walks `rootDir`, classifying every supported
 // image file. `progress`, if set, is called after each file with the running
 // count of files scanned so far (for a progress dialog) — it may be called
-// from whatever thread invokes computeFolderStats.
+// from whatever thread invokes computeFolderStats. `canceled`, if set, is
+// polled the same way; once it returns true the scan stops and returns
+// whatever it has accumulated so far (a partial, undercounted FolderStats —
+// callers that care about accuracy should discard it rather than cache it).
 FolderStats computeFolderStats(const QString &rootDir, bool recursive = true,
-                               const std::function<void(int scanned)> &progress = {});
+                               const std::function<void(int scanned)> &progress = {},
+                               const std::function<bool()> &canceled = {});
 
 } // namespace imagestats

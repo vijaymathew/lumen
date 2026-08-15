@@ -12,7 +12,8 @@
 
 #include <algorithm>
 
-ImageStatisticsDialog::ImageStatisticsDialog(const QString &rootDir, QWidget *parent)
+ImageStatisticsDialog::ImageStatisticsDialog(const QString &rootDir, QWidget *parent,
+                                             const std::optional<imagestats::FolderStats> &precomputed)
     : QDialog(parent)
     , m_rootDir(rootDir)
 {
@@ -61,7 +62,12 @@ ImageStatisticsDialog::ImageStatisticsDialog(const QString &rootDir, QWidget *pa
     connect(&m_watcher, &QFutureWatcher<imagestats::FolderStats>::finished, this,
             [this] { showResults(m_watcher.result()); });
 
-    startScan();
+    // The common case: ImageOpenDialog already scanned this folder in the
+    // background while the user was browsing, so there's nothing to wait for.
+    if (precomputed)
+        showResults(*precomputed);
+    else
+        startScan();
 }
 
 void ImageStatisticsDialog::clearResults()

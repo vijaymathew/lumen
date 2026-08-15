@@ -98,7 +98,8 @@ QString cameraDisplayName(const raw::LensMetadata &m)
 } // namespace
 
 imagestats::FolderStats imagestats::computeFolderStats(const QString &rootDir, bool recursive,
-                                                        const std::function<void(int)> &progress)
+                                                        const std::function<void(int)> &progress,
+                                                        const std::function<bool()> &canceled)
 {
     FolderStats stats;
     stats.focalBuckets.reserve(bucketRanges().size());
@@ -113,6 +114,8 @@ imagestats::FolderStats imagestats::computeFolderStats(const QString &rootDir, b
     QDirIterator it(rootDir, QDir::Files | QDir::NoDotAndDotDot, flags);
     int scanned = 0;
     while (it.hasNext()) {
+        if (canceled && canceled())
+            break; // caller no longer wants this scan — stop burning CPU on it
         const QString path = it.next();
         const QFileInfo info(path);
         if (!isSupportedImage(info))

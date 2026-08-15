@@ -28,11 +28,14 @@
 #include <QShowEvent>
 #include <QStackedWidget>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QtConcurrent>
 
 #include <algorithm>
+#include <optional>
 
 namespace {
 // Thumbnails render at this longest edge (grid icons and filmstrip cells
@@ -41,6 +44,12 @@ constexpr int kThumbEdge = 192;
 // The size the dialog opens at (clamped to the screen for small displays).
 constexpr int kDialogW = 1040;
 constexpr int kDialogH = 680;
+// How long the user has to sit still in a folder before its statistics get
+// precomputed in the background. Long enough that idly flipping through a
+// few folders (or images, in Carousel) never triggers a scan nobody asked
+// for; short enough that by the time someone actually reaches for the
+// Statistics button, it's already there.
+constexpr int kStatsPrecomputeDelayMs = 3000;
 } // namespace
 
 ImageOpenDialog::ImageOpenDialog(QWidget *parent, const QString &caption, const QString &dir,
@@ -179,6 +188,18 @@ ImageOpenDialog::ImageOpenDialog(QWidget *parent, const QString &caption, const 
     layout->addLayout(viewRow, 1);
     layout->addLayout(bottomRow);
 
+    m_statsPrecomputeTimer = new QTimer(this);
+    m_statsPrecomputeTimer->setSingleShot(true);
+    m_statsPrecomputeTimer->setInterval(kStatsPrecomputeDelayMs);
+    connect(m_statsPrecomputeTimer, &QTimer::timeout, this,
+            &ImageOpenDialog::startPrecomputeStats);
+    connect(&m_statsWatcher, &QFutureWatcher<imagestats::FolderStats>::finished, this, [this] {
+        // m_statsWatcher only ever tracks the *current* scan — starting a new
+        // one via setFuture() stops it watching the old one, so whatever
+        // fires here really did run to completion for m_statsPendingDir.
+        m_statsCache.insert(m_statsPendingDir, m_statsWatcher.result());
+    });
+
     updateSelectionActions();
     navigateTo(QFileInfo(dir).isDir()
                    ? dir
@@ -207,6 +228,8 @@ void ImageOpenDialog::navigateTo(const QString &path)
     // show something without racing the model.
     m_pendingSelectFirst = clean;
     trySelectFirst(clean); // works immediately if the folder was already loaded
+
+    schedulePrecomputeStats();
 }
 
 void ImageOpenDialog::trySelectFirst(const QString &dir)
@@ -219,6 +242,44 @@ void ImageOpenDialog::trySelectFirst(const QString &dir)
         m_selectionModel->setCurrentIndex(first, QItemSelectionModel::ClearAndSelect);
         m_pendingSelectFirst.clear();
     }
+}
+
+void ImageOpenDialog::schedulePrecomputeStats()
+{
+    // Restart the debounce on every navigation — browsing through several
+    // folders in a row (or images, via the carousel's arrow keys) should
+    // never itself trigger a scan, only actually settling in one for a few
+    // seconds. Skip entirely if we already have an answer for this folder.
+    m_statsPrecomputeTimer->stop();
+    if (!m_statsCache.contains(m_currentDir))
+        m_statsPrecomputeTimer->start();
+}
+
+void ImageOpenDialog::startPrecomputeStats()
+{
+    if (m_currentDir.isEmpty() || m_statsCache.contains(m_currentDir))
+        return;
+
+    // Cap background scanning at one folder in flight: tell whatever scan is
+    // still running (for a folder the user has since left) to stop, so it
+    // isn't burning CPU against thumbnail decoding for a folder nobody's
+    // looking at anymore. Its result — even if it lands after this — is
+    // simply never collected (see the finished-connection: setFuture() below
+    // stops m_statsWatcher tracking it).
+    if (m_statsCancelFlag)
+        m_statsCancelFlag->store(true);
+
+    m_statsPendingDir = m_currentDir;
+    m_statsCancelFlag = std::make_shared<std::atomic_bool>(false);
+    const QString dir = m_currentDir;
+    auto cancelFlag = m_statsCancelFlag;
+    // Always the recursive scan — that's the Statistics dialog's default, and
+    // the only case this cache is consulted for (see showStatistics()).
+    m_statsWatcher.setFuture(QtConcurrent::run([dir, cancelFlag] {
+        return imagestats::computeFolderStats(
+            dir, /*recursive=*/true, /*progress=*/{},
+            [cancelFlag] { return cancelFlag->load(); });
+    }));
 }
 
 void ImageOpenDialog::goUp()
@@ -306,6 +367,7 @@ void ImageOpenDialog::deleteSelected()
                 .arg(paths.size()));
     // QFileSystemModel's own filesystem watcher notices the removal and updates
     // the views; nothing else to refresh here.
+    m_statsCache.remove(m_currentDir); // stale now — a fresh scan will re-cache it
 }
 
 void ImageOpenDialog::copySelected()
@@ -333,7 +395,19 @@ void ImageOpenDialog::openSelected()
 
 void ImageOpenDialog::showStatistics()
 {
-    ImageStatisticsDialog dlg(m_currentDir, this);
+    const auto cached = m_statsCache.constFind(m_currentDir);
+    if (cached == m_statsCache.constEnd() && m_statsCancelFlag
+        && m_statsPendingDir == m_currentDir) {
+        // A precompute for this exact folder is already running — the dialog
+        // is about to scan it itself, so let the background one go rather
+        // than pay for both at once.
+        m_statsCancelFlag->store(true);
+    }
+
+    ImageStatisticsDialog dlg(m_currentDir, this,
+                             cached != m_statsCache.constEnd()
+                                 ? std::optional(cached.value())
+                                 : std::nullopt);
     dlg.exec();
 }
 

@@ -6,6 +6,8 @@
 #include <QFutureWatcher>
 #include <QString>
 
+#include <optional>
+
 class QCheckBox;
 class QLabel;
 class QVBoxLayout;
@@ -19,7 +21,13 @@ class ImageStatisticsDialog : public QDialog {
     Q_OBJECT
 
 public:
-    ImageStatisticsDialog(const QString &rootDir, QWidget *parent = nullptr);
+    // `precomputed`, if set, is shown immediately instead of scanning —
+    // ImageOpenDialog precomputes the recursive scan in the background while
+    // the user browses, so opening this dialog is usually instant. Only valid
+    // for the recursive case (the checkbox's default); unchecking it always
+    // triggers a fresh scan.
+    ImageStatisticsDialog(const QString &rootDir, QWidget *parent = nullptr,
+                          const std::optional<imagestats::FolderStats> &precomputed = std::nullopt);
 
 private:
     void startScan();

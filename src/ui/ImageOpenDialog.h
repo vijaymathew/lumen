@@ -1,9 +1,16 @@
 #pragma once
 
+#include "core/ImageStats.h"
+
 #include <QDialog>
+#include <QFutureWatcher>
+#include <QHash>
 #include <QModelIndex>
 #include <QString>
 #include <QStringList>
+
+#include <atomic>
+#include <memory>
 
 class CarouselView;
 class ImageGridView;
@@ -15,6 +22,7 @@ class QItemSelectionModel;
 class QLineEdit;
 class QShowEvent;
 class QStackedWidget;
+class QTimer;
 class QToolButton;
 class ThumbnailProxyModel;
 
@@ -28,7 +36,9 @@ class ThumbnailProxyModel;
 //    Copy (file URLs onto the clipboard), and multi-file Open (each opens in
 //    its own tab, like dropping several files onto the window);
 //  - a metadata sidebar (ImageMetaPanel) shows the current selection's info;
-//  - a "Statistics" button opens a recursive folder scan (ImageStatisticsDialog).
+//  - a "Statistics" button opens a recursive folder scan (ImageStatisticsDialog),
+//    precomputed in the background (see schedulePrecomputeStats) after the user
+//    has sat in a folder a few seconds, so opening it is usually instant.
 class ImageOpenDialog : public QDialog {
     Q_OBJECT
 
@@ -58,6 +68,13 @@ private:
     void onPathEdited();
     void showViewContextMenu(QAbstractItemView *view, const QPoint &pos);
 
+    // Background folder-statistics precompute (see .cpp for the full story):
+    // schedulePrecomputeStats() debounces navigation into startPrecomputeStats(),
+    // which runs the recursive scan on a worker thread and caches the result so
+    // showStatistics() can usually skip straight to the cached answer.
+    void schedulePrecomputeStats();
+    void startPrecomputeStats();
+
     QStringList selectedImagePaths() const; // files only, directories excluded
 
     QFileSystemModel *m_fsModel = nullptr;
@@ -81,4 +98,11 @@ private:
     QStringList m_nameFilters;
     QStringList m_result;
     bool m_sizedOnce = false;
+
+    // Background statistics precompute.
+    QTimer *m_statsPrecomputeTimer = nullptr;
+    QFutureWatcher<imagestats::FolderStats> m_statsWatcher;
+    QHash<QString, imagestats::FolderStats> m_statsCache; // dir -> recursive scan result
+    QString m_statsPendingDir;                            // dir the in-flight scan is for
+    std::shared_ptr<std::atomic_bool> m_statsCancelFlag;  // tells that scan to stop early
 };
