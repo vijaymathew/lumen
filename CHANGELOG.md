@@ -5,6 +5,45 @@ All notable changes to Lumen are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] — 2026-08-15
+
+### Added
+
+- **Custom "Open image" dialog**, replacing the system file picker — folder
+  navigation with a thumbnail grid by default, a Carousel view for larger
+  single-image previews, multi-select (with Delete/Copy) in both views, and a
+  metadata panel (ISO, focal length, camera/lens, dimensions, etc.) for the
+  selected image.
+- **Folder statistics** — a "Statistics…" view on the Open dialog showing a
+  folder's focal-length distribution, colour-vs-monochrome split, and camera
+  breakdown, computed across subfolders by default off (toggle to include
+  them). Folder stats are cached for the life of the app and recomputed only
+  when a folder's contents look stale (checked roughly every 5 minutes).
+
+### Changed
+
+- After deleting an image from the Open dialog, the selection now moves to
+  the *next* image in the folder instead of the preceding one.
+
+### Internal
+
+- No user-visible behavior changes, but a substantial refactor of the C++
+  codebase for maintainability (see `docs/cpp-code-review.md` for the full
+  writeup):
+  - Extracted a shared `FloatingToolPanel` base class, removing ~1,300 lines
+    of near-identical boilerplate (stylesheet, drag-to-move, Escape/Enter
+    handling, slider-row builder) duplicated across 19 of the 20 tool panels.
+  - Collapsed MainWindow's ~20 duplicate tool open/close pairs onto two
+    shared helpers and a table-driven `closeActiveTool()`.
+  - Split `CanvasWidget::render()` into `updateGpuResources()` and
+    `recordPasses()`, and extracted its crop/orientation coordinate math into
+    a new, independently unit-tested `CropViewTransform.h`.
+  - Fixed a const-correctness gap in `EditGraph` (`layer()`/`baseLayer()`/
+    `activeLayer()` were `const`-qualified but returned mutable references),
+    replaced raw `new`/`delete` for `lfModifier` in `LensCorrectionNode` with
+    `std::unique_ptr`, and named a couple of previously-duplicated magic
+    number constants.
+
 ## [0.1.2] — 2026-07-31
 
 ### Added
@@ -190,6 +229,7 @@ and the interactive preview on the GPU. Your original is never touched.
   depth, output resize (long-edge), and colour management (sRGB, Display P3, or
   Adobe RGB with the matching ICC profile embedded).
 
+[0.1.3]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.3
 [0.1.2]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.2
 [0.1.1]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.1
 [0.1.0]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.0
