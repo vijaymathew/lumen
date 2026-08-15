@@ -1,5 +1,7 @@
 #include "ui/ImageStatisticsDialog.h"
 
+#include "core/ImageStatsCache.h"
+
 #include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QFileInfo>
@@ -12,8 +14,7 @@
 
 #include <algorithm>
 
-ImageStatisticsDialog::ImageStatisticsDialog(const QString &rootDir, QWidget *parent,
-                                             const std::optional<imagestats::FolderStats> &precomputed)
+ImageStatisticsDialog::ImageStatisticsDialog(const QString &rootDir, QWidget *parent)
     : QDialog(parent)
     , m_rootDir(rootDir)
 {
@@ -26,9 +27,11 @@ ImageStatisticsDialog::ImageStatisticsDialog(const QString &rootDir, QWidget *pa
     folderLabel->setToolTip(rootDir);
     folderLabel->setTextFormat(Qt::RichText);
 
-    // Sub-folders are included by default, per the picker's statistics feature.
+    // Off by default: a plain listing of just this folder is effectively
+    // instant, where a recursive scan of a large library isn't — checking
+    // this is an explicit "yes, go scan more" ask.
     m_recurseCheck = new QCheckBox(QStringLiteral("Include subfolders"), this);
-    m_recurseCheck->setChecked(true);
+    m_recurseCheck->setChecked(false);
     connect(m_recurseCheck, &QCheckBox::toggled, this, &ImageStatisticsDialog::startScan);
 
     auto *topRow = new QHBoxLayout;
@@ -62,12 +65,7 @@ ImageStatisticsDialog::ImageStatisticsDialog(const QString &rootDir, QWidget *pa
     connect(&m_watcher, &QFutureWatcher<imagestats::FolderStats>::finished, this,
             [this] { showResults(m_watcher.result()); });
 
-    // The common case: ImageOpenDialog already scanned this folder in the
-    // background while the user was browsing, so there's nothing to wait for.
-    if (precomputed)
-        showResults(*precomputed);
-    else
-        startScan();
+    startScan();
 }
 
 void ImageStatisticsDialog::clearResults()
@@ -81,11 +79,22 @@ void ImageStatisticsDialog::clearResults()
 
 void ImageStatisticsDialog::startScan()
 {
+    const bool recursive = m_recurseCheck->isChecked();
+
+    // Checking "include subfolders" asks for exactly the scan ImageOpenDialog
+    // precomputes in the background while the user browses — if it's already
+    // landed (and isn't stale), use it instead of scanning again.
+    if (recursive && !ImageStatsCache::instance().isStale(m_rootDir)) {
+        if (const auto cached = ImageStatsCache::instance().get(m_rootDir)) {
+            showResults(*cached);
+            return;
+        }
+    }
+
     m_summary->setText(QStringLiteral("Scanning…"));
     clearResults();
 
     const QString root = m_rootDir;
-    const bool recursive = m_recurseCheck->isChecked();
     m_watcher.setFuture(
         QtConcurrent::run([root, recursive] { return imagestats::computeFolderStats(root, recursive); }));
 }

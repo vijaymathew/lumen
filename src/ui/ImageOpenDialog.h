@@ -35,9 +35,11 @@ class ThumbnailProxyModel;
 //    Copy (file URLs onto the clipboard), and multi-file Open (each opens in
 //    its own tab, like dropping several files onto the window);
 //  - a metadata sidebar (ImageMetaPanel) shows the current selection's info;
-//  - a "Statistics" button opens a recursive folder scan (ImageStatisticsDialog),
-//    precomputed in the background (see schedulePrecomputeStats) after the user
-//    has sat in a folder a few seconds, so opening it is usually instant. The
+//  - a "Statistics" button opens a folder scan (ImageStatisticsDialog); its
+//    "include subfolders" option is off by default, but the recursive scan it
+//    would run is precomputed in the background regardless (see
+//    schedulePrecomputeStats) after the user has sat in a folder a few
+//    seconds, so checking that box usually still shows an instant answer. The
 //    result lives in ImageStatsCache for as long as Lumen runs, and is
 //    refreshed on a timer while its folder stays open (see
 //    kStatsRefreshIntervalMs) so it doesn't drift far from the real filesystem.

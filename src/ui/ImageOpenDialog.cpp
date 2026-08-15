@@ -36,7 +36,6 @@
 #include <QtConcurrent>
 
 #include <algorithm>
-#include <optional>
 
 namespace {
 // Thumbnails render at this longest edge (grid icons and filmstrip cells
@@ -468,21 +467,10 @@ void ImageOpenDialog::openSelected()
 
 void ImageOpenDialog::showStatistics()
 {
-    // Only use the cache if it's fresh — a known-stale entry (older than
-    // kStatsRefreshIntervalMs) is treated the same as a miss, so this always
-    // shows data at least as fresh as the periodic refresh promises.
-    const bool fresh = !ImageStatsCache::instance().isStale(m_currentDir);
-    const std::optional<imagestats::FolderStats> cached =
-        fresh ? ImageStatsCache::instance().get(m_currentDir) : std::nullopt;
-
-    if (!cached && m_statsCancelFlag && m_statsPendingDir == m_currentDir) {
-        // A precompute for this exact folder is already running — the dialog
-        // is about to scan it itself, so let the background one go rather
-        // than pay for both at once.
-        m_statsCancelFlag->store(true);
-    }
-
-    ImageStatisticsDialog dlg(m_currentDir, this, cached);
+    // "Include subfolders" starts unchecked (see ImageStatisticsDialog), so
+    // opening this only ever needs a quick non-recursive listing up front —
+    // it consults ImageStatsCache itself if/when the box gets checked.
+    ImageStatisticsDialog dlg(m_currentDir, this);
     dlg.exec();
 }
 
