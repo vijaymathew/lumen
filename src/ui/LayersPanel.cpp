@@ -338,7 +338,6 @@ LayersPanel::LayersPanel(QWidget *parent)
         QPushButton {
             padding: 3px 6px; font-size: 11px;
         }
-        QPushButton[active="true"] { background: #3a3550; border-color: #7F77DD; }
         QPushButton:disabled { color: #6a6a6e; }
     )"));
 
@@ -381,7 +380,7 @@ void LayersPanel::setLayers(const QVector<Row> &rows, int active, int activeOpac
         const Row &row = rows[i];
         auto *rowWidget = new QWidget;
         auto *h = new QHBoxLayout(rowWidget);
-        h->setContentsMargins(0, 0, 0, 0);
+        h->setContentsMargins(4, 3, 4, 3);
         h->setSpacing(4);
 
         auto *vis = new QPushButton(row.enabled ? QStringLiteral("●") : QStringLiteral("○"));
@@ -390,7 +389,6 @@ void LayersPanel::setLayers(const QVector<Row> &rows, int active, int activeOpac
                 [this, i, en = row.enabled] { emit visibilityToggled(i, !en); });
 
         auto *name = new QPushButton(row.name);
-        name->setProperty("active", i == active);
         connect(name, &QPushButton::clicked, this, [this, i] { emit layerSelected(i); });
         // Non-Base layers can be renamed by double-clicking the name (handled in
         // eventFilter, which reads the stashed index).
@@ -403,6 +401,26 @@ void LayersPanel::setLayers(const QVector<Row> &rows, int active, int activeOpac
         h->addWidget(vis);
         h->addWidget(name, 1);
         m_rowsLayout->addWidget(rowWidget);
+
+        // Highlight the active row. Styled directly on each widget (rather than
+        // via a cascaded #id[property] stylesheet rule) because Qt's QSS cascade
+        // for dynamic-property selectors on widgets created after the panel's
+        // stylesheet is set can silently fail to match once other styled
+        // siblings (e.g. the panel's title QLabel) have already been polished.
+        rowWidget->setAttribute(Qt::WA_StyledBackground, true);
+        if (i == active) {
+            rowWidget->setStyleSheet(QStringLiteral(
+                "background: #4a3f7a; border: 1px solid #9b91f5; border-radius: 6px;"));
+            const QString btnCss = QStringLiteral(
+                "background: transparent; border-color: transparent; color: #ffffff;"
+                "font-weight: 600;");
+            vis->setStyleSheet(btnCss);
+            name->setStyleSheet(btnCss);
+        } else {
+            rowWidget->setStyleSheet(QString());
+            vis->setStyleSheet(QString());
+            name->setStyleSheet(QString());
+        }
         m_rowWidgets.push_back(rowWidget);
     }
 

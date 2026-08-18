@@ -347,6 +347,14 @@ if(BUILD_TESTING)
         src/ui/FloatingToolPanel.cpp)
     target_link_libraries(presets_gui_smoke PRIVATE lumen_core Qt6::Widgets)
 
+    qt_add_executable(layers_gui_smoke
+        tests/layers_gui_smoke.cpp
+        src/ui/LayersPanel.h
+        src/ui/LayersPanel.cpp
+        src/ui/FloatingToolPanel.h
+        src/ui/FloatingToolPanel.cpp)
+    target_link_libraries(layers_gui_smoke PRIVATE lumen_core Qt6::Widgets)
+
     add_executable(tune_node_test tests/tune_node_test.cpp)
     target_link_libraries(tune_node_test PRIVATE lumen_core)
     target_compile_options(tune_node_test PRIVATE ${LUMEN_WARNINGS})
