@@ -22,6 +22,12 @@ constexpr int kGradient = MaskSpec::LinearGradient;
 constexpr int kRadial = MaskSpec::Radial;
 constexpr int kLum = MaskSpec::Luminosity;
 constexpr int kColour = MaskSpec::Colour;
+
+struct LumPreset { const char *label; int low, high, feather; };
+constexpr LumPreset kLumPresets[] = {
+    {"Shadows", 0, 35, 40},
+    {"Midtones", 25, 75, 40},
+    {"Highlights", 65, 100, 40}};
 } // namespace
 
 LayersPanel::LayersPanel(QWidget *parent)
@@ -117,6 +123,10 @@ LayersPanel::LayersPanel(QWidget *parent)
     const auto emitRange = [this](int) {
         m_lowValue->setText(QString::number(m_low->value()));
         m_highValue->setText(QString::number(m_high->value()));
+        // Deliberately don't re-sync the preset buttons here: a preset's sliders
+        // "stay live for fine-tuning afterwards" (see below), and the chosen
+        // preset should stay highlighted while the user nudges the range rather
+        // than dropping out on the first slider tick.
         emit maskRangeChanged(m_low->value(), m_high->value());
     };
     connect(m_low, &QSlider::valueChanged, this, emitRange);
@@ -136,16 +146,17 @@ LayersPanel::LayersPanel(QWidget *parent)
         emit maskRangeChanged(low, high);
         m_feather->setValue(feather); // emits maskFeatherChanged + syncs its label
     };
-    struct LumPreset { const char *label; int low, high, feather; };
     auto *presetRow = new QHBoxLayout;
     presetRow->setContentsMargins(0, 0, 0, 0);
-    for (const LumPreset &p : {LumPreset{"Shadows", 0, 35, 40},
-                               LumPreset{"Midtones", 25, 75, 40},
-                               LumPreset{"Highlights", 65, 100, 40}}) {
+    for (const LumPreset &p : kLumPresets) {
         auto *b = new QPushButton(QString::fromLatin1(p.label), m_lumSection);
-        connect(b, &QPushButton::clicked, this,
-                [applyLumPreset, p] { applyLumPreset(p.low, p.high, p.feather); });
+        b->setCheckable(true);
+        connect(b, &QPushButton::clicked, this, [this, applyLumPreset, p] {
+            applyLumPreset(p.low, p.high, p.feather);
+            syncLumPresetButtons();
+        });
         presetRow->addWidget(b);
+        m_lumPresetButtons.push_back(b);
     }
     lumLayout->insertLayout(0, presetRow); // above the Range low/high sliders
 
@@ -365,6 +376,16 @@ QSlider *LayersPanel::addSlider(QVBoxLayout *layout, const QString &name, int mi
     return slider;
 }
 
+void LayersPanel::syncLumPresetButtons()
+{
+    const int low = m_low->value();
+    const int high = m_high->value();
+    for (int i = 0; i < m_lumPresetButtons.size(); ++i) {
+        const QSignalBlocker block(m_lumPresetButtons[i]);
+        m_lumPresetButtons[i]->setChecked(low == kLumPresets[i].low && high == kLumPresets[i].high);
+    }
+}
+
 void LayersPanel::emitBrush()
 {
     emit brushSettingsChanged(m_brushSize->value(), m_brushHardness->value(), m_brushAdd);
@@ -465,6 +486,7 @@ void LayersPanel::setMaskState(const MaskSpec &mask, bool isBaseActive, int brus
         m_lowValue->setText(QString::number(m_low->value()));
         m_highValue->setText(QString::number(m_high->value()));
     }
+    syncLumPresetButtons();
     {
         const QSignalBlocker b(m_range);
         m_range->setValue(static_cast<int>(std::lround(mask.colorRange * 100)));

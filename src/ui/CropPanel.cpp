@@ -46,6 +46,7 @@ CropPanel::CropPanel(QWidget *parent)
     for (const AspectPreset &a : kAspects) {
         auto *b = new QPushButton(QString::fromLatin1(a.label), this);
         b->setCheckable(true);
+        b->setFocusPolicy(Qt::NoFocus); // don't swallow the Enter/Esc that closes the tool
         connect(b, &QPushButton::clicked, this, [this, idx = i, ratio = a.ratio] {
             selectAspectButton(idx);
             emit aspectChanged(ratio < 0 ? m_originalAspect : ratio);
@@ -70,6 +71,13 @@ CropPanel::CropPanel(QWidget *parent)
     m_flipV = new QPushButton(QStringLiteral("Flip V"), this);
     m_flipH->setCheckable(true);
     m_flipV->setCheckable(true);
+    // None of these should keep keyboard focus after a click — otherwise the
+    // Enter/Esc that's meant to close the tool (MainWindow::keyPressEvent,
+    // ToolActive mode) gets swallowed as an autoDefault re-click instead.
+    rotCCW->setFocusPolicy(Qt::NoFocus);
+    rotCW->setFocusPolicy(Qt::NoFocus);
+    m_flipH->setFocusPolicy(Qt::NoFocus);
+    m_flipV->setFocusPolicy(Qt::NoFocus);
     connect(rotCCW, &QPushButton::clicked, this, [this] { emit rotateRequested(-90); });
     connect(rotCW, &QPushButton::clicked, this, [this] { emit rotateRequested(90); });
     connect(m_flipH, &QPushButton::clicked, this, [this] { emit flipRequested(true); });
@@ -105,6 +113,7 @@ CropPanel::CropPanel(QWidget *parent)
     contentLayout()->addWidget(m_straighten);
 
     auto *reset = new QPushButton(QStringLiteral("Reset crop"), this);
+    reset->setFocusPolicy(Qt::NoFocus);
     connect(reset, &QPushButton::clicked, this, [this] {
         selectAspectButton(0);
         emit resetRequested();

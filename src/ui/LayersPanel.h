@@ -81,6 +81,9 @@ private:
     void emitBrush();
     // Swaps a layer-name button for an inline QLineEdit; commits via renameRequested.
     void beginRename(QPushButton *nameButton, int index);
+    // Checks whichever Shadows/Midtones/Highlights preset button matches the
+    // current low/high range (none, if the sliders were fine-tuned since).
+    void syncLumPresetButtons();
 
     QVBoxLayout *m_rowsLayout = nullptr;
     QSlider *m_opacity = nullptr;
@@ -99,6 +102,7 @@ private:
     QSlider *m_high = nullptr;
     QLabel *m_lowValue = nullptr;
     QLabel *m_highValue = nullptr;
+    QVector<QPushButton *> m_lumPresetButtons; // Shadows/Midtones/Highlights
 
     QWidget *m_colorSection = nullptr;
     QSlider *m_range = nullptr;
