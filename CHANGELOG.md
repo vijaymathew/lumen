@@ -5,6 +5,22 @@ All notable changes to Lumen are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] — 2026-08-24
+
+### Fixed
+
+- **Layers panel row highlighting stopped working after a Qt QSS cascade
+  quirk** — the active layer's highlight, and the Luminosity mask's
+  Shadows/Midtones/Highlights preset buttons, are now styled directly on each
+  widget instead of via a dynamic-property stylesheet rule, and the preset
+  buttons re-sync their checked state whenever the mask range changes (they
+  stay checked while fine-tuning the sliders afterwards, and uncheck once the
+  range no longer matches any preset).
+- **Crop panel buttons swallowed the Enter/Esc used to close the tool** — the
+  aspect-ratio, rotate, flip, and reset buttons no longer take keyboard focus
+  on click, so Enter/Esc reaches `MainWindow`'s tool-close handling instead of
+  re-triggering the last-clicked button.
+
 ## [0.1.3] — 2026-08-15
 
 ### Added
@@ -229,6 +245,7 @@ and the interactive preview on the GPU. Your original is never touched.
   depth, output resize (long-edge), and colour management (sRGB, Display P3, or
   Adobe RGB with the matching ICC profile embedded).
 
+[0.1.4]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.4
 [0.1.3]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.3
 [0.1.2]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.2
 [0.1.1]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.1

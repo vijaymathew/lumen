@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(lumen
-    VERSION 0.1.3
+    VERSION 0.1.4
     DESCRIPTION "An immersive, command-palette-driven photo editor"
     LANGUAGES CXX)
 
