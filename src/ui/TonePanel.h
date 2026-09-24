@@ -39,6 +39,8 @@ signals:
     // eyedropper to pick a neutral patch.
     void whiteBalanceResetRequested();
     void whiteBalancePickRequested();
+    // Opens the dodge (true) / burn (false) brush tool.
+    void dodgeBurnRequested(bool dodge);
 
 private:
     void onSliderChanged();
@@ -57,6 +59,8 @@ private:
     QSlider *m_tint = nullptr;
     QPushButton *m_wbAsShot = nullptr;
     QPushButton *m_wbPicker = nullptr;
+    QPushButton *m_dodgeButton = nullptr;
+    QPushButton *m_burnButton = nullptr;
     QLabel *m_exposureValue = nullptr;
     QLabel *m_contrastValue = nullptr;
     QLabel *m_highlightsValue = nullptr;

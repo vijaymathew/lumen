@@ -134,6 +134,8 @@ add_library(lumen_core STATIC
     src/core/Inpaint.cpp
     src/core/HealNode.h
     src/core/HealNode.cpp
+    src/core/DodgeBurnNode.h
+    src/core/DodgeBurnNode.cpp
     src/core/LensCorrectionNode.h
     src/core/LensCorrectionNode.cpp
     src/core/SharpenNode.h
@@ -191,6 +193,8 @@ qt_add_executable(lumen
     src/ui/PresetsPanel.cpp
     src/ui/HealPanel.h
     src/ui/HealPanel.cpp
+    src/ui/DodgeBurnPanel.h
+    src/ui/DodgeBurnPanel.cpp
     src/ui/LayersPanel.h
     src/ui/LayersPanel.cpp
     src/ui/AdjustmentsPanel.h
@@ -457,6 +461,11 @@ if(BUILD_TESTING)
     target_link_libraries(heal_test PRIVATE lumen_core)
     target_compile_options(heal_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME heal_test COMMAND heal_test)
+
+    add_executable(dodgeburn_test tests/dodgeburn_test.cpp)
+    target_link_libraries(dodgeburn_test PRIVATE lumen_core)
+    target_compile_options(dodgeburn_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME dodgeburn_test COMMAND dodgeburn_test)
 
     add_executable(lens_node_test tests/lens_node_test.cpp)
     target_link_libraries(lens_node_test PRIVATE lumen_core)

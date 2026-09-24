@@ -63,6 +63,28 @@ TonePanel::TonePanel(QWidget *parent)
     connect(m_wbAsShot, &QPushButton::clicked, this, &TonePanel::whiteBalanceResetRequested);
     connect(m_wbPicker, &QPushButton::clicked, this, &TonePanel::whiteBalancePickRequested);
 
+    // Dodge & burn brushes: open the brush tool to lighten / darken painted areas.
+    auto *dbLabel = new QLabel(QStringLiteral("Dodge & burn brushes"), this);
+    dbLabel->setObjectName(QStringLiteral("rowName"));
+    contentLayout()->addWidget(dbLabel);
+    auto *dbButtons = new QHBoxLayout;
+    dbButtons->setContentsMargins(0, 0, 0, 0);
+    dbButtons->setSpacing(8);
+    m_dodgeButton = new QPushButton(QStringLiteral("Dodge"), this);
+    m_burnButton = new QPushButton(QStringLiteral("Burn"), this);
+    m_dodgeButton->setToolTip(QStringLiteral("Paint to lighten"));
+    m_burnButton->setToolTip(QStringLiteral("Paint to darken"));
+    for (QPushButton *b : {m_dodgeButton, m_burnButton}) {
+        b->setObjectName(QStringLiteral("wbButton"));
+        b->setCursor(Qt::PointingHandCursor);
+        dbButtons->addWidget(b);
+    }
+    contentLayout()->addLayout(dbButtons);
+    connect(m_dodgeButton, &QPushButton::clicked, this,
+            [this] { emit dodgeBurnRequested(true); });
+    connect(m_burnButton, &QPushButton::clicked, this,
+            [this] { emit dodgeBurnRequested(false); });
+
     appendStyleSheet(QStringLiteral(R"(
         #wbButton {
             color: #d6d6d9; font-size: 12px;

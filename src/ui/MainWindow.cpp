@@ -3,6 +3,7 @@
 #include "core/Autosave.h"
 #include "core/Document.h"
 #include "core/NodeFactory.h"
+#include "core/DodgeBurnNode.h"
 #include "core/HealNode.h"
 #include "core/Image.h"
 #include "core/LayerPreview.h"
@@ -19,6 +20,7 @@
 #include "ui/ExportDialog.h"
 #include "core/Histogram.h"
 #include "ui/DenoisePanel.h"
+#include "ui/DodgeBurnPanel.h"
 #include "ui/HealPanel.h"
 #include "ui/HistogramWidget.h"
 #include "ui/LayersPanel.h"
@@ -528,6 +530,11 @@ MainWindow::MainWindow(QWidget *parent)
         m_pickPurpose = PickPurpose::WhiteBalance;
         m_canvas->setColorPickMode(true);
         showHint(QStringLiteral("Click a neutral grey to set white balance"));
+    });
+
+    connect(m_tonePanel, &TonePanel::dodgeBurnRequested, this, [this](bool dodge) {
+        closeToneTool();
+        openDodgeBurnTool(dodge);
     });
 
     m_curvesPanel = new CurvesPanel(this);
@@ -1054,6 +1061,45 @@ MainWindow::MainWindow(QWidget *parent)
         updatePreview();
     });
 
+    m_dodgeBurnPanel = new DodgeBurnPanel(this);
+    connect(m_dodgeBurnPanel, &DodgeBurnPanel::brushChanged, this,
+            [this](int size, int hardness, bool add) {
+                m_brushSize = size;
+                m_brushHardness = hardness;
+                m_brushAdd = add;
+                m_canvas->setBrushCursor(size, hardness / 100.0f);
+            });
+    connect(m_dodgeBurnPanel, &DodgeBurnPanel::modeChanged, this, [this](bool dodge) {
+        if (dodge == m_dodgeMode || m_brushTarget != BrushTarget::DodgeBurn)
+            return;
+        commitDodgeBurnMask(); // park the outgoing brush's strokes on the node
+        m_dodgeMode = dodge;
+        m_brushMask = dodge ? doc().dodgeBurn->dodgeMask() : doc().dodgeBurn->burnMask();
+        if (m_brushMask.isEmpty())
+            initBrushMask();
+        m_brushUndo.clear();
+        m_brushHasLast = false;
+    });
+    connect(m_dodgeBurnPanel, &DodgeBurnPanel::effectChanged, this, [this](int exposure, int range) {
+        doc().dodgeBurn->setExposure(exposure);
+        doc().dodgeBurn->setRange(static_cast<DodgeBurnNode::Range>(range));
+        if (doc().dodgeBurn->hasEffect()) {
+            m_bakeOp = BakeOp::DodgeBurn;
+            refreshBaseImage();
+            updatePreview();
+        }
+    });
+    connect(m_dodgeBurnPanel, &DodgeBurnPanel::clearRequested, this, [this] {
+        if (m_brushMask.isEmpty())
+            return;
+        m_brushUndo.push_back(m_brushMask.data); // clear is undoable
+        std::fill(m_brushMask.data.begin(), m_brushMask.data.end(), 0.0f);
+        commitDodgeBurnMask();
+        m_bakeOp = BakeOp::DodgeBurn;
+        refreshBaseImage();
+        updatePreview();
+    });
+
     m_adjustmentsPanel = new AdjustmentsPanel(this);
     connect(m_adjustmentsPanel, &AdjustmentsPanel::compareToggled, this,
             [this](bool on) { setCompareOriginal(on); });
@@ -1331,7 +1377,7 @@ MainWindow::MainWindow(QWidget *parent)
                              m_colorGradePanel, m_lensPanel,  m_sharpenPanel,
                              m_structurePanel, m_denoisePanel, m_defringePanel,
                              m_rawPanel,      m_grainPanel,   m_vignettePanel,
-                             m_cropPanel,     m_healPanel};
+                             m_cropPanel,     m_healPanel,     m_dodgeBurnPanel};
     for (QWidget *p : toolPanels)
         addPanelCloseButton(p, closeTool);
     addPanelCloseButton(m_layersPanel, [this] { hideLayersPanel(); });
@@ -1480,6 +1526,8 @@ void MainWindow::buildCommands()
         {QStringLiteral("denoise"), QStringLiteral("Denoise"), detail},
         {QStringLiteral("defringe"), QStringLiteral("Defringe"), detail},
         {QStringLiteral("heal"), QStringLiteral("Healing brush"), detail},
+        {QStringLiteral("dodge"), QStringLiteral("Dodge brush (lighten)"), toneColor},
+        {QStringLiteral("burn"), QStringLiteral("Burn brush (darken)"), toneColor},
         {QStringLiteral("raw"), QStringLiteral("RAW defaults (auto adjustments)"), detail},
         {QStringLiteral("crop"), QStringLiteral("Crop & rotate"), cropLens},
         {QStringLiteral("lens"), QStringLiteral("Lens & perspective"), cropLens},
@@ -1562,6 +1610,10 @@ void MainWindow::runCommand(const QString &id)
         toggleClipping();
     } else if (id == QLatin1String("heal")) {
         openHealTool();
+    } else if (id == QLatin1String("dodge")) {
+        openDodgeBurnTool(true);
+    } else if (id == QLatin1String("burn")) {
+        openDodgeBurnTool(false);
     } else if (id == QLatin1String("layers")) {
         openLayersTool();
     } else if (id == QLatin1String("presets-browser")) {
@@ -3567,8 +3619,9 @@ void MainWindow::updateCropView()
     if (m_cropPanel->isVisible()) {
         // The crop tool itself wants the full oriented frame to edit against.
         mode = CanvasWidget::CropEditing;
-    } else if (m_layersPanel->isVisible() || m_healPanel->isVisible()) {
-        // Gizmo/pick tools (mask/zone/heal/eyedropper) operate against the full,
+    } else if (m_layersPanel->isVisible() || m_healPanel->isVisible()
+               || m_dodgeBurnPanel->isVisible()) {
+        // Gizmo/pick tools (mask/zone/heal/dodge-burn/eyedropper) operate against the full,
         // un-cropped frame. Use CropMaskEdit rather than CropNone so the user's
         // orientation (rotation/flip) stays applied on screen while the canvas
         // still maps coordinates back to the un-oriented source the masks live in.
@@ -3878,20 +3931,22 @@ void MainWindow::rebuildAdjustments()
         if (const auto v = doc().structure ? doc().structure->values() : StructureNode::Values{};
             v.enabled && v.amount != 0.0f)
             addNodeAdj(QStringLiteral("Structure"), 5, doc().structure);
+        if (doc().dodgeBurn && doc().dodgeBurn->hasEffect())
+            addNodeAdj(QStringLiteral("Dodge & Burn"), 6, doc().dodgeBurn);
         if (nodeIsActive(doc().tune))
-            addNodeAdj(QStringLiteral("Tone"), 6, doc().tune);
+            addNodeAdj(QStringLiteral("Tone"), 7, doc().tune);
         if (nodeIsActive(doc().colorMixer))
-            addNodeAdj(QStringLiteral("Color Mixer"), 7, doc().colorMixer);
+            addNodeAdj(QStringLiteral("Color Mixer"), 8, doc().colorMixer);
         if (nodeIsActive(doc().curves))
-            addNodeAdj(QStringLiteral("Curves"), 8, doc().curves);
+            addNodeAdj(QStringLiteral("Curves"), 9, doc().curves);
         if (nodeIsActive(doc().colorGrade))
-            addNodeAdj(QStringLiteral("Color Grade"), 9, doc().colorGrade);
+            addNodeAdj(QStringLiteral("Color Grade"), 10, doc().colorGrade);
         if (nodeIsActive(doc().lut))
-            addNodeAdj(QStringLiteral("Look"), 10, doc().lut);
+            addNodeAdj(QStringLiteral("Look"), 11, doc().lut);
         if (nodeIsActive(doc().mono))
-            addNodeAdj(QStringLiteral("B&W"), 11, doc().mono);
+            addNodeAdj(QStringLiteral("B&W"), 12, doc().mono);
         if (nodeIsActive(doc().grain))
-            addNodeAdj(QStringLiteral("Grain"), 12, doc().grain);
+            addNodeAdj(QStringLiteral("Grain"), 13, doc().grain);
 
         // Selective layers (non-Base), then the final geometric/finishing stages.
         for (int i = 1; i < doc().graph.layerCount(); ++i) {
@@ -4200,9 +4255,9 @@ void MainWindow::loadLookFile()
 void MainWindow::updateMaskEditing()
 {
     // The active layer's mask is a Brush mask and the Layers panel is open:
-    // enable the canvas brush so left-drag paints. (Heal owns the brush when its
-    // tool is active, so don't fight it.)
-    if (m_brushTarget == BrushTarget::Heal)
+    // enable the canvas brush so left-drag paints. (Heal / dodge-burn own the brush when
+    // their tool is active, so don't fight it.)
+    if (m_brushTarget == BrushTarget::Heal || m_brushTarget == BrushTarget::DodgeBurn)
         return;
     const int idx = doc().graph.activeLayerIndex();
     const bool brushLayer = m_layersPanel->isVisible() && idx > 0
@@ -4268,6 +4323,59 @@ void MainWindow::closeHealTool()
     finishToolClose(m_healPanel);
 }
 
+void MainWindow::openDodgeBurnTool(bool dodge)
+{
+    if (doc().graph.source().isNull())
+        return;
+    // Only one brush session at a time: close whichever tool owns it.
+    if (m_brushTarget != BrushTarget::None)
+        closeActiveTool();
+    m_dodgeMode = dodge;
+    positionToolPanel(m_dodgeBurnPanel);
+    DodgeBurnNode *node = doc().dodgeBurn;
+    m_brushAdd = true;
+    m_dodgeBurnPanel->reveal(dodge, m_brushSize, m_brushHardness, m_brushAdd, node->exposure(),
+                             static_cast<int>(node->range()));
+
+    // Restore the session from the node (may be empty).
+    m_brushMask = dodge ? node->dodgeMask() : node->burnMask();
+    m_brushUndo.clear();
+    m_brushHasLast = false;
+    if (m_brushMask.isEmpty())
+        initBrushMask();
+    m_brushTarget = BrushTarget::DodgeBurn;
+    m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f);
+    m_canvas->setBrushMode(true);
+    updateCropView(); // full-frame rule: brushes paint in the un-oriented frame
+    updatePreview();
+}
+
+void MainWindow::closeDodgeBurnTool()
+{
+    m_canvas->setBrushMode(false);
+    commitDodgeBurnMask();
+    m_brushTarget = BrushTarget::None;
+    m_healPainting = false;
+    m_brushUndo.clear();
+    updateCropView(); // back to the cropped browse view
+    refreshBaseImage();
+    updatePreview();
+    finishToolClose(m_dodgeBurnPanel);
+}
+
+void MainWindow::commitDodgeBurnMask()
+{
+    // An untouched (all-zero) session mask is stored as empty so a node that was
+    // only opened and never painted has no effect and isn't listed as an edit.
+    MaskBuffer mask = m_brushMask;
+    if (std::all_of(mask.data.begin(), mask.data.end(), [](float v) { return v == 0.0f; }))
+        mask = MaskBuffer();
+    if (m_dodgeMode)
+        doc().dodgeBurn->setDodgeMask(mask);
+    else
+        doc().dodgeBurn->setBurnMask(mask);
+}
+
 void MainWindow::refreshBaseImage(bool keepView)
 {
     // Consume the triggering-op hint (set by the panel that kicked this bake) so
@@ -4293,6 +4401,8 @@ void MainWindow::refreshBaseImage(bool keepView)
     // disabled node bakes nothing — matching the pointwise/preview-LUT path.
     const bool healActive =
         doc().heal && doc().heal->isEnabled() && !doc().heal->healMask().isEmpty();
+    const bool dodgeBurnActive =
+        doc().dodgeBurn && doc().dodgeBurn->isEnabled() && doc().dodgeBurn->hasEffect();
     const DenoiseNode::Values dv =
         doc().denoise ? doc().denoise->values() : DenoiseNode::Values{};
     const bool denoiseActive = doc().denoise && doc().denoise->isEnabled() && dv.enabled
@@ -4311,7 +4421,7 @@ void MainWindow::refreshBaseImage(bool keepView)
         doc().structure && doc().structure->isEnabled() && stv.enabled && stv.amount != 0.0f;
     if (doc().graph.source().isNull()
         || (!healActive && !denoiseActive && !defringeActive && !sharpenActive
-            && !structureActive)) {
+            && !structureActive && !dodgeBurnActive)) {
         if (!doc().sourceQImage.isNull())
             m_canvas->setImage(doc().sourceQImage, keepView);
         return;
@@ -4328,7 +4438,18 @@ void MainWindow::refreshBaseImage(bool keepView)
     const Image src = doc().workingSource.isNull() ? doc().graph.source() : doc().workingSource;
     const MaskBuffer mask = healActive ? doc().heal->healMask() : MaskBuffer();
     const bool hq = doc().heal && doc().heal->highQuality();
-    if (healActive || denoiseActive || defringeActive || sharpenActive || structureActive) {
+    // Snapshot the node's settings for the worker (the UI thread may keep painting).
+    MaskBuffer dodgeMask, burnMask;
+    int dbExposure = DodgeBurnNode::kDefaultExposure;
+    DodgeBurnNode::Range dbRange = DodgeBurnNode::Range::Midtones;
+    if (dodgeBurnActive) {
+        dodgeMask = doc().dodgeBurn->dodgeMask();
+        burnMask = doc().dodgeBurn->burnMask();
+        dbExposure = doc().dodgeBurn->exposure();
+        dbRange = doc().dodgeBurn->range();
+    }
+    if (healActive || denoiseActive || defringeActive || sharpenActive || structureActive
+        || dodgeBurnActive) {
         // Label by the op the user triggered (if it's actually active); otherwise
         // fall back to precedence (heal first) for unattributed refreshes.
         QString label;
@@ -4347,12 +4468,15 @@ void MainWindow::refreshBaseImage(bool keepView)
             label = QStringLiteral("Denoising…");
         else if (triggeredBy == BakeOp::Heal && healActive)
             label = QStringLiteral("Healing…");
+        else if (triggeredBy == BakeOp::DodgeBurn && dodgeBurnActive)
+            label = QStringLiteral("Dodging & burning…");
         if (label.isEmpty())
             label = healActive ? QStringLiteral("Healing…")
                   : denoiseActive ? QStringLiteral("Denoising…")
                   : defringeActive ? QStringLiteral("Defringing…")
                   : sharpenActive ? QStringLiteral("Sharpening…")
-                                  : QStringLiteral("Structuring…");
+                  : structureActive ? QStringLiteral("Structuring…")
+                                    : QStringLiteral("Dodging & burning…");
         auto *badge = static_cast<BusyBadge *>(m_healBusy);
         badge->setLabel(label);
         badge->start();
@@ -4360,7 +4484,8 @@ void MainWindow::refreshBaseImage(bool keepView)
     }
 
     m_healWatcher.setFuture(
-        QtConcurrent::run([d, gen, src, mask, hq, dv, fv, sv, stv]() -> QImage {
+        QtConcurrent::run([d, gen, src, mask, hq, dv, fv, sv, stv, dodgeMask, burnMask, dbExposure,
+                           dbRange, dodgeBurnActive]() -> QImage {
             if (gen != d->healGen)
                 return QImage(); // superseded before we even started
             Image img = src;
@@ -4389,6 +4514,14 @@ void MainWindow::refreshBaseImage(bool keepView)
                 StructureNode structure;
                 structure.setValues(stv);
                 img = structure.apply(img);
+            }
+            if (dodgeBurnActive) {
+                DodgeBurnNode dodgeBurn;
+                dodgeBurn.setDodgeMask(dodgeMask);
+                dodgeBurn.setBurnMask(burnMask);
+                dodgeBurn.setExposure(dbExposure);
+                dodgeBurn.setRange(dbRange);
+                img = dodgeBurn.apply(img);
             }
             return img.toQImage();
         }));
@@ -4519,7 +4652,10 @@ void MainWindow::brushAt(const QPointF &norm)
     const float radius = std::max(
         1.0f, (m_brushSize / 100.0f) * CanvasWidget::kBrushRadiusScale * std::min(w, h));
     const float hardness = m_brushHardness / 100.0f;
-    const bool heal = (m_brushTarget == BrushTarget::Heal);
+    // Heal and dodge/burn share the "bake on stroke end" flow: while dragging they
+    // show the stroke footprint as an overlay, then re-bake when the stroke ends.
+    const bool heal = (m_brushTarget == BrushTarget::Heal
+                       || m_brushTarget == BrushTarget::DodgeBurn);
 
     // Stamp into the mask being painted, and (for heal) mirror the footprint into
     // m_strokeMask. The footprint is always additive, so it records every spot the
@@ -4583,6 +4719,13 @@ void MainWindow::endBrushStroke()
         refreshBaseImage();
         recomputeSelectiveMask();
         updatePreview();
+    } else if (m_brushTarget == BrushTarget::DodgeBurn) {
+        m_healPainting = false;
+        commitDodgeBurnMask();
+        m_bakeOp = BakeOp::DodgeBurn;
+        refreshBaseImage();
+        recomputeSelectiveMask();
+        updatePreview();
     } else if (m_brushTarget == BrushTarget::Selective) {
         // Stroke finished: drop the transient "show strokes" overlay so the
         // highlight follows the Show toggle and the layer's adjustment/opacity
@@ -4601,6 +4744,12 @@ bool MainWindow::brushSessionUndo()
     m_brushUndo.pop_back();
     if (m_brushTarget == BrushTarget::Heal) {
         doc().heal->setHealMask(m_brushMask);
+        refreshBaseImage();
+        recomputeSelectiveMask();
+        updatePreview();
+    } else if (m_brushTarget == BrushTarget::DodgeBurn) {
+        commitDodgeBurnMask();
+        m_bakeOp = BakeOp::DodgeBurn;
         refreshBaseImage();
         recomputeSelectiveMask();
         updatePreview();
@@ -4676,6 +4825,7 @@ void MainWindow::closeActiveTool()
         {m_vignettePanel, &MainWindow::closeVignetteTool},
         {m_cropPanel, &MainWindow::closeCropTool},
         {m_healPanel, &MainWindow::closeHealTool},
+        {m_dodgeBurnPanel, &MainWindow::closeDodgeBurnTool},
     };
     for (const auto &t : tools) {
         if (t.panel->isVisible()) {
@@ -4717,6 +4867,12 @@ void MainWindow::afterHistoryChange()
         refreshLayersPanel();
     if (m_healPanel->isVisible()) {
         m_brushMask = doc().heal->healMask(); // sync session to restored state
+        m_brushUndo.clear();
+    }
+    if (m_dodgeBurnPanel->isVisible()) {
+        m_brushMask = m_dodgeMode ? doc().dodgeBurn->dodgeMask() : doc().dodgeBurn->burnMask();
+        if (m_brushMask.isEmpty())
+            initBrushMask();
         m_brushUndo.clear();
     }
     // If a tool is open, reseed its control from the restored state.
@@ -4854,6 +5010,7 @@ void MainWindow::layoutOverlays()
     clampIntoView(m_defringePanel);
     clampIntoView(m_rawPanel);
     clampIntoView(m_healPanel);
+    clampIntoView(m_dodgeBurnPanel);
     clampIntoView(m_layersPanel);
     clampIntoView(m_infoPanel);
 
@@ -4907,6 +5064,7 @@ void MainWindow::layoutOverlays()
                                static_cast<QWidget *>(m_defringePanel),
                                static_cast<QWidget *>(m_rawPanel),
                                static_cast<QWidget *>(m_healPanel),
+                               static_cast<QWidget *>(m_dodgeBurnPanel),
                                static_cast<QWidget *>(m_layersPanel),
                                static_cast<QWidget *>(m_adjustmentsPanel),
                                static_cast<QWidget *>(m_infoPanel)}) {
@@ -5128,6 +5286,8 @@ void MainWindow::syncBrushPanel()
 {
     if (m_brushTarget == BrushTarget::Heal)
         m_healPanel->setBrushParams(m_brushSize, m_brushHardness);
+    else if (m_brushTarget == BrushTarget::DodgeBurn)
+        m_dodgeBurnPanel->setBrushParams(m_brushSize, m_brushHardness);
     else if (m_brushTarget == BrushTarget::Selective)
         m_layersPanel->setBrushParams(m_brushSize, m_brushHardness);
 }
