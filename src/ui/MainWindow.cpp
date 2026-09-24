@@ -4317,6 +4317,9 @@ void MainWindow::closeHealTool()
     m_healPainting = false;
     doc().heal->setHealMask(m_brushMask); // commit (one global undo step)
     m_brushUndo.clear();
+    // Hide first: updateCropView keeps the full-frame (uncropped) view while this
+    // panel is visible, which would leave the crop looking lost after closing.
+    m_healPanel->hide();
     updateCropView(); // back to the cropped browse view
     refreshBaseImage();
     updatePreview();
@@ -4357,6 +4360,9 @@ void MainWindow::closeDodgeBurnTool()
     m_brushTarget = BrushTarget::None;
     m_healPainting = false;
     m_brushUndo.clear();
+    // Hide first: updateCropView keeps the full-frame (uncropped) view while this
+    // panel is visible, which would leave the crop looking lost after closing.
+    m_dodgeBurnPanel->hide();
     updateCropView(); // back to the cropped browse view
     refreshBaseImage();
     updatePreview();
