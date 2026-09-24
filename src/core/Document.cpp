@@ -7,6 +7,7 @@
 #include "core/CurvesNode.h"
 #include "core/DefringeNode.h"
 #include "core/DenoiseNode.h"
+#include "core/DodgeBurnNode.h"
 #include "core/GrainNode.h"
 #include "core/HealNode.h"
 #include "core/LensCorrectionNode.h"
@@ -44,6 +45,10 @@ void Document::buildBaseGraph()
     sharpen = static_cast<SharpenNode *>(graph.addNode(std::make_unique<SharpenNode>()));
     structure =
         static_cast<StructureNode *>(graph.addNode(std::make_unique<StructureNode>()));
+    // Dodge & burn: painted local exposure, baked after the detail passes so the
+    // brush lightens/darkens the sharpened result, before the global tone ops.
+    dodgeBurn =
+        static_cast<DodgeBurnNode *>(graph.addNode(std::make_unique<DodgeBurnNode>()));
     tune = static_cast<TuneNode *>(graph.addNode(std::make_unique<TuneNode>()));
     colorMixer =
         static_cast<ColorMixerNode *>(graph.addNode(std::make_unique<ColorMixerNode>()));

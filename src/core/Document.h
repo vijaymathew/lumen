@@ -23,6 +23,7 @@ class MonoNode;
 class ColorMixerNode;
 class ColorGradeNode;
 class HealNode;
+class DodgeBurnNode;
 class LensCorrectionNode;
 class DenoiseNode;
 class DefringeNode;
@@ -70,7 +71,7 @@ public:
     Document &operator=(const Document &) = delete;
 
     // Builds the Base layer's fixed node chain (lens -> heal -> denoise ->
-    // defringe -> sharpen -> structure -> tune -> colorMixer -> curves ->
+    // defringe -> sharpen -> structure -> dodgeBurn -> tune -> colorMixer -> curves ->
     // colorGrade -> lut -> mono -> grain), caches the raw node pointers, and
     // snapshots the pristine graph into defaultGraphState. Call once, right after
     // construction, before installing any source. Every document (each tab) needs
@@ -115,7 +116,8 @@ public:
     QJsonObject defaultGraphState;
 
     // Cached raw pointers to the Base-layer nodes (owned by `graph`). The bake
-    // order runs lens -> heal -> denoise -> defringe -> sharpen -> structure
+    // order runs lens -> heal -> denoise -> defringe -> sharpen -> structure ->
+    // dodgeBurn
     // (baked in libvips), then the pointwise ops the shader replicates:
     // tune -> colorMixer -> curves -> colorGrade -> lut -> mono -> grain.
     TuneNode *tune = nullptr;
@@ -125,6 +127,7 @@ public:
     ColorMixerNode *colorMixer = nullptr;
     ColorGradeNode *colorGrade = nullptr;
     HealNode *heal = nullptr;
+    DodgeBurnNode *dodgeBurn = nullptr;
     LensCorrectionNode *lens = nullptr;
     DenoiseNode *denoise = nullptr;
     DefringeNode *defringe = nullptr;

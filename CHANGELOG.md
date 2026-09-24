@@ -5,6 +5,17 @@ All notable changes to Lumen are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Dodge and burn brushes** — paint to lighten (Dodge) or darken (Burn) parts of
+  the image. Open them from the new "Dodge & burn brushes" buttons in the Tone
+  panel, or from the command palette. Exposure (strength) and Range
+  (shadows / midtones / highlights) stay adjustable after painting; Erase and
+  Clear take painting back. Non-destructive, saved with the project, and applied
+  on export.
+
 ## [0.1.4] — 2026-08-24
 
 ### Fixed

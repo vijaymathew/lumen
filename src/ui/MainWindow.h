@@ -15,6 +15,7 @@
 #include "core/ColorGradeNode.h"
 #include "core/CurvesNode.h"
 #include "core/EditGraph.h"
+#include "core/DodgeBurnNode.h"
 #include "core/HealNode.h"
 #include "core/LensCorrectionNode.h"
 #include "core/LutNode.h"
@@ -43,6 +44,7 @@ class DenoisePanel;
 class DefringePanel;
 class RawSettingsPanel;
 class HealPanel;
+class DodgeBurnPanel;
 class HistogramWidget;
 class LayersPanel;
 class AdjustmentsPanel;
@@ -390,7 +392,7 @@ private:
     // busy badge labels by which op the user actually triggered. A handler sets
     // m_bakeOp before kicking the bake; refreshBaseImage consumes it for the
     // label and falls back to precedence when it's Auto (e.g. a load/lens refresh).
-    enum class BakeOp { Auto, Heal, Denoise, Defringe, Sharpen, Structure, Lens, Preset };
+    enum class BakeOp { Auto, Heal, DodgeBurn, Denoise, Defringe, Sharpen, Structure, Lens, Preset };
     BakeOp m_bakeOp = BakeOp::Auto;
     // Canvas colour-pick has two purposes: choosing a colour-mask target, or the
     // white-balance eyedropper. `m_pickPurpose` routes the picked point.
@@ -409,6 +411,12 @@ private:
     void syncBrushMaskToLayer(); // copy the working brush mask into the active layer
     void openHealTool();
     void closeHealTool();
+    // Dodge (true) / burn (false) brush. The session mask (m_brushMask) holds the
+    // active brush's coverage; switching brush commits it to the node and loads
+    // the other's.
+    void openDodgeBurnTool(bool dodge);
+    void closeDodgeBurnTool();
+    void commitDodgeBurnMask(); // m_brushMask -> the active brush's node mask
     // base texture = source healed by the heal node. keepView preserves zoom/pan
     // (true for in-place heal updates; false only when loading a new image).
     void refreshBaseImage(bool keepView = true);
@@ -453,6 +461,7 @@ private:
     DefringePanel *m_defringePanel = nullptr;
     RawSettingsPanel *m_rawPanel = nullptr;
     HealPanel *m_healPanel = nullptr;
+    DodgeBurnPanel *m_dodgeBurnPanel = nullptr;
     HistogramWidget *m_histogram = nullptr;
     QTimer *m_histTimer = nullptr; // debounces histogram recompute
     QTimer *m_adjTimer = nullptr;  // debounces Adjustments (history) panel refresh
@@ -525,7 +534,7 @@ private:
     // canvas: strokes are committed into the active Document's graph (the
     // layer mask / heal node), so it stays here rather than on Document. A tab
     // switch will end the in-progress session (Stage 4).
-    enum class BrushTarget { None, Selective, Heal };
+    enum class BrushTarget { None, Selective, Heal, DodgeBurn };
     BrushTarget m_brushTarget = BrushTarget::None;
     MaskBuffer m_brushMask;
     MaskBuffer m_strokeMask;                     // current stroke's footprint (heal overlay)
@@ -535,6 +544,7 @@ private:
     bool m_brushAdd = true;
     QPointF m_lastBrushPoint;
     bool m_brushHasLast = false;
+    bool m_dodgeMode = true;          // dodge (true) vs burn brush for BrushTarget::DodgeBurn
     bool m_healPainting = false;      // a heal stroke is in progress (red overlay)
     bool m_selectivePainting = false; // a selective-mask stroke is in progress (forces the overlay)
     bool m_adjustHardness = false;    // s/h + wheel target: false=size, true=hardness
