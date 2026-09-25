@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-09-25
+
 ### Added
 
 - **Dodge and burn brushes** — paint to lighten (Dodge) or darken (Burn) parts of
@@ -256,6 +258,7 @@ and the interactive preview on the GPU. Your original is never touched.
   depth, output resize (long-edge), and colour management (sRGB, Display P3, or
   Adobe RGB with the matching ICC profile embedded).
 
+[0.1.5]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.5
 [0.1.4]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.4
 [0.1.3]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.3
 [0.1.2]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.2
