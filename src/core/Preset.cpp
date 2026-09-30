@@ -17,7 +17,7 @@ namespace {
 constexpr QLatin1String kMarker{"lumenPreset"};
 
 // The node types a preset carries: global, image-independent adjustments. The
-// photo-specific nodes — "heal" (pixel-space strokes) and "lens" (EXIF-driven
+// photo-specific nodes — "heal"/"retouch"/"dodgeburn" (pixel-space strokes) and "lens" (EXIF-driven
 // perspective/geometry) — are intentionally excluded, so a preset transfers a
 // look rather than another image's repairs or geometry.
 bool isCreativeType(const QString &type)

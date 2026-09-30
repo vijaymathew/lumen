@@ -134,6 +134,8 @@ add_library(lumen_core STATIC
     src/core/Inpaint.cpp
     src/core/HealNode.h
     src/core/HealNode.cpp
+    src/core/RetouchNode.h
+    src/core/RetouchNode.cpp
     src/core/DodgeBurnNode.h
     src/core/DodgeBurnNode.cpp
     src/core/LensCorrectionNode.h
@@ -461,6 +463,11 @@ if(BUILD_TESTING)
     target_link_libraries(heal_test PRIVATE lumen_core)
     target_compile_options(heal_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME heal_test COMMAND heal_test)
+
+    add_executable(retouch_test tests/retouch_test.cpp)
+    target_link_libraries(retouch_test PRIVATE lumen_core)
+    target_compile_options(retouch_test PRIVATE ${LUMEN_WARNINGS})
+    add_test(NAME retouch_test COMMAND retouch_test)
 
     add_executable(dodgeburn_test tests/dodgeburn_test.cpp)
     target_link_libraries(dodgeburn_test PRIVATE lumen_core)

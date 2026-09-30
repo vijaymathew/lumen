@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Retouch brush** — in the Heal panel, switch to Retouch, click Pick colour and
+  sample a region of the image, then paint that colour over another region.
+  Pick again to paint with a different colour (each colour keeps its own strokes);
+  Opacity stays adjustable, Erase and Clear take painting back. Also in the command
+  palette. Non-destructive, saved with the project, and applied on export.
 - **Dodge and burn brushes** — paint to lighten (Dodge) or darken (Burn) parts of
   the image. Open them from the new "Dodge & burn brushes" buttons in the Tone
   panel, or from the command palette. Exposure (strength) and Range

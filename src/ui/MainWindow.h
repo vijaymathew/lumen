@@ -17,6 +17,7 @@
 #include "core/EditGraph.h"
 #include "core/DodgeBurnNode.h"
 #include "core/HealNode.h"
+#include "core/RetouchNode.h"
 #include "core/LensCorrectionNode.h"
 #include "core/LutNode.h"
 #include "core/MaskSpec.h"
@@ -392,11 +393,11 @@ private:
     // busy badge labels by which op the user actually triggered. A handler sets
     // m_bakeOp before kicking the bake; refreshBaseImage consumes it for the
     // label and falls back to precedence when it's Auto (e.g. a load/lens refresh).
-    enum class BakeOp { Auto, Heal, DodgeBurn, Denoise, Defringe, Sharpen, Structure, Lens, Preset };
+    enum class BakeOp { Auto, Heal, Retouch, DodgeBurn, Denoise, Defringe, Sharpen, Structure, Lens, Preset };
     BakeOp m_bakeOp = BakeOp::Auto;
     // Canvas colour-pick has two purposes: choosing a colour-mask target, or the
     // white-balance eyedropper. `m_pickPurpose` routes the picked point.
-    enum class PickPurpose { MaskColour, WhiteBalance };
+    enum class PickPurpose { MaskColour, WhiteBalance, RetouchColour };
     PickPurpose m_pickPurpose = PickPurpose::MaskColour;
     void onColorPicked(const QPointF &imageNormalized);
     // A selective adjustment is a masked layer (mask = Luminosity/Colour/Brush +
@@ -409,7 +410,13 @@ private:
     // Layers-panel Add button and the Selective command.
     Layer &addMaskedAdjustmentLayer(const QString &name);
     void syncBrushMaskToLayer(); // copy the working brush mask into the active layer
-    void openHealTool();
+    // Heal and retouch share one panel and brush session: `retouch` picks the mode.
+    void openHealTool(bool retouch = false);
+    // Loads the node's stored strokes for the mode into the brush session.
+    void loadHealSession(bool retouch);
+    void commitHealSession();          // session -> heal mask / retouch patch
+    void commitRetouchMask();          // m_brushMask -> the current retouch patch
+    void setRetouchColour(const QColor &colour); // a new colour starts a new patch
     void closeHealTool();
     // Dodge (true) / burn (false) brush. The session mask (m_brushMask) holds the
     // active brush's coverage; switching brush commits it to the node and loads
@@ -534,7 +541,7 @@ private:
     // canvas: strokes are committed into the active Document's graph (the
     // layer mask / heal node), so it stays here rather than on Document. A tab
     // switch will end the in-progress session (Stage 4).
-    enum class BrushTarget { None, Selective, Heal, DodgeBurn };
+    enum class BrushTarget { None, Selective, Heal, Retouch, DodgeBurn };
     BrushTarget m_brushTarget = BrushTarget::None;
     MaskBuffer m_brushMask;
     MaskBuffer m_strokeMask;                     // current stroke's footprint (heal overlay)
@@ -544,6 +551,8 @@ private:
     bool m_brushAdd = true;
     QPointF m_lastBrushPoint;
     bool m_brushHasLast = false;
+    QColor m_retouchColour;           // colour being painted in Retouch mode (invalid = none yet)
+    size_t m_retouchIndex = 0;        // the RetouchNode patch the session mask belongs to
     bool m_dodgeMode = true;          // dodge (true) vs burn brush for BrushTarget::DodgeBurn
     bool m_healPainting = false;      // a heal stroke is in progress (red overlay)
     bool m_selectivePainting = false; // a selective-mask stroke is in progress (forces the overlay)
