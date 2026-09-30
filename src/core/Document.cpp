@@ -10,6 +10,7 @@
 #include "core/DodgeBurnNode.h"
 #include "core/GrainNode.h"
 #include "core/HealNode.h"
+#include "core/RetouchNode.h"
 #include "core/LensCorrectionNode.h"
 #include "core/LutNode.h"
 #include "core/MonoNode.h"
@@ -40,6 +41,9 @@ void Document::buildBaseGraph()
     lens =
         static_cast<LensCorrectionNode *>(graph.addNode(std::make_unique<LensCorrectionNode>()));
     heal = static_cast<HealNode *>(graph.addNode(std::make_unique<HealNode>()));
+    // Retouch: painted colour patches, right after heal so denoise/sharpen treat
+    // the touched-up pixels like the rest of the image.
+    retouch = static_cast<RetouchNode *>(graph.addNode(std::make_unique<RetouchNode>()));
     denoise = static_cast<DenoiseNode *>(graph.addNode(std::make_unique<DenoiseNode>()));
     defringe = static_cast<DefringeNode *>(graph.addNode(std::make_unique<DefringeNode>()));
     sharpen = static_cast<SharpenNode *>(graph.addNode(std::make_unique<SharpenNode>()));

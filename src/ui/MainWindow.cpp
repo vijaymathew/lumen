@@ -5,6 +5,7 @@
 #include "core/NodeFactory.h"
 #include "core/DodgeBurnNode.h"
 #include "core/HealNode.h"
+#include "core/RetouchNode.h"
 #include "core/Image.h"
 #include "core/LayerPreview.h"
 #include "core/MaskSpec.h"
@@ -1051,9 +1052,41 @@ MainWindow::MainWindow(QWidget *parent)
             return;
         m_brushUndo.push_back(m_brushMask.data); // clear is undoable
         std::fill(m_brushMask.data.begin(), m_brushMask.data.end(), 0.0f);
-        doc().heal->setHealMask(m_brushMask);
+        if (m_brushTarget == BrushTarget::Retouch) {
+            commitRetouchMask(); // clears the current colour's strokes only
+            m_bakeOp = BakeOp::Retouch;
+        } else {
+            doc().heal->setHealMask(m_brushMask);
+        }
         refreshBaseImage();
         updatePreview();
+    });
+    connect(m_healPanel, &HealPanel::modeChanged, this, [this](bool retouch) {
+        if (m_brushTarget != BrushTarget::Heal && m_brushTarget != BrushTarget::Retouch)
+            return;
+        commitHealSession(); // park the outgoing mode's strokes on their node
+        loadHealSession(retouch);
+        m_healPanel->setRetouchColour(m_retouchColour);
+        if (retouch && !m_retouchColour.isValid())
+            showHint(QStringLiteral("Pick a colour to paint with"));
+        m_healPainting = false;
+        recomputeSelectiveMask();
+        refreshBaseImage();
+        updatePreview();
+    });
+    connect(m_healPanel, &HealPanel::pickColourRequested, this, [this] {
+        m_pickPurpose = PickPurpose::RetouchColour;
+        m_canvas->setBrushMode(false); // the pick owns the canvas until it lands
+        m_canvas->setColorPickMode(true);
+        showHint(QStringLiteral("Click the colour to sample"));
+    });
+    connect(m_healPanel, &HealPanel::opacityChanged, this, [this](int percent) {
+        doc().retouch->setOpacity(percent);
+        if (doc().retouch->hasEffect()) {
+            m_bakeOp = BakeOp::Retouch;
+            refreshBaseImage();
+            updatePreview();
+        }
     });
     connect(m_healPanel, &HealPanel::qualityChanged, this, [this](bool hq) {
         doc().heal->setHighQuality(hq);
@@ -1526,6 +1559,7 @@ void MainWindow::buildCommands()
         {QStringLiteral("denoise"), QStringLiteral("Denoise"), detail},
         {QStringLiteral("defringe"), QStringLiteral("Defringe"), detail},
         {QStringLiteral("heal"), QStringLiteral("Healing brush"), detail},
+        {QStringLiteral("retouch"), QStringLiteral("Retouch brush (paint a picked colour)"), detail},
         {QStringLiteral("dodge"), QStringLiteral("Dodge brush (lighten)"), toneColor},
         {QStringLiteral("burn"), QStringLiteral("Burn brush (darken)"), toneColor},
         {QStringLiteral("raw"), QStringLiteral("RAW defaults (auto adjustments)"), detail},
@@ -1610,6 +1644,8 @@ void MainWindow::runCommand(const QString &id)
         toggleClipping();
     } else if (id == QLatin1String("heal")) {
         openHealTool();
+    } else if (id == QLatin1String("retouch")) {
+        openHealTool(true);
     } else if (id == QLatin1String("dodge")) {
         openDodgeBurnTool(true);
     } else if (id == QLatin1String("burn")) {
@@ -3919,34 +3955,36 @@ void MainWindow::rebuildAdjustments()
             addNodeAdj(QStringLiteral("Lens"), 0, doc().lens);
         if (doc().heal && !doc().heal->healMask().isEmpty())
             addNodeAdj(QStringLiteral("Heal"), 1, doc().heal);
+        if (doc().retouch && doc().retouch->hasEffect())
+            addNodeAdj(QStringLiteral("Retouch"), 2, doc().retouch);
         if (const auto v = doc().denoise ? doc().denoise->values() : DenoiseNode::Values{};
             v.enabled && (v.luma > 0.0f || v.chroma > 0.0f))
-            addNodeAdj(QStringLiteral("Noise Reduction"), 2, doc().denoise);
+            addNodeAdj(QStringLiteral("Noise Reduction"), 3, doc().denoise);
         if (const auto v = doc().defringe ? doc().defringe->values() : DefringeNode::Values{};
             v.enabled && (v.purple > 0.0f || v.green > 0.0f))
-            addNodeAdj(QStringLiteral("Defringe"), 3, doc().defringe);
+            addNodeAdj(QStringLiteral("Defringe"), 4, doc().defringe);
         if (const auto v = doc().sharpen ? doc().sharpen->values() : SharpenNode::Values{};
             v.enabled && v.amount > 0.0f)
-            addNodeAdj(QStringLiteral("Sharpen"), 4, doc().sharpen);
+            addNodeAdj(QStringLiteral("Sharpen"), 5, doc().sharpen);
         if (const auto v = doc().structure ? doc().structure->values() : StructureNode::Values{};
             v.enabled && v.amount != 0.0f)
-            addNodeAdj(QStringLiteral("Structure"), 5, doc().structure);
+            addNodeAdj(QStringLiteral("Structure"), 6, doc().structure);
         if (doc().dodgeBurn && doc().dodgeBurn->hasEffect())
-            addNodeAdj(QStringLiteral("Dodge & Burn"), 6, doc().dodgeBurn);
+            addNodeAdj(QStringLiteral("Dodge & Burn"), 7, doc().dodgeBurn);
         if (nodeIsActive(doc().tune))
-            addNodeAdj(QStringLiteral("Tone"), 7, doc().tune);
+            addNodeAdj(QStringLiteral("Tone"), 8, doc().tune);
         if (nodeIsActive(doc().colorMixer))
-            addNodeAdj(QStringLiteral("Color Mixer"), 8, doc().colorMixer);
+            addNodeAdj(QStringLiteral("Color Mixer"), 9, doc().colorMixer);
         if (nodeIsActive(doc().curves))
-            addNodeAdj(QStringLiteral("Curves"), 9, doc().curves);
+            addNodeAdj(QStringLiteral("Curves"), 10, doc().curves);
         if (nodeIsActive(doc().colorGrade))
-            addNodeAdj(QStringLiteral("Color Grade"), 10, doc().colorGrade);
+            addNodeAdj(QStringLiteral("Color Grade"), 11, doc().colorGrade);
         if (nodeIsActive(doc().lut))
-            addNodeAdj(QStringLiteral("Look"), 11, doc().lut);
+            addNodeAdj(QStringLiteral("Look"), 12, doc().lut);
         if (nodeIsActive(doc().mono))
-            addNodeAdj(QStringLiteral("B&W"), 12, doc().mono);
+            addNodeAdj(QStringLiteral("B&W"), 13, doc().mono);
         if (nodeIsActive(doc().grain))
-            addNodeAdj(QStringLiteral("Grain"), 13, doc().grain);
+            addNodeAdj(QStringLiteral("Grain"), 14, doc().grain);
 
         // Selective layers (non-Base), then the final geometric/finishing stages.
         for (int i = 1; i < doc().graph.layerCount(); ++i) {
@@ -4257,7 +4295,8 @@ void MainWindow::updateMaskEditing()
     // The active layer's mask is a Brush mask and the Layers panel is open:
     // enable the canvas brush so left-drag paints. (Heal / dodge-burn own the brush when
     // their tool is active, so don't fight it.)
-    if (m_brushTarget == BrushTarget::Heal || m_brushTarget == BrushTarget::DodgeBurn)
+    if (m_brushTarget == BrushTarget::Heal || m_brushTarget == BrushTarget::Retouch
+        || m_brushTarget == BrushTarget::DodgeBurn)
         return;
     const int idx = doc().graph.activeLayerIndex();
     const bool brushLayer = m_layersPanel->isVisible() && idx > 0
@@ -4291,18 +4330,88 @@ void MainWindow::endMaskBrushSession()
     }
 }
 
-void MainWindow::openHealTool()
+void MainWindow::loadHealSession(bool retouch)
 {
-    positionToolPanel(m_healPanel);
-    m_healPanel->reveal(m_brushSize, m_brushHardness, m_brushAdd, doc().heal->highQuality());
-
-    // Restore the heal session from the node (may be empty).
-    m_brushMask = doc().heal->healMask();
     m_brushUndo.clear();
     m_brushHasLast = false;
+    if (retouch) {
+        m_brushTarget = BrushTarget::Retouch;
+        // Resume the last patch (its colour + strokes); with none, keep whatever
+        // colour was picked last and start an empty session.
+        const auto &patches = doc().retouch->patches();
+        if (!patches.empty()) {
+            const RetouchNode::Patch &p = patches.back();
+            m_retouchIndex = patches.size() - 1;
+            m_retouchColour = QColor(p.r, p.g, p.b);
+            m_brushMask = p.mask;
+        } else {
+            m_retouchIndex = 0;
+            m_brushMask = MaskBuffer();
+            if (m_retouchColour.isValid())
+                initBrushMask();
+        }
+        return;
+    }
+    m_brushTarget = BrushTarget::Heal;
+    m_brushMask = doc().heal->healMask();
     if (m_brushMask.isEmpty())
         initBrushMask();
-    m_brushTarget = BrushTarget::Heal;
+}
+
+void MainWindow::commitRetouchMask()
+{
+    // Nothing to commit before a colour is picked. An untouched (all-zero) session
+    // removes its patch, so a tool that was only opened leaves no edit behind.
+    if (!m_retouchColour.isValid())
+        return;
+    MaskBuffer mask = m_brushMask;
+    if (std::all_of(mask.data.begin(), mask.data.end(), [](float v) { return v == 0.0f; }))
+        mask = MaskBuffer();
+    doc().retouch->setPatch(m_retouchIndex, static_cast<uint8_t>(m_retouchColour.red()),
+                            static_cast<uint8_t>(m_retouchColour.green()),
+                            static_cast<uint8_t>(m_retouchColour.blue()), mask);
+}
+
+void MainWindow::commitHealSession()
+{
+    if (m_brushTarget == BrushTarget::Retouch)
+        commitRetouchMask();
+    else if (m_brushTarget == BrushTarget::Heal)
+        doc().heal->setHealMask(m_brushMask);
+}
+
+void MainWindow::setRetouchColour(const QColor &colour)
+{
+    if (colour == m_retouchColour)
+        return;
+    const bool painted =
+        std::any_of(m_brushMask.data.begin(), m_brushMask.data.end(), [](float v) { return v > 0.0f; });
+    if (painted) {
+        // A different colour starts a new patch; the old colour's strokes stay.
+        commitRetouchMask();
+        m_retouchIndex = doc().retouch->patches().size();
+        m_brushUndo.clear();
+        m_brushMask = MaskBuffer();
+    }
+    m_retouchColour = colour;
+    if (m_brushMask.isEmpty())
+        initBrushMask();
+    m_healPanel->setRetouchColour(colour);
+    if (painted) {
+        m_bakeOp = BakeOp::Retouch;
+        refreshBaseImage();
+        updatePreview();
+    }
+}
+
+void MainWindow::openHealTool(bool retouch)
+{
+    positionToolPanel(m_healPanel);
+    loadHealSession(retouch);
+    m_healPanel->reveal(m_brushSize, m_brushHardness, m_brushAdd, doc().heal->highQuality(),
+                        retouch, m_retouchColour, doc().retouch->opacity());
+    if (retouch && !m_retouchColour.isValid())
+        showHint(QStringLiteral("Pick a colour to paint with"));
     m_canvas->setBrushCursor(m_brushSize, m_brushHardness / 100.0f);
     m_canvas->setBrushMode(true);
     updateCropView(); // full-frame rule: heal paints in the un-oriented frame
@@ -4313,9 +4422,13 @@ void MainWindow::openHealTool()
 void MainWindow::closeHealTool()
 {
     m_canvas->setBrushMode(false);
+    if (m_pickPurpose == PickPurpose::RetouchColour) {
+        m_pickPurpose = PickPurpose::MaskColour; // cancel a pending colour pick
+        m_canvas->setColorPickMode(false);
+    }
+    commitHealSession(); // commit (one global undo step)
     m_brushTarget = BrushTarget::None;
     m_healPainting = false;
-    doc().heal->setHealMask(m_brushMask); // commit (one global undo step)
     m_brushUndo.clear();
     // Hide first: updateCropView keeps the full-frame (uncropped) view while this
     // panel is visible, which would leave the crop looking lost after closing.
@@ -4407,6 +4520,8 @@ void MainWindow::refreshBaseImage(bool keepView)
     // disabled node bakes nothing — matching the pointwise/preview-LUT path.
     const bool healActive =
         doc().heal && doc().heal->isEnabled() && !doc().heal->healMask().isEmpty();
+    const bool retouchActive =
+        doc().retouch && doc().retouch->isEnabled() && doc().retouch->hasEffect();
     const bool dodgeBurnActive =
         doc().dodgeBurn && doc().dodgeBurn->isEnabled() && doc().dodgeBurn->hasEffect();
     const DenoiseNode::Values dv =
@@ -4426,7 +4541,7 @@ void MainWindow::refreshBaseImage(bool keepView)
     const bool structureActive =
         doc().structure && doc().structure->isEnabled() && stv.enabled && stv.amount != 0.0f;
     if (doc().graph.source().isNull()
-        || (!healActive && !denoiseActive && !defringeActive && !sharpenActive
+        || (!healActive && !retouchActive && !denoiseActive && !defringeActive && !sharpenActive
             && !structureActive && !dodgeBurnActive)) {
         if (!doc().sourceQImage.isNull())
             m_canvas->setImage(doc().sourceQImage, keepView);
@@ -4444,7 +4559,13 @@ void MainWindow::refreshBaseImage(bool keepView)
     const Image src = doc().workingSource.isNull() ? doc().graph.source() : doc().workingSource;
     const MaskBuffer mask = healActive ? doc().heal->healMask() : MaskBuffer();
     const bool hq = doc().heal && doc().heal->highQuality();
-    // Snapshot the node's settings for the worker (the UI thread may keep painting).
+    // Snapshot the nodes' settings for the worker (the UI thread may keep painting).
+    std::vector<RetouchNode::Patch> retouchPatches;
+    int retouchOpacity = RetouchNode::kMaxOpacity;
+    if (retouchActive) {
+        retouchPatches = doc().retouch->patches();
+        retouchOpacity = doc().retouch->opacity();
+    }
     MaskBuffer dodgeMask, burnMask;
     int dbExposure = DodgeBurnNode::kDefaultExposure;
     DodgeBurnNode::Range dbRange = DodgeBurnNode::Range::Midtones;
@@ -4454,8 +4575,8 @@ void MainWindow::refreshBaseImage(bool keepView)
         dbExposure = doc().dodgeBurn->exposure();
         dbRange = doc().dodgeBurn->range();
     }
-    if (healActive || denoiseActive || defringeActive || sharpenActive || structureActive
-        || dodgeBurnActive) {
+    if (healActive || retouchActive || denoiseActive || defringeActive || sharpenActive
+        || structureActive || dodgeBurnActive) {
         // Label by the op the user triggered (if it's actually active); otherwise
         // fall back to precedence (heal first) for unattributed refreshes.
         QString label;
@@ -4474,10 +4595,13 @@ void MainWindow::refreshBaseImage(bool keepView)
             label = QStringLiteral("Denoising…");
         else if (triggeredBy == BakeOp::Heal && healActive)
             label = QStringLiteral("Healing…");
+        else if (triggeredBy == BakeOp::Retouch && retouchActive)
+            label = QStringLiteral("Retouching…");
         else if (triggeredBy == BakeOp::DodgeBurn && dodgeBurnActive)
             label = QStringLiteral("Dodging & burning…");
         if (label.isEmpty())
             label = healActive ? QStringLiteral("Healing…")
+                  : retouchActive ? QStringLiteral("Retouching…")
                   : denoiseActive ? QStringLiteral("Denoising…")
                   : defringeActive ? QStringLiteral("Defringing…")
                   : sharpenActive ? QStringLiteral("Sharpening…")
@@ -4491,7 +4615,7 @@ void MainWindow::refreshBaseImage(bool keepView)
 
     m_healWatcher.setFuture(
         QtConcurrent::run([d, gen, src, mask, hq, dv, fv, sv, stv, dodgeMask, burnMask, dbExposure,
-                           dbRange, dodgeBurnActive]() -> QImage {
+                           dbRange, dodgeBurnActive, retouchPatches, retouchOpacity]() -> QImage {
             if (gen != d->healGen)
                 return QImage(); // superseded before we even started
             Image img = src;
@@ -4500,6 +4624,12 @@ void MainWindow::refreshBaseImage(bool keepView)
                 heal.setHealMask(mask);
                 heal.setHighQuality(hq);
                 img = heal.apply(img);
+            }
+            if (!retouchPatches.empty()) {
+                RetouchNode retouch;
+                retouch.setPatches(retouchPatches);
+                retouch.setOpacity(retouchOpacity);
+                img = retouch.apply(img);
             }
             if (dv.enabled && (dv.luma > 0.0f || dv.chroma > 0.0f)) {
                 DenoiseNode denoise;
@@ -4661,6 +4791,7 @@ void MainWindow::brushAt(const QPointF &norm)
     // Heal and dodge/burn share the "bake on stroke end" flow: while dragging they
     // show the stroke footprint as an overlay, then re-bake when the stroke ends.
     const bool heal = (m_brushTarget == BrushTarget::Heal
+                       || m_brushTarget == BrushTarget::Retouch
                        || m_brushTarget == BrushTarget::DodgeBurn);
 
     // Stamp into the mask being painted, and (for heal) mirror the footprint into
@@ -4725,6 +4856,13 @@ void MainWindow::endBrushStroke()
         refreshBaseImage();
         recomputeSelectiveMask();
         updatePreview();
+    } else if (m_brushTarget == BrushTarget::Retouch) {
+        m_healPainting = false;
+        commitRetouchMask();
+        m_bakeOp = BakeOp::Retouch;
+        refreshBaseImage();
+        recomputeSelectiveMask();
+        updatePreview();
     } else if (m_brushTarget == BrushTarget::DodgeBurn) {
         m_healPainting = false;
         commitDodgeBurnMask();
@@ -4753,6 +4891,12 @@ bool MainWindow::brushSessionUndo()
         refreshBaseImage();
         recomputeSelectiveMask();
         updatePreview();
+    } else if (m_brushTarget == BrushTarget::Retouch) {
+        commitRetouchMask();
+        m_bakeOp = BakeOp::Retouch;
+        refreshBaseImage();
+        recomputeSelectiveMask();
+        updatePreview();
     } else if (m_brushTarget == BrushTarget::DodgeBurn) {
         commitDodgeBurnMask();
         m_bakeOp = BakeOp::DodgeBurn;
@@ -4776,6 +4920,31 @@ void MainWindow::onColorPicked(const QPointF &norm)
     const int y = std::clamp(static_cast<int>(std::lround(norm.y() * (doc().sourceQImage.height() - 1))),
                              0, doc().sourceQImage.height() - 1);
     const QColor c = doc().sourceQImage.pixelColor(x, y);
+
+    // Retouch eyedropper: sample a small neighbourhood (single pixels are noisy).
+    if (m_pickPurpose == PickPurpose::RetouchColour) {
+        m_pickPurpose = PickPurpose::MaskColour;
+        if (m_brushTarget == BrushTarget::Retouch)
+            m_canvas->setBrushMode(true); // hand the canvas back to the brush
+        const QImage &src = doc().sourceQImage;
+        constexpr int kRadius = 2;
+        int r = 0, g = 0, b = 0, n = 0;
+        for (int dy = -kRadius; dy <= kRadius; ++dy) {
+            for (int dx = -kRadius; dx <= kRadius; ++dx) {
+                const int sx = x + dx, sy = y + dy;
+                if (sx < 0 || sy < 0 || sx >= src.width() || sy >= src.height())
+                    continue;
+                const QColor p = src.pixelColor(sx, sy);
+                r += p.red();
+                g += p.green();
+                b += p.blue();
+                ++n;
+            }
+        }
+        if (n > 0 && m_brushTarget == BrushTarget::Retouch)
+            setRetouchColour(QColor(r / n, g / n, b / n));
+        return;
+    }
 
     // White-balance eyedropper: make the sampled (as-shot baseline) pixel neutral.
     if (m_pickPurpose == PickPurpose::WhiteBalance) {
@@ -4872,8 +5041,9 @@ void MainWindow::afterHistoryChange()
     if (m_layersPanel->isVisible())
         refreshLayersPanel();
     if (m_healPanel->isVisible()) {
-        m_brushMask = doc().heal->healMask(); // sync session to restored state
-        m_brushUndo.clear();
+        // Sync the session to the restored state.
+        loadHealSession(m_brushTarget == BrushTarget::Retouch);
+        m_healPanel->setRetouchColour(m_retouchColour);
     }
     if (m_dodgeBurnPanel->isVisible()) {
         m_brushMask = m_dodgeMode ? doc().dodgeBurn->dodgeMask() : doc().dodgeBurn->burnMask();
@@ -5290,7 +5460,7 @@ void MainWindow::adjustBrush(int steps)
 
 void MainWindow::syncBrushPanel()
 {
-    if (m_brushTarget == BrushTarget::Heal)
+    if (m_brushTarget == BrushTarget::Heal || m_brushTarget == BrushTarget::Retouch)
         m_healPanel->setBrushParams(m_brushSize, m_brushHardness);
     else if (m_brushTarget == BrushTarget::DodgeBurn)
         m_dodgeBurnPanel->setBrushParams(m_brushSize, m_brushHardness);

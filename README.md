@@ -46,6 +46,7 @@ original is never touched.
 ### Detail & repair
 
 - **Healing brush** — content-aware inpainting to remove spots and distractions.
+- **Retouch brush** — sample a colour from one part of the image and paint it over another.
 - **Dodge & burn brushes** — paint to lighten or darken, limited to shadows, midtones or highlights.
 - **Sharpen**, **Denoise**, and **Defringe** (chromatic-aberration cleanup).
 

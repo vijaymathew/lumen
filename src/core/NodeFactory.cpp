@@ -9,6 +9,7 @@
 #include "core/EditNode.h"
 #include "core/GrainNode.h"
 #include "core/HealNode.h"
+#include "core/RetouchNode.h"
 #include "core/LensCorrectionNode.h"
 #include "core/LutNode.h"
 #include "core/MonoNode.h"
@@ -34,6 +35,8 @@ std::unique_ptr<EditNode> createNode(const QString &typeName)
         return std::make_unique<ColorMixerNode>();
     if (typeName == QLatin1String("heal"))
         return std::make_unique<HealNode>();
+    if (typeName == QLatin1String("retouch"))
+        return std::make_unique<RetouchNode>();
     if (typeName == QLatin1String("dodgeburn"))
         return std::make_unique<DodgeBurnNode>();
     if (typeName == QLatin1String("lens"))
