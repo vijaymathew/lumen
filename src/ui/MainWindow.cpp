@@ -2993,6 +2993,7 @@ void MainWindow::refreshLayersPanel()
     syncZoneGizmo();
     updateMaskEditing();
     recomputeSelectiveMask(); // keep the overlay in sync with the active layer
+    updateCropView();         // Base shows the crop; selective layers edit the full frame
 }
 
 void MainWindow::reseedOpenPanels()
@@ -3655,9 +3656,10 @@ void MainWindow::updateCropView()
     if (m_cropPanel->isVisible()) {
         // The crop tool itself wants the full oriented frame to edit against.
         mode = CanvasWidget::CropEditing;
-    } else if (m_layersPanel->isVisible() || m_healPanel->isVisible()
-               || m_dodgeBurnPanel->isVisible()) {
-        // Gizmo/pick tools (mask/zone/heal/dodge-burn/eyedropper) operate against the full,
+    } else if ((m_layersPanel->isVisible() && doc().graph.activeLayerIndex() != 0)
+               || m_healPanel->isVisible() || m_dodgeBurnPanel->isVisible()) {
+        // Gizmo/pick tools (selective-layer mask/zone/heal/dodge-burn/eyedropper; the
+        // Base layer has no mask, so it keeps the cropped view) operate against the full,
         // un-cropped frame. Use CropMaskEdit rather than CropNone so the user's
         // orientation (rotation/flip) stays applied on screen while the canvas
         // still maps coordinates back to the un-oriented source the masks live in.
