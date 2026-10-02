@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.5] — 2026-09-25
+## [0.1.6] — 2026-10-02
 
 ### Added
 
@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Pick again to paint with a different colour (each colour keeps its own strokes);
   Opacity stays adjustable, Erase and Clear take painting back. Also in the command
   palette. Non-destructive, saved with the project, and applied on export.
+
+### Fixed
+
+- **Opening the Layers panel showed the un-cropped image** — with the Base layer
+  active, the canvas now keeps showing the crop. Only selective layers (whose
+  masks and zones are edited against the full frame) switch to the un-cropped view.
+
+## [0.1.5] — 2026-09-25
+
+### Added
+
 - **Dodge and burn brushes** — paint to lighten (Dodge) or darken (Burn) parts of
   the image. Open them from the new "Dodge & burn brushes" buttons in the Tone
   panel, or from the command palette. Exposure (strength) and Range
@@ -263,6 +274,7 @@ and the interactive preview on the GPU. Your original is never touched.
   depth, output resize (long-edge), and colour management (sRGB, Display P3, or
   Adobe RGB with the matching ICC profile embedded).
 
+[0.1.6]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.6
 [0.1.5]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.5
 [0.1.4]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.4
 [0.1.3]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.3
