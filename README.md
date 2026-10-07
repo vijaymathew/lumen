@@ -29,6 +29,16 @@ edit is a re-orderable node in an edit graph, and the full-resolution result is
 rendered by **libvips** while your interactive preview runs on the **GPU**. Your
 original is never touched.
 
+## No generative AI
+
+> **Lumen never invents pixels.**
+
+There is no generative fill, AI upscaling or one-click neural "enhance." Every
+change is a deterministic adjustment you chose, recorded as a step in the edit
+graph and traceable back to the untouched original. Even the healing brush works
+by borrowing texture from elsewhere in your own photo. What you export is your
+photograph, developed — not a model's guess at it.
+
 ## Features
 
 ### Tone & colour
@@ -45,7 +55,8 @@ original is never touched.
 
 ### Detail & repair
 
-- **Healing brush** — content-aware inpainting to remove spots and distractions.
+- **Healing brush** — patch-based repair that removes spots and distractions
+  with texture from elsewhere in your own photo.
 - **Retouch brush** — sample a colour from one part of the image and paint it over another.
 - **Dodge & burn brushes** — paint to lighten or darken, limited to shadows, midtones or highlights.
 - **Sharpen**, **Denoise**, and **Defringe** (chromatic-aberration cleanup).
