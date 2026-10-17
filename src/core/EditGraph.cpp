@@ -212,6 +212,7 @@ void EditGraph::loadProjectState(const QJsonObject &state)
 
 void EditGraph::resetHistory()
 {
+    m_groupBase = -1;
     m_history.clear();
     m_history.push_back(saveState());
     m_historyIndex = 0;
@@ -225,8 +226,24 @@ void EditGraph::commit()
 
     if (m_historyIndex + 1 < static_cast<int>(m_history.size()))
         m_history.erase(m_history.begin() + m_historyIndex + 1, m_history.end());
+    // Inside a group that already pushed its step: update that step in place.
+    if (m_groupBase >= 0 && m_historyIndex > m_groupBase) {
+        m_history[m_historyIndex] = std::move(state);
+        return;
+    }
     m_history.push_back(std::move(state));
     m_historyIndex = static_cast<int>(m_history.size()) - 1;
+}
+
+void EditGraph::beginGroup()
+{
+    if (m_groupBase < 0)
+        m_groupBase = m_historyIndex;
+}
+
+void EditGraph::endGroup()
+{
+    m_groupBase = -1;
 }
 
 bool EditGraph::canUndo() const
@@ -242,6 +259,7 @@ bool EditGraph::canRedo() const
 
 bool EditGraph::undo()
 {
+    m_groupBase = -1;
     if (!canUndo())
         return false;
     --m_historyIndex;
@@ -251,6 +269,7 @@ bool EditGraph::undo()
 
 bool EditGraph::redo()
 {
+    m_groupBase = -1;
     if (!canRedo())
         return false;
     ++m_historyIndex;

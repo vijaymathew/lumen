@@ -431,6 +431,10 @@ private:
     // bake and left the canvas untouched (the result arrives later).
     bool refreshBaseImage(bool keepView = true);
     void showBakePlaceholder();
+    void labelLayerTools();
+    // Image that luminosity/colour layer masks are evaluated on (the baked base
+    // when current, else the corrected source).
+    const QImage &maskSourceImage() const;
     void initBrushMask();
     void beginBrushStroke();
     void brushAt(const QPointF &imageNormalized);

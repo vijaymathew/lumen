@@ -908,6 +908,11 @@ MainWindow::MainWindow(QWidget *parent)
         if (!active)
             return;
         m_canvas->setImage(healed, /*keepView=*/true); // preserve zoom/pan
+        // Data-driven layer masks read the baked pixels; re-evaluate them now.
+        if (doc().graph.layerCount() > 1) {
+            updatePreview();
+            recomputeSelectiveMask();
+        }
         // The histogram defers itself while a bake runs; recompute now (debounced).
         if (m_histogram->isVisible())
             m_histTimer->start();
@@ -1624,7 +1629,11 @@ void MainWindow::runCommand(const QString &id)
         openColorGradeTool();
     } else if (id == QLatin1String("selective")) {
         // A selective adjustment is a masked layer: add/select one, reveal its
-        // mask editor (Layers panel) and the Tone tool to adjust it.
+        // mask editor (Layers panel) and the Tone tool to adjust it. The whole
+        // session (layer add, mask range, tone) is one undo step, so undoing it
+        // removes the layer and leaves editing on the Base — not on an empty,
+        // invisible layer that later tools would silently target.
+        doc().graph.beginGroup();
         ensureSelectiveLayer();
         showLayersPanel();
         openToneTool();
@@ -2889,8 +2898,8 @@ void MainWindow::updatePreview()
     }
     constexpr int cap = 1280;
     QImage maskSrc;
-    if (needsMaskSrc && !doc().sourceQImage.isNull()) {
-        maskSrc = doc().sourceQImage;
+    if (needsMaskSrc && !maskSourceImage().isNull()) {
+        maskSrc = maskSourceImage();
         if (std::max(maskSrc.width(), maskSrc.height()) > cap)
             maskSrc = maskSrc.scaled(cap, cap, Qt::KeepAspectRatio,
                                      Qt::SmoothTransformation);
@@ -2997,6 +3006,10 @@ void MainWindow::hideLayersPanel()
     syncMaskGizmo();                 // hide the gizmo
     syncZoneGizmo();                 // hide the zone editor too
     updateCropView();                // back to the cropped browse view
+    if (doc().graph.inGroup()) {     // closing the mask editor ends a selective session
+        doc().graph.commit();
+        doc().graph.endGroup();
+    }
 }
 
 void MainWindow::refreshLayersPanel()
@@ -3026,6 +3039,7 @@ void MainWindow::reseedOpenPanels()
     // they're guarded (a layer may not carry every node type, e.g. a
     // selective layer); the rest are per-*document* state, always present
     // once the doc has RAW/lens/crop context to reveal.
+    labelLayerTools(); // the active layer may have changed too
     if (m_tonePanel->isVisible()) {
         if (auto *t = activeTune())
             m_tonePanel->reveal(toneValuesOf(t));
@@ -3112,6 +3126,7 @@ void MainWindow::selectLayer(int index)
     endMaskBrushSession(); // commit the current layer's mask-brush before switching
     doc().graph.setActiveLayer(index);
     refreshLayersPanel();
+    labelLayerTools();
     // Reseed any open adjustment tool with the newly-active layer's values
     // (guarded — a layer may not carry every node type, e.g. a selective layer).
     if (m_tonePanel->isVisible()) {
@@ -3235,8 +3250,23 @@ void MainWindow::setOverlayGeometryVisible(bool visible)
 
 // --- Shared open/close boilerplate for the ToolActive-mode tool panels -----
 
+void MainWindow::labelLayerTools()
+{
+    // Tools that edit the *active* layer name it in their title when it isn't
+    // the Base, so it's clear an edit won't apply to the whole image.
+    const int idx = doc().graph.activeLayerIndex();
+    const QString suffix =
+        idx > 0 ? QStringLiteral(" · %1").arg(doc().graph.layer(idx).name()) : QString();
+    m_tonePanel->setTitle(QStringLiteral("Tone") + suffix);
+    m_looksPanel->setTitle(QStringLiteral("Looks") + suffix);
+    m_monoPanel->setTitle(QStringLiteral("Monochrome") + suffix);
+    m_colorMixerPanel->setTitle(QStringLiteral("Color Mixer (HSL)") + suffix);
+    m_colorGradePanel->setTitle(QStringLiteral("Color grade") + suffix);
+}
+
 void MainWindow::positionToolPanel(QWidget *panel)
 {
+    labelLayerTools();
     m_input.setMode(InputController::Mode::ToolActive);
     panel->adjustSize();
     constexpr int margin = 18;
@@ -3247,6 +3277,7 @@ void MainWindow::finishToolClose(QWidget *panel)
 {
     panel->hide();
     doc().graph.commit(); // one undo step per editing session (no-op if unchanged)
+    doc().graph.endGroup(); // a selective-adjustment session ends with its tool
     m_input.setMode(InputController::Mode::Browse);
     m_canvas->setFocus();
 }
@@ -4748,6 +4779,18 @@ void MainWindow::syncBrushMaskToLayer()
     layer.setMask(m);
 }
 
+const QImage &MainWindow::maskSourceImage() const
+{
+    // Luminosity/colour layer masks are evaluated on the image *under* the
+    // layer. Export composites over the Base result, so healed/retouched/
+    // denoised pixels drive the mask there; match that in the preview by using
+    // the baked base when it's built on the current corrected source.
+    const Document &d = doc();
+    if (!d.bakedBase.isNull() && d.bakedInputs.workingSourceRevision == d.workingSourceRevision)
+        return d.bakedBase;
+    return d.sourceQImage;
+}
+
 void MainWindow::recomputeSelectiveMask()
 {
     // Drives the preview-only "show mask" overlay (Base shader binding 4). Show
@@ -4765,14 +4808,15 @@ void MainWindow::recomputeSelectiveMask()
         m_canvas->setSelectiveMask(m_brushMask);
         return;
     }
-    if ((m.type == MaskSpec::None && m.zones.empty()) || doc().sourceQImage.isNull()) {
+    const QImage &maskSrc = maskSourceImage();
+    if ((m.type == MaskSpec::None && m.zones.empty()) || maskSrc.isNull()) {
         m_canvas->setSelectiveMask({});
         return;
     }
     // Evaluate at a capped resolution for a responsive overlay (export/composite
     // recompute at full res).
     constexpr int cap = 1280;
-    int w = doc().sourceQImage.width(), h = doc().sourceQImage.height();
+    int w = maskSrc.width(), h = maskSrc.height();
     if (std::max(w, h) > cap) {
         const double s = double(cap) / std::max(w, h);
         w = std::max(1, static_cast<int>(std::lround(w * s)));
@@ -4782,7 +4826,7 @@ void MainWindow::recomputeSelectiveMask()
     // so live gizmo dragging stays smooth. Luminosity/Colour need the rgba.
     if (m.type == MaskSpec::Luminosity || m.type == MaskSpec::Colour) {
         const QImage img =
-            doc().sourceQImage.scaled(w, h, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+            maskSrc.scaled(w, h, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
                 .convertToFormat(QImage::Format_RGBA8888);
         m_canvas->setSelectiveMask(
             evaluateMask(m, img.width(), img.height(), img.constBits(), 4));
