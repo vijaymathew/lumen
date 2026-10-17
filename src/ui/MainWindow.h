@@ -15,6 +15,7 @@
 #include "core/ColorGradeNode.h"
 #include "core/CurvesNode.h"
 #include "core/EditGraph.h"
+#include "core/Document.h"
 #include "core/DodgeBurnNode.h"
 #include "core/HealNode.h"
 #include "core/RetouchNode.h"
@@ -426,7 +427,10 @@ private:
     void commitDodgeBurnMask(); // m_brushMask -> the active brush's node mask
     // base texture = source healed by the heal node. keepView preserves zoom/pan
     // (true for in-place heal updates; false only when loading a new image).
-    void refreshBaseImage(bool keepView = true);
+    // Rebuilds the canvas base image. Returns true when it started an async
+    // bake and left the canvas untouched (the result arrives later).
+    bool refreshBaseImage(bool keepView = true);
+    void showBakePlaceholder();
     void initBrushMask();
     void beginBrushStroke();
     void brushAt(const QPointF &imageNormalized);
@@ -570,6 +574,7 @@ private:
     Document *docById(quint64 id) const;
     bool docIsActive(quint64 id) const;
     quint64 m_healJobDoc = 0;
+    BakeInputs m_healJobInputs; // inputs of the bake m_healWatcher is running
     quint64 m_lensJobDoc = 0;
     quint64 m_histJobDoc = 0;
     quint64 m_decodeJobDoc = 0;

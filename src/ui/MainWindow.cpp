@@ -898,10 +898,16 @@ MainWindow::MainWindow(QWidget *parent)
         if (!m_healWatcher.future().isValid())
             return;
         const QImage healed = m_healWatcher.result();
+        Document *d = docById(m_healJobDoc);
+        if (!d || healed.isNull())
+            return; // tab closed, or superseded mid-flight
+        // Cache on the document even if it's in the background, so switching
+        // back shows it at once instead of re-baking.
+        d->bakedBase = healed;
+        d->bakedInputs = m_healJobInputs;
         if (!active)
-            return; // baked for a background tab; drop (re-baked on return)
-        if (!healed.isNull())
-            m_canvas->setImage(healed, /*keepView=*/true); // preserve zoom/pan
+            return;
+        m_canvas->setImage(healed, /*keepView=*/true); // preserve zoom/pan
         // The histogram defers itself while a bake runs; recompute now (debounced).
         if (m_histogram->isVisible())
             m_histTimer->start();
@@ -922,6 +928,7 @@ MainWindow::MainWindow(QWidget *parent)
         if (r.working.isNull())
             return; // superseded mid-flight; a newer bake is already on its way
         d->workingSource = r.working;
+        ++d->workingSourceRevision;
         d->sourceQImage = r.display;
         d->originalQImage = QImage(); // Before/After cache: recompute on next compare
         d->workingSourceGeneration = d->sourceGeneration; // keep refreshWorkingSource's cache in sync
@@ -1035,6 +1042,7 @@ MainWindow::MainWindow(QWidget *parent)
             // Invalidate the cached display so switching back rebuilds it from the
             // new source (reflectActiveDocument reuses a non-null cache).
             d->workingSource = Image();
+            ++d->workingSourceRevision;
             d->sourceQImage = QImage();
         }
     });
@@ -1814,7 +1822,8 @@ void MainWindow::reflectActiveDocument()
     // (a full-res lens apply + toQImage) is what made switching sluggish.
     if (doc().sourceQImage.isNull())
         refreshWorkingSource();
-    refreshBaseImage(false); // fits to window; the saved view is restored below
+    if (refreshBaseImage(false)) // fits to window; the saved view is restored below
+        showBakePlaceholder();
     recomputeSelectiveMask();
     updateCropView();        // a switched-to document may carry a crop/orientation
     updatePreview();
@@ -1834,6 +1843,16 @@ void MainWindow::reflectActiveDocument()
     // Restore this tab's zoom/pan (refreshBaseImage fit it to window).
     if (doc().viewValid)
         m_canvas->setViewState({doc().viewZoom, doc().viewPan});
+}
+
+void MainWindow::showBakePlaceholder()
+{
+    // A bake for this document is running and the canvas still shows the
+    // previous tab's image. Show this document's last bake (slightly stale) or,
+    // failing that, its un-baked corrected source until the bake lands.
+    const QImage &img = doc().bakedBase.isNull() ? doc().sourceQImage : doc().bakedBase;
+    if (!img.isNull())
+        m_canvas->setImage(img, /*keepView=*/false);
 }
 
 void MainWindow::switchToTab(int index)
@@ -2041,7 +2060,8 @@ void MainWindow::bindDocument(const BindOptions &opts)
     m_brushMask = MaskBuffer();
 
     refreshWorkingSource();  // build the corrected source + display QImage
-    refreshBaseImage(false); // fit the view (re-applies any heal mask)
+    if (refreshBaseImage(false)) // fit the view (re-applies any heal mask)
+        showBakePlaceholder();
     recomputeSelectiveMask();
     if (opts.pushCropView)
         updateCropView();    // push a restored crop/orientation to the canvas
@@ -4245,6 +4265,7 @@ void MainWindow::refreshWorkingSource()
     const Image &src = doc().graph.source();
     if (src.isNull()) {
         doc().workingSource = Image();
+        ++doc().workingSourceRevision;
         return;
     }
     // The lens node is a pure function of the source; apply it once and cache so
@@ -4263,6 +4284,7 @@ void MainWindow::refreshWorkingSource()
     doc().workingSource = (doc().lens && doc().lens->isEnabled()) ? doc().lens->apply(src) : src;
     if (doc().workingSource.isNull())
         doc().workingSource = src; // defensive: never lose the image
+    ++doc().workingSourceRevision;
     doc().sourceQImage = doc().workingSource.toQImage(); // display + colour sampling
     doc().originalQImage = QImage(); // Before/After cache: recompute on next compare
     doc().workingSourceGeneration = doc().sourceGeneration;
@@ -4497,7 +4519,7 @@ void MainWindow::commitDodgeBurnMask()
         doc().dodgeBurn->setBurnMask(mask);
 }
 
-void MainWindow::refreshBaseImage(bool keepView)
+bool MainWindow::refreshBaseImage(bool keepView)
 {
     // Consume the triggering-op hint (set by the panel that kicked this bake) so
     // the badge labels the user's actual action, not whichever active pass ranks
@@ -4511,7 +4533,7 @@ void MainWindow::refreshBaseImage(bool keepView)
         const QImage &orig = originalImage();
         if (!orig.isNull())
             m_canvas->setImage(orig, keepView);
-        return;
+        return false;
     }
 
     // The GPU preview base = the lens-corrected source with the other "baked"
@@ -4545,40 +4567,61 @@ void MainWindow::refreshBaseImage(bool keepView)
     if (doc().graph.source().isNull()
         || (!healActive && !retouchActive && !denoiseActive && !defringeActive && !sharpenActive
             && !structureActive && !dodgeBurnActive)) {
+        doc().bakedBase = QImage(); // nothing baked; don't hold a full-res copy
+        doc().bakedInputs = BakeInputs{};
         if (!doc().sourceQImage.isNull())
             m_canvas->setImage(doc().sourceQImage, keepView);
-        return;
+        return false;
+    }
+
+    // Snapshot everything the bake depends on. Inactive passes keep their
+    // default (off) values, so the worker skips them and they don't affect the
+    // cache key.
+    Document *d = &doc();
+    BakeInputs in;
+    in.workingSourceRevision = d->workingSourceRevision;
+    if (healActive) {
+        in.healMask = d->heal->healMask();
+        in.healHighQuality = d->heal->highQuality();
+    }
+    if (retouchActive) {
+        in.retouchPatches = d->retouch->patches();
+        in.retouchOpacity = d->retouch->opacity();
+    }
+    if (denoiseActive)
+        in.denoise = dv;
+    if (defringeActive)
+        in.defringe = fv;
+    if (sharpenActive)
+        in.sharpen = sv;
+    if (structureActive)
+        in.structure = stv;
+    if (dodgeBurnActive) {
+        in.dodgeBurn = true;
+        in.dodgeMask = d->dodgeBurn->dodgeMask();
+        in.burnMask = d->dodgeBurn->burnMask();
+        in.dodgeBurnExposure = d->dodgeBurn->exposure();
+        in.dodgeBurnRange = d->dodgeBurn->range();
+    }
+
+    // Same inputs as the last finished bake (e.g. switching back to this tab):
+    // reuse it instead of re-running the expensive passes.
+    if (!d->bakedBase.isNull() && in == d->bakedInputs) {
+        ++d->healGen; // any in-flight bake for this doc is now redundant
+        m_canvas->setImage(d->bakedBase, keepView);
+        return false;
     }
 
     // These passes (esp. Detailed/Criminisi heal) are expensive, so run them off
     // the UI thread; the latest request wins (the document's healGen guards stale
     // results, and the watcher only delivers its current future).
-    Document *d = &doc();
     m_healJobDoc = d->id;
+    m_healJobInputs = in;
     const quint64 gen = ++d->healGen;
     // Baked ops run on top of the lens-corrected source (geometry already baked
     // into doc().workingSource), so painted spots track the corrected image.
-    const Image src = doc().workingSource.isNull() ? doc().graph.source() : doc().workingSource;
-    const MaskBuffer mask = healActive ? doc().heal->healMask() : MaskBuffer();
-    const bool hq = doc().heal && doc().heal->highQuality();
-    // Snapshot the nodes' settings for the worker (the UI thread may keep painting).
-    std::vector<RetouchNode::Patch> retouchPatches;
-    int retouchOpacity = RetouchNode::kMaxOpacity;
-    if (retouchActive) {
-        retouchPatches = doc().retouch->patches();
-        retouchOpacity = doc().retouch->opacity();
-    }
-    MaskBuffer dodgeMask, burnMask;
-    int dbExposure = DodgeBurnNode::kDefaultExposure;
-    DodgeBurnNode::Range dbRange = DodgeBurnNode::Range::Midtones;
-    if (dodgeBurnActive) {
-        dodgeMask = doc().dodgeBurn->dodgeMask();
-        burnMask = doc().dodgeBurn->burnMask();
-        dbExposure = doc().dodgeBurn->exposure();
-        dbRange = doc().dodgeBurn->range();
-    }
-    if (healActive || retouchActive || denoiseActive || defringeActive || sharpenActive
-        || structureActive || dodgeBurnActive) {
+    const Image src = d->workingSource.isNull() ? d->graph.source() : d->workingSource;
+    {
         // Label by the op the user triggered (if it's actually active); otherwise
         // fall back to precedence (heal first) for unattributed refreshes.
         QString label;
@@ -4615,54 +4658,55 @@ void MainWindow::refreshBaseImage(bool keepView)
         layoutOverlays(); // position the badge + dim
     }
 
-    m_healWatcher.setFuture(
-        QtConcurrent::run([d, gen, src, mask, hq, dv, fv, sv, stv, dodgeMask, burnMask, dbExposure,
-                           dbRange, dodgeBurnActive, retouchPatches, retouchOpacity]() -> QImage {
-            if (gen != d->healGen)
-                return QImage(); // superseded before we even started
-            Image img = src;
-            if (!mask.isEmpty()) {
-                HealNode heal;
-                heal.setHealMask(mask);
-                heal.setHighQuality(hq);
-                img = heal.apply(img);
-            }
-            if (!retouchPatches.empty()) {
-                RetouchNode retouch;
-                retouch.setPatches(retouchPatches);
-                retouch.setOpacity(retouchOpacity);
-                img = retouch.apply(img);
-            }
-            if (dv.enabled && (dv.luma > 0.0f || dv.chroma > 0.0f)) {
-                DenoiseNode denoise;
-                denoise.setValues(dv);
-                img = denoise.apply(img);
-            }
-            if (fv.enabled && (fv.purple > 0.0f || fv.green > 0.0f)) {
-                DefringeNode defringe;
-                defringe.setValues(fv);
-                img = defringe.apply(img);
-            }
-            if (sv.enabled && sv.amount > 0.0f) {
-                SharpenNode sharpen;
-                sharpen.setValues(sv);
-                img = sharpen.apply(img);
-            }
-            if (stv.enabled && stv.amount != 0.0f) {
-                StructureNode structure;
-                structure.setValues(stv);
-                img = structure.apply(img);
-            }
-            if (dodgeBurnActive) {
-                DodgeBurnNode dodgeBurn;
-                dodgeBurn.setDodgeMask(dodgeMask);
-                dodgeBurn.setBurnMask(burnMask);
-                dodgeBurn.setExposure(dbExposure);
-                dodgeBurn.setRange(dbRange);
-                img = dodgeBurn.apply(img);
-            }
-            return img.toQImage();
-        }));
+    m_healWatcher.setFuture(QtConcurrent::run([d, gen, src, in]() -> QImage {
+        if (gen != d->healGen)
+            return QImage(); // superseded before we even started
+        Image img = src;
+        if (!in.healMask.isEmpty()) {
+            HealNode heal;
+            heal.setHealMask(in.healMask);
+            heal.setHighQuality(in.healHighQuality);
+            img = heal.apply(img);
+        }
+        if (!in.retouchPatches.empty()) {
+            RetouchNode retouch;
+            retouch.setPatches(in.retouchPatches);
+            retouch.setOpacity(in.retouchOpacity);
+            img = retouch.apply(img);
+        }
+        if (in.denoise.enabled) {
+            DenoiseNode denoise;
+            denoise.setValues(in.denoise);
+            img = denoise.apply(img);
+        }
+        if (in.defringe.enabled) {
+            DefringeNode defringe;
+            defringe.setValues(in.defringe);
+            img = defringe.apply(img);
+        }
+        if (in.sharpen.enabled) {
+            SharpenNode sharpen;
+            sharpen.setValues(in.sharpen);
+            img = sharpen.apply(img);
+        }
+        if (in.structure.enabled) {
+            StructureNode structure;
+            structure.setValues(in.structure);
+            img = structure.apply(img);
+        }
+        if (in.dodgeBurn) {
+            DodgeBurnNode dodgeBurn;
+            dodgeBurn.setDodgeMask(in.dodgeMask);
+            dodgeBurn.setBurnMask(in.burnMask);
+            dodgeBurn.setExposure(in.dodgeBurnExposure);
+            dodgeBurn.setRange(in.dodgeBurnRange);
+            img = dodgeBurn.apply(img);
+        }
+        if (gen != d->healGen)
+            return QImage(); // superseded mid-flight; don't cache stale pixels
+        return img.toQImage();
+    }));
+    return true;
 }
 
 int MainWindow::ensureSelectiveLayer()
