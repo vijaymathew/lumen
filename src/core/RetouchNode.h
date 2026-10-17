@@ -17,6 +17,8 @@ public:
     struct Patch {
         uint8_t r = 0, g = 0, b = 0;
         MaskBuffer mask; // working resolution (white = painted), upscaled in apply()
+
+        friend bool operator==(const Patch &, const Patch &) = default;
     };
 
     static constexpr int kMinOpacity = 1;

@@ -27,6 +27,9 @@ public:
     FloatingToolPanel(const QString &objectName, const QString &title, int fixedWidth,
                       QWidget *parent = nullptr);
 
+    // Replaces the header title text (e.g. to name the layer a tool edits).
+    void setTitle(const QString &title);
+
 signals:
     void closed(); // emitted for a widget passed to closesOnEscape() on Esc/Return/Enter
 
@@ -60,6 +63,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
+    QLabel *m_title = nullptr;
     QVBoxLayout *m_layout = nullptr;
     QHBoxLayout *m_headerRow = nullptr;
 

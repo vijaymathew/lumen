@@ -58,6 +58,34 @@ int main()
     CHECK(graph.undo());
     CHECK(graph.previewState().exposure == 1.0f);
 
+    // Undo group: a layer add + several edits collapse into one step, and
+    // undoing it restores the Base as the active layer.
+    graph.resetHistory();
+    graph.beginGroup();
+    graph.addLayer(QStringLiteral("Selective 1")); // becomes active
+    auto *layerTune =
+        static_cast<TuneNode *>(graph.addNode(std::make_unique<TuneNode>()));
+    graph.commit();
+    layerTune->setExposure(0.5f);
+    graph.commit();
+    layerTune->setExposure(0.7f);
+    graph.commit();
+    graph.endGroup();
+    CHECK(graph.layerCount() == 2);
+    CHECK(graph.undo()); // one step removes the whole group
+    CHECK(graph.layerCount() == 1);
+    CHECK(graph.activeLayerIndex() == 0);
+    CHECK(!graph.canUndo());
+    CHECK(graph.redo());
+    CHECK(graph.layerCount() == 2);
+    CHECK(!graph.canRedo());
+
+    // After the group ends, commits are separate steps again.
+    tune->setExposure(4.0f);
+    graph.commit();
+    CHECK(graph.undo());
+    CHECK(graph.layerCount() == 2);
+
     std::puts("undo_test: OK");
     return 0;
 }

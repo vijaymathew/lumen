@@ -41,8 +41,9 @@ FloatingToolPanel::FloatingToolPanel(const QString &objectName, const QString &t
     if (fixedWidth > 0)
         setFixedWidth(fixedWidth);
 
-    auto *titleLabel = new QLabel(title, this);
-    titleLabel->setObjectName(QStringLiteral("toolTitle"));
+    m_title = new QLabel(title, this);
+    m_title->setObjectName(QStringLiteral("toolTitle"));
+    auto *titleLabel = m_title;
 
     m_headerRow = new QHBoxLayout;
     m_headerRow->setContentsMargins(0, 0, 0, 0);
@@ -55,6 +56,11 @@ FloatingToolPanel::FloatingToolPanel(const QString &objectName, const QString &t
 
     setStyleSheet(baseStyleSheet(objectName));
     hide();
+}
+
+void FloatingToolPanel::setTitle(const QString &title)
+{
+    m_title->setText(title);
 }
 
 void FloatingToolPanel::appendStyleSheet(const QString &extraCss)

@@ -93,6 +93,14 @@ public:
     bool canRedo() const;
     bool undo();
     bool redo();
+    // Undo grouping: between beginGroup() and endGroup(), every commit() merges
+    // into a single undo step (the first commit pushes it, later ones replace
+    // it). Used so a multi-part edit — e.g. a selective adjustment's layer add,
+    // mask range and tone tweak — undoes in one Ctrl+Z. undo()/redo() end any
+    // open group.
+    void beginGroup();
+    void endGroup();
+    bool inGroup() const { return m_groupBase >= 0; }
 
     QJsonObject saveState() const;
     void restoreState(const QJsonObject &state);
@@ -119,4 +127,5 @@ private:
 
     std::vector<QJsonObject> m_history;
     int m_historyIndex = -1;
+    int m_groupBase = -1; // history index the open group started from (-1 = none)
 };

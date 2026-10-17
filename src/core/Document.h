@@ -10,11 +10,19 @@
 #include <QPointF>
 #include <QString>
 
+#include "core/DefringeNode.h"
+#include "core/DenoiseNode.h"
+#include "core/DodgeBurnNode.h"
 #include "core/EditGraph.h"
 #include "core/Image.h"
 #include "core/RawLoader.h"
+#include "core/RetouchNode.h"
+#include "core/SelectiveMask.h"
+#include "core/SharpenNode.h"
 #include "core/StructureNode.h"
 #include "core/Vignette.h"
+
+#include <vector>
 
 class TuneNode;
 class CurvesNode;
@@ -42,6 +50,30 @@ class GrainNode;
 // once in tabs (see the tabs plan). Today MainWindow holds exactly one Document.
 // State migrates here in stages so the move can proceed cluster by cluster
 // without ever breaking the build; this class starts empty on purpose.
+// Everything the preview "bake" (heal -> retouch -> denoise -> defringe ->
+// sharpen -> structure -> dodge/burn over the lens-corrected source) depends on.
+// Equal inputs produce the same baked image, so a document can reuse its last
+// bake (e.g. on tab switch-back) instead of recomputing it. Inactive passes are
+// stored in their default (off) state so they don't affect equality.
+struct BakeInputs {
+    quint64 workingSourceRevision = 0;
+    MaskBuffer healMask;
+    bool healHighQuality = true;
+    std::vector<RetouchNode::Patch> retouchPatches;
+    int retouchOpacity = RetouchNode::kMaxOpacity;
+    DenoiseNode::Values denoise;
+    DefringeNode::Values defringe;
+    SharpenNode::Values sharpen;
+    StructureNode::Values structure;
+    bool dodgeBurn = false;
+    MaskBuffer dodgeMask;
+    MaskBuffer burnMask;
+    int dodgeBurnExposure = DodgeBurnNode::kDefaultExposure;
+    DodgeBurnNode::Range dodgeBurnRange = DodgeBurnNode::Range::Midtones;
+
+    bool operator==(const BakeInputs &) const = default;
+};
+
 class Document {
 public:
     Document();
@@ -144,6 +176,14 @@ public:
     // lens node's own params/enabled state (tracked by its dirty flag) have moved
     // since — see MainWindow::refreshWorkingSource.
     quint64 workingSourceGeneration = 0;
+    // Bumped every time workingSource is replaced, so a cached bake can tell
+    // whether it was built on the current corrected source.
+    quint64 workingSourceRevision = 0;
+    // Last finished preview bake and the inputs it was built from. Reused when
+    // the inputs still match (tab switch-back), so the canvas updates at once
+    // instead of re-running heal/denoise/etc. Empty when no baked pass is active.
+    QImage bakedBase;
+    BakeInputs bakedInputs;
     QImage sourceQImage;         // for colour sampling + preview mask
     QImage originalQImage;       // decoded source, no edits (Before/After); lazy
     bool compareOriginal = false; // Before/After: show the un-edited original
