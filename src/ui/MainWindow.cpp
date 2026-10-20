@@ -312,14 +312,22 @@ public:
             update();
     }
 
-    void start()
+    // The badge is shared by every tab's background jobs, so it remembers which
+    // job (its watcher) currently owns it. A job's finish handler hides it only
+    // if that job still owns it — regardless of which tab is active now, so a
+    // job that finishes after a tab switch or close can't leave it stuck.
+    void start(const void *owner)
     {
+        m_owner = owner; // the latest job takes over (its label is already set)
         if (isVisible() || m_delay.isActive())
             return;
         m_delay.start();
     }
-    void stop()
+    void stop(const void *owner)
     {
+        if (owner != m_owner)
+            return; // another job took the badge over; leave it running
+        m_owner = nullptr;
         m_delay.stop(); // cancel a pending show if the op finished in time
         m_spin.stop();
         hide();
@@ -368,6 +376,7 @@ private:
     int m_angle = 0;
     int m_sweep = 0; // 0..99 progress-strip position
     QString m_label = QStringLiteral("Healing…");
+    const void *m_owner = nullptr; // the job (watcher) the badge is showing for
 };
 
 // A transparent overlay that draws the brush cursor: an outer ring (size) and a
@@ -890,11 +899,10 @@ MainWindow::MainWindow(QWidget *parent)
     // Background heal preview finished: apply the result (the watcher only
     // delivers the latest request's future).
     connect(&m_healWatcher, &QFutureWatcher<QImage>::finished, this, [this] {
-        // The badge, canvas and histogram all belong to the active tab, so only
-        // touch them when this bake's document is still the one on screen.
+        // The canvas and histogram belong to the active tab, so only touch them
+        // when this bake's document is still the one on screen.
         const bool active = docIsActive(m_healJobDoc);
-        if (active)
-            static_cast<BusyBadge *>(m_healBusy)->stop();
+        static_cast<BusyBadge *>(m_healBusy)->stop(&m_healWatcher);
         if (!m_healWatcher.future().isValid())
             return;
         const QImage healed = m_healWatcher.result();
@@ -922,8 +930,7 @@ MainWindow::MainWindow(QWidget *parent)
     // run the rest of the refresh the panel would have done inline.
     connect(&m_lensWatcher, &QFutureWatcher<LensBakeResult>::finished, this, [this] {
         const bool active = docIsActive(m_lensJobDoc);
-        if (active)
-            static_cast<BusyBadge *>(m_healBusy)->stop();
+        static_cast<BusyBadge *>(m_healBusy)->stop(&m_lensWatcher);
         if (!m_lensWatcher.future().isValid())
             return;
         Document *d = docById(m_lensJobDoc);
@@ -947,10 +954,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Background export finished: stop the badge and report the outcome.
     connect(&m_exportWatcher, &QFutureWatcher<ExportResult>::finished, this, [this] {
-        // The badge is the active tab's; the outcome (a written file) is reported
-        // regardless of which tab is showing now.
-        if (docIsActive(m_exportJobDoc))
-            static_cast<BusyBadge *>(m_healBusy)->stop();
+        // Hide the badge and report the outcome (a written file) whichever tab is
+        // showing now — the export may finish after a tab switch or close.
+        static_cast<BusyBadge *>(m_healBusy)->stop(&m_exportWatcher);
         if (!m_exportWatcher.future().isValid())
             return;
         const ExportResult r = m_exportWatcher.result();
@@ -965,8 +971,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Background project save finished: report the outcome and adopt the file.
     connect(&m_saveWatcher, &QFutureWatcher<SaveResult>::finished, this, [this] {
-        if (docIsActive(m_saveJobDoc))
-            static_cast<BusyBadge *>(m_healBusy)->stop();
+        static_cast<BusyBadge *>(m_healBusy)->stop(&m_saveWatcher);
         if (!m_saveWatcher.future().isValid())
             return;
         const SaveResult r = m_saveWatcher.result();
@@ -983,7 +988,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Background image open finished: install the decoded source + rebuild.
     connect(&m_openImageWatcher, &QFutureWatcher<OpenImageResult>::finished, this, [this] {
-        static_cast<BusyBadge *>(m_healBusy)->stop();
+        static_cast<BusyBadge *>(m_healBusy)->stop(&m_openImageWatcher);
         if (!m_openImageWatcher.future().isValid())
             return;
         if (docById(m_openJobDoc))
@@ -994,7 +999,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Background project open finished: install the decoded document.
     connect(&m_openProjectWatcher, &QFutureWatcher<OpenProjectResult>::finished, this, [this] {
-        static_cast<BusyBadge *>(m_healBusy)->stop();
+        static_cast<BusyBadge *>(m_healBusy)->stop(&m_openProjectWatcher);
         if (!m_openProjectWatcher.future().isValid())
             return;
         // Skip if the requesting tab was closed mid-decode; otherwise install it.
@@ -1016,8 +1021,7 @@ MainWindow::MainWindow(QWidget *parent)
     // pipeline (the watcher only delivers the latest request's future).
     connect(&m_decodeWatcher, &QFutureWatcher<DecodeResult>::finished, this, [this] {
         const bool active = docIsActive(m_decodeJobDoc);
-        if (active)
-            static_cast<BusyBadge *>(m_healBusy)->stop();
+        static_cast<BusyBadge *>(m_healBusy)->stop(&m_decodeWatcher);
         if (!m_decodeWatcher.future().isValid())
             return;
         Document *d = docById(m_decodeJobDoc);
@@ -1749,7 +1753,7 @@ bool MainWindow::openPath(const QString &path)
     // badge animates (a RAW demosaic is slow); finishOpenImage installs it.
     auto *badge = static_cast<BusyBadge *>(m_healBusy);
     badge->setLabel(QStringLiteral("Opening…"));
-    badge->start();
+    badge->start(&m_openImageWatcher);
     layoutOverlays();
     m_openJobDoc = doc().id; // the document this decode will populate on completion
     const raw::RawDecodeOptions opts = doc().rawOptions;
@@ -2125,7 +2129,7 @@ void MainWindow::redecodeCurrent()
     const quint64 gen = ++d->decodeGen;
     auto *badge = static_cast<BusyBadge *>(m_healBusy);
     badge->setLabel(QStringLiteral("Decoding…"));
-    badge->start();
+    badge->start(&m_decodeWatcher);
     layoutOverlays(); // position the badge + dim
 
     const QByteArray bytes = doc().sourceBytes;
@@ -2219,7 +2223,7 @@ void MainWindow::writeProjectAsync(const QString &path)
     m_saveJobDoc = doc().id; // the document whose save-state the finish handler updates
     auto *badge = static_cast<BusyBadge *>(m_healBusy);
     badge->setLabel(QStringLiteral("Saving…"));
-    badge->start();
+    badge->start(&m_saveWatcher);
     layoutOverlays();
     m_saveWatcher.setFuture(QtConcurrent::run([path, graph, bytes, name]() -> SaveResult {
         SaveResult r;
@@ -2549,7 +2553,7 @@ void MainWindow::loadProjectFile(const QString &path)
     // the finish handler installs the document.
     auto *badge = static_cast<BusyBadge *>(m_healBusy);
     badge->setLabel(QStringLiteral("Opening…"));
-    badge->start();
+    badge->start(&m_openProjectWatcher);
     layoutOverlays();
     m_openJobDoc = doc().id; // the document this decode will populate on completion
     m_openProjectWatcher.setFuture(
@@ -2793,7 +2797,7 @@ void MainWindow::exportImage()
     //    m_exportPending guards the (single-tick) window before the worker starts.
     auto *badge = static_cast<BusyBadge *>(m_healBusy);
     badge->setLabel(QStringLiteral("Exporting…"));
-    badge->start();
+    badge->start(&m_exportWatcher);
     layoutOverlays();
     m_exportPending = true;
 
@@ -4276,7 +4280,7 @@ void MainWindow::startLensBake()
     const LensCorrectionNode::Params p = d->lens->params();
     auto *badge = static_cast<BusyBadge *>(m_healBusy);
     badge->setLabel(QStringLiteral("Correcting lens…"));
-    badge->start();
+    badge->start(&m_lensWatcher);
     layoutOverlays(); // position the badge + dim
 
     m_lensWatcher.setFuture(QtConcurrent::run([d, gen, src, p]() -> LensBakeResult {
@@ -4685,7 +4689,7 @@ bool MainWindow::refreshBaseImage(bool keepView)
                                     : QStringLiteral("Dodging & burning…");
         auto *badge = static_cast<BusyBadge *>(m_healBusy);
         badge->setLabel(label);
-        badge->start();
+        badge->start(&m_healWatcher);
         layoutOverlays(); // position the badge + dim
     }
 
