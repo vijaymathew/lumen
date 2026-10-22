@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-10-22
+
+### Changed
+
+- **Faster tab switching** — switching back to a tab reuses its last preview
+  (heal, retouch, denoise, sharpening and the other baked passes) instead of
+  recomputing it, so the canvas updates at once.
+- **A selective adjustment is one undo step** — adding the layer, choosing its
+  range and adjusting it now undo together with a single Ctrl+Z, which removes
+  the layer and returns editing to the whole image.
+- **Tools show which layer they edit** — Tone, Looks, Monochrome, Color Mixer
+  and Color grade add the layer to their title when it isn't the Base layer
+  (for example "Monochrome · Selective 1").
+
+### Fixed
+
+- **Selective adjustments skipped healed areas** — the preview now picks
+  highlights, shadows, etc. from the healed image (as export already did), so a
+  healed spot is included and the preview matches the exported file.
+- **Monochrome went onto a selective layer after undo** — undoing a selective
+  adjustment could leave an empty, hidden layer selected; it is now removed with
+  the rest of the adjustment.
+- **The busy badge could stay on screen** — if an export, save, open or other
+  background job finished after switching or closing tabs, the "Exporting…" /
+  "Saving…" badge now hides as it should.
+
 ## [0.1.6] — 2026-10-02
 
 ### Added
@@ -274,6 +300,7 @@ and the interactive preview on the GPU. Your original is never touched.
   depth, output resize (long-edge), and colour management (sRGB, Display P3, or
   Adobe RGB with the matching ICC profile embedded).
 
+[0.1.7]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.7
 [0.1.6]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.6
 [0.1.5]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.5
 [0.1.4]: https://github.com/vijaymathew/lumen/releases/tag/v0.1.4
