@@ -27,12 +27,16 @@ endif()
 # deprecated there, so we render through RHI (Metal/Vulkan/OpenGL) rather than
 # raw GL. See docs/DESIGN.md §7.
 #
-# The QRhi API (rhi/qrhi.h) ships as a private header. Normally that means
-# linking Qt6::GuiPrivate, but some binary Qt builds (e.g. aqtinstall) ship the
-# private headers without the GuiPrivate CMake package — so it's optional here
-# and we fall back to adding the include paths by hand below.
-find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets ShaderTools Concurrent
-                       OPTIONAL_COMPONENTS GuiPrivate)
+# The QRhi API (rhi/qrhi.h) ships as a private header, reached by linking
+# Qt6::GuiPrivate. Older Qt (e.g. 6.7) defines that target inside the Gui
+# package; newer Qt moves it to a separate GuiPrivate package, so look for that
+# only if the target is still missing — quietly, since some binary Qt builds
+# ship the private headers without it and we fall back to adding the include
+# paths by hand below.
+find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets ShaderTools Concurrent)
+if(NOT TARGET Qt6::GuiPrivate)
+    find_package(Qt6 QUIET OPTIONAL_COMPONENTS GuiPrivate)
+endif()
 
 qt_standard_project_setup()
 

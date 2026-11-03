@@ -65,6 +65,10 @@ void FloatingToolPanel::setTitle(const QString &title)
 
 void FloatingToolPanel::appendStyleSheet(const QString &extraCss)
 {
+    // Polish first. Qt caches the parsed sheet, and a second setStyleSheet() on
+    // a not-yet-polished widget (i.e. in a constructor) skips the repolish that
+    // refreshes that cache — the appended rules would be silently ignored.
+    ensurePolished();
     setStyleSheet(styleSheet() + extraCss);
 }
 
