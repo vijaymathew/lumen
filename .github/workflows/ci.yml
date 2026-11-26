@@ -72,4 +72,12 @@ jobs:
         run: ./install.sh --no-deps --prefix "$PWD/_install"
 
       - name: Verify install
-        run: test -x "$PWD/_install/bin/lumen"
+        run: |
+          test -x "$PWD/_install/bin/lumen"
+          # install.sh fetched libc2pa: it must ship beside the app and resolve.
+          test -f "$PWD/_install/lib/libc2pa_c.so"
+          if ldd "$PWD/_install/bin/lumen" | grep "not found"; then exit 1; fi
+
+      # Signing round-trip against the real libc2pa, with the c2pa-rs test cert.
+      - name: Content Credentials test
+        run: ctest --test-dir build -R content_credentials --output-on-failure

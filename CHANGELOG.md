@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Content Credentials (C2PA)** — exports can carry a signed record of the
+  original photo and of the edits Lumen made, such as colour adjustments,
+  crop and healing. None of the edits is flagged as AI-generated, and the full
+  edit recipe can be included if you choose. Credentials are signed with your
+  own certificate, set up through *Content Credentials…* in the command
+  palette, and work offline unless you add a timestamp server. If the
+  original's own credentials declare AI-generated content, Lumen says so after
+  export.
+
 ## [0.1.8] — 2026-11-05
 
 ### Fixed

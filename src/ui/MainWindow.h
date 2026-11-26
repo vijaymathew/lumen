@@ -622,6 +622,9 @@ private:
         bool ok = false;
         QString error;
         QString path;
+        bool credentialsRequested = false; // the user asked for Content Credentials
+        QString credentialsError;          // why they couldn't be attached (file still written)
+        bool sourceGenerativeAI = false;   // the original's own credentials declare AI content
     };
     QFutureWatcher<ExportResult> m_exportWatcher;
     // True from the moment an export is armed until its worker is launched on the

@@ -68,6 +68,30 @@ else()
     message(STATUS "lcms2 not found — export limited to sRGB")
 endif()
 
+# libc2pa (the C2PA SDK's C bindings, from github.com/contentauth/c2pa-rs
+# releases) embeds Content Credentials in exports. It is OPTIONAL and rarely
+# packaged by distros: install.sh fetches a pinned prebuilt copy and passes
+# -DC2PA_ROOT=<dir with include/c2pa.h and lib/libc2pa_c.*>. Without it, the
+# export dialog's Content Credentials option is unavailable.
+set(C2PA_ROOT "" CACHE PATH "Prefix of a libc2pa_c install (include/c2pa.h, lib/libc2pa_c)")
+find_path(C2PA_INCLUDE_DIR c2pa.h HINTS "${C2PA_ROOT}/include")
+find_library(C2PA_LIBRARY c2pa_c HINTS "${C2PA_ROOT}/lib")
+if(C2PA_INCLUDE_DIR AND C2PA_LIBRARY)
+    set(C2PA_FOUND TRUE)
+    message(STATUS "libc2pa found (${C2PA_LIBRARY}) — Content Credentials enabled")
+    # The prebuilt libc2pa_c.so has no SONAME; linking it by full path would bake
+    # that absolute path into the binary. NO_SONAME makes CMake link it as
+    # -L<dir> -lc2pa_c, so the binary just needs "libc2pa_c.so" on its RPATH.
+    add_library(c2pa::c2pa SHARED IMPORTED)
+    set_target_properties(c2pa::c2pa PROPERTIES
+        IMPORTED_LOCATION "${C2PA_LIBRARY}"
+        IMPORTED_NO_SONAME TRUE
+        INTERFACE_INCLUDE_DIRECTORIES "${C2PA_INCLUDE_DIR}")
+else()
+    set(C2PA_FOUND FALSE)
+    message(STATUS "libc2pa not found — exports carry no Content Credentials")
+endif()
+
 if(MSVC)
     set(LUMEN_WARNINGS /W3)
 else()
@@ -158,6 +182,8 @@ add_library(lumen_core STATIC
     src/core/ImageStats.cpp
     src/core/ImageStatsCache.h
     src/core/ImageStatsCache.cpp
+    src/core/ContentCredentials.h
+    src/core/ContentCredentials.cpp
 )
 target_include_directories(lumen_core PUBLIC src)
 target_link_libraries(lumen_core PUBLIC Qt6::Core Qt6::Gui PkgConfig::VIPS PkgConfig::LIBRAW)
@@ -168,6 +194,10 @@ endif()
 if(LCMS2_FOUND)
     target_link_libraries(lumen_core PUBLIC PkgConfig::LCMS2)
     target_compile_definitions(lumen_core PUBLIC LUMEN_HAVE_LCMS)
+endif()
+if(C2PA_FOUND)
+    target_link_libraries(lumen_core PUBLIC c2pa::c2pa)
+    target_compile_definitions(lumen_core PUBLIC LUMEN_HAVE_C2PA)
 endif()
 target_compile_options(lumen_core PRIVATE ${LUMEN_WARNINGS})
 
@@ -237,6 +267,8 @@ qt_add_executable(lumen
     src/ui/ZoneGizmo.cpp
     src/ui/ExportDialog.h
     src/ui/ExportDialog.cpp
+    src/ui/ContentCredentialsDialog.h
+    src/ui/ContentCredentialsDialog.cpp
     src/ui/ImageOpenDialog.h
     src/ui/ImageOpenDialog.cpp
     src/ui/ImageGridView.h
@@ -320,6 +352,12 @@ if(UNIX AND NOT APPLE)
     # dynamic loader expands it at runtime, not CMake.
     set_property(TARGET lumen PROPERTY INSTALL_RPATH
         "$ORIGIN;$ORIGIN/../lib;${_qt_lib_dir}")
+    # A libc2pa_c that isn't a system library (e.g. the copy install.sh fetches
+    # into .c2pa/) is installed next to the app, in <prefix>/lib — found through
+    # the $ORIGIN/../lib entry above.
+    if(C2PA_FOUND AND NOT C2PA_LIBRARY MATCHES "^/(usr/local/|usr/)?lib")
+        install(FILES "${C2PA_LIBRARY}" DESTINATION lib)
+    endif()
 endif()
 
 # Desktop integration on Linux/BSD (macOS uses the .app bundle instead): a
@@ -389,6 +427,13 @@ if(BUILD_TESTING)
     target_link_libraries(export_test PRIVATE lumen_core)
     target_compile_options(export_test PRIVATE ${LUMEN_WARNINGS})
     add_test(NAME export_test COMMAND export_test)
+
+    add_executable(content_credentials_test tests/content_credentials_test.cpp)
+    target_link_libraries(content_credentials_test PRIVATE lumen_core)
+    target_compile_options(content_credentials_test PRIVATE ${LUMEN_WARNINGS})
+    target_compile_definitions(content_credentials_test PRIVATE
+        LUMEN_TEST_C2PA_CERTS="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/c2pa")
+    add_test(NAME content_credentials_test COMMAND content_credentials_test)
 
     add_executable(undo_test tests/undo_test.cpp)
     target_link_libraries(undo_test PRIVATE lumen_core)
