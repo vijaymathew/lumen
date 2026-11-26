@@ -265,6 +265,17 @@ fi
 
 # --- 4. Configure, build, install -----------------------------------------
 
+# Homebrew's vips.pc requires libarchive, which Homebrew keeps keg-only (its
+# .pc isn't on pkg-config's default path). Without it pkg-config can't resolve
+# vips' flags and CMake ends up with no vips include dir, failing later on
+# 'vips/vips.h' not found.
+if [[ "$OS" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
+    for keg in libarchive; do
+        kegpc="$(brew --prefix "$keg" 2>/dev/null)/lib/pkgconfig"
+        [[ -d "$kegpc" ]] && export PKG_CONFIG_PATH="$kegpc${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    done
+fi
+
 log "Configuring ($BUILD_TYPE) → $BUILD_DIR"
 cmake -S . -B "$BUILD_DIR" -G Ninja \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \

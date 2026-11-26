@@ -41,6 +41,15 @@ jobs:
           modules: 'qtshadertools'
           cache: true
 
+      # Homebrew's vips.pc requires libarchive, which is keg-only: its .pc isn't
+      # on pkg-config's default path, so vips' flags fail to resolve and CMake
+      # silently gets no vips include dir. Add it — after Install Qt, which sets
+      # PKG_CONFIG_PATH itself.
+      - name: Expose keg-only pkg-config dirs (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          echo "PKG_CONFIG_PATH=$(brew --prefix libarchive)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
