@@ -18,6 +18,7 @@
 #include "input/CommandPalette.h"
 #include "ui/CurvesPanel.h"
 #include "ui/ImageOpenDialog.h"
+#include "ui/ContentCredentialsDialog.h"
 #include "ui/ExportDialog.h"
 #include "core/Histogram.h"
 #include "ui/DenoisePanel.h"
@@ -57,6 +58,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QTemporaryFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -230,6 +232,9 @@ ExportSettings loadExportSettings()
     e.longEdge = s.value(QStringLiteral("export/longEdge"), e.longEdge).toInt();
     e.colorSpace = static_cast<Image::ColorSpace>(
         s.value(QStringLiteral("export/colorSpace"), static_cast<int>(e.colorSpace)).toInt());
+    e.contentCredentials =
+        s.value(QStringLiteral("export/contentCredentials"), e.contentCredentials).toBool();
+    e.includeRecipe = s.value(QStringLiteral("export/includeRecipe"), e.includeRecipe).toBool();
     return e;
 }
 
@@ -242,6 +247,8 @@ void saveExportSettings(const ExportSettings &e)
     s.setValue(QStringLiteral("export/limitLongEdge"), e.limitLongEdge);
     s.setValue(QStringLiteral("export/longEdge"), e.longEdge);
     s.setValue(QStringLiteral("export/colorSpace"), static_cast<int>(e.colorSpace));
+    s.setValue(QStringLiteral("export/contentCredentials"), e.contentCredentials);
+    s.setValue(QStringLiteral("export/includeRecipe"), e.includeRecipe);
 }
 
 // Dim opacity for overlays (0–255). A tuning value, not a fixed constant
@@ -966,7 +973,26 @@ MainWindow::MainWindow(QWidget *parent)
             return;
         }
         rememberDir(QStringLiteral("export"), r.path);
-        showHint(QStringLiteral("Exported to %1").arg(QFileInfo(r.path).fileName()));
+        const QString name = QFileInfo(r.path).fileName();
+        if (!r.credentialsError.isEmpty()) {
+            // The image was written, but without the credentials the user asked
+            // for — never let that pass as a quiet hint.
+            QMessageBox::warning(this, QStringLiteral("Lumen"),
+                                 QStringLiteral("Exported %1 WITHOUT Content Credentials.\n\n%2")
+                                     .arg(name, r.credentialsError));
+            return;
+        }
+        if (r.credentialsRequested && r.sourceGenerativeAI)
+            QMessageBox::information(
+                this, QStringLiteral("Lumen"),
+                QStringLiteral("The original image's own Content Credentials declare "
+                               "AI-generated content. %1 carries that history forward: Lumen's "
+                               "edits are non-generative, but the image as a whole is not "
+                               "AI-free.")
+                    .arg(name));
+        showHint(r.credentialsRequested
+                     ? QStringLiteral("Exported to %1 with Content Credentials").arg(name)
+                     : QStringLiteral("Exported to %1").arg(name));
     });
 
     // Background project save finished: report the outcome and adopt the file.
@@ -1565,6 +1591,8 @@ void MainWindow::buildCommands()
         {QStringLiteral("save-project"), QStringLiteral("Save project"), file},
         {QStringLiteral("save-project-as"), QStringLiteral("Save project as (.lumen)…"), file},
         {QStringLiteral("export"), QStringLiteral("Export image…"), file},
+        {QStringLiteral("content-credentials"),
+         QStringLiteral("Content Credentials (signing certificate)…"), file},
         {QStringLiteral("tone"), QStringLiteral("Tone (exposure, contrast, saturation)"), toneColor},
         {QStringLiteral("curves"), QStringLiteral("Curves"), toneColor},
         {QStringLiteral("colormixer"), QStringLiteral("Color mixer (HSL)"), toneColor},
@@ -1619,6 +1647,9 @@ void MainWindow::runCommand(const QString &id)
         saveProjectAs();
     } else if (id == QLatin1String("export")) {
         exportImage();
+    } else if (id == QLatin1String("content-credentials")) {
+        ContentCredentialsDialog dlg(this);
+        dlg.exec();
     } else if (id == QLatin1String("tone")) {
         openToneTool();
     } else if (id == QLatin1String("curves")) {
@@ -2776,6 +2807,8 @@ void MainWindow::exportImage()
     const QString ext = dlg.extension();
     const Image::ExportOptions exportOpts{dlg.quality(), dlg.bits(), dlg.longEdge(),
                                           dlg.colorSpace()};
+    const bool attachCredentials = dlg.contentCredentials();
+    const bool includeRecipe = dlg.includeRecipe();
 
     // 2. Choose the path, defaulting to "<name>.<ext>" in the last-used export
     //    folder (falling back to next-to-the-source).
@@ -2801,7 +2834,7 @@ void MainWindow::exportImage()
     layoutOverlays();
     m_exportPending = true;
 
-    QTimer::singleShot(0, this, [this, path, exportOpts]() {
+    QTimer::singleShot(0, this, [this, path, exportOpts, attachCredentials, includeRecipe]() {
         // Do EVERYTHING heavy on the worker thread — both the full-resolution
         // composite and the encode. Every node's apply() is eager (it materialises
         // pixels via vips_image_write_to_memory), so doc().graph.result() at full res
@@ -2814,10 +2847,24 @@ void MainWindow::exportImage()
         // success/failure.
         const QJsonObject graphState = doc().graph.saveState();
         const Image source = doc().graph.source();
+        // Content Credentials describe the original (its bytes become the parent
+        // ingredient) and the edit; both are cheap implicitly-shared copies.
+        credentials::Provenance provenance;
+        credentials::SignerConfig signer;
+        if (attachCredentials) {
+            provenance.sourceBytes = doc().sourceBytes;
+            provenance.sourceName = QFileInfo(doc().sourceName).fileName();
+            provenance.graphState = graphState;
+            provenance.opts = exportOpts;
+            provenance.includeRecipe = includeRecipe;
+            provenance.softwareVersion = QStringLiteral(LUMEN_VERSION);
+            signer = ContentCredentialsDialog::loadSigner();
+        }
         m_exportPending = false;
         m_exportJobDoc = doc().id; // the document being exported
         m_exportWatcher.setFuture(QtConcurrent::run(
-            [path, exportOpts, graphState, source]() -> ExportResult {
+            [path, exportOpts, graphState, source, attachCredentials, provenance,
+             signer]() mutable -> ExportResult {
                 ExportResult r;
                 r.path = path;
                 EditGraph graph;
@@ -2828,7 +2875,48 @@ void MainWindow::exportImage()
                     r.error = QStringLiteral("nothing to export");
                     return r;
                 }
-                r.ok = result.saveToFile(path, exportOpts, &r.error);
+                if (!attachCredentials) {
+                    r.ok = result.saveToFile(path, exportOpts, &r.error);
+                    return r;
+                }
+
+                // With credentials: encode to a temp file beside the target (same
+                // suffix — libvips picks the saver by extension), then sign it into
+                // place. The manifest's hash covers the final encoded bytes, so
+                // signing has to come after encoding.
+                r.credentialsRequested = true;
+                const QFileInfo target(path);
+                QTemporaryFile encoded(target.dir().filePath(
+                    QStringLiteral(".lumen-export-XXXXXX.") + target.suffix()));
+                if (!encoded.open()) {
+                    r.error = QStringLiteral("Cannot create a temporary file in %1: %2")
+                                  .arg(target.dir().path(), encoded.errorString());
+                    return r;
+                }
+                encoded.close(); // libvips writes it by name
+                if (!result.saveToFile(encoded.fileName(), exportOpts, &r.error))
+                    return r;
+
+                provenance.resized = exportOpts.longEdge > 0
+                    && exportOpts.longEdge < std::max(result.width(), result.height());
+                if (credentials::sign(encoded.fileName(), path, provenance, signer,
+                                      &r.credentialsError)) {
+                    r.sourceGenerativeAI =
+                        credentials::inspectSource(provenance.sourceBytes, provenance.sourceName)
+                            .generativeAI;
+                    r.ok = true;
+                    return r;
+                }
+                // Signing failed: still deliver the image, unsigned, and say so.
+                if (r.credentialsError.isEmpty())
+                    r.credentialsError = QStringLiteral("Signing failed");
+                QFile::remove(path);
+                if (!encoded.rename(path)) {
+                    r.error = QStringLiteral("Cannot write %1: %2").arg(path, encoded.errorString());
+                    return r;
+                }
+                encoded.setAutoRemove(false);
+                r.ok = true;
                 return r;
             }));
     });

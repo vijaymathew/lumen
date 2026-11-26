@@ -1,5 +1,8 @@
 #include "ui/ExportDialog.h"
 
+#include "core/ContentCredentials.h"
+#include "ui/ContentCredentialsDialog.h"
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -79,6 +82,35 @@ ExportDialog::ExportDialog(QWidget *parent)
             QStringLiteral("Colour management unavailable in this build — output is sRGB"));
     }
 
+    // Content Credentials (C2PA): a signed record of where the image came from
+    // and which (non-generative) edits Lumen made. Needs libc2pa in the build and
+    // the user's own signing certificate.
+    m_credentials = new QCheckBox(QStringLiteral("Attach Content Credentials"), this);
+    m_recipe = new QCheckBox(QStringLiteral("Include full edit recipe"), this);
+    m_recipe->setToolTip(QStringLiteral(
+        "Also embed every edit setting (masks included), so anyone can audit exactly what "
+        "was done. Makes the file larger."));
+    if (!credentials::available()) {
+        m_credentials->setEnabled(false);
+        m_credentials->setToolTip(
+            QStringLiteral("Content Credentials are not available in this build"));
+    } else if (!ContentCredentialsDialog::loadSigner().isConfigured()) {
+        m_credentials->setEnabled(false);
+        m_credentials->setToolTip(QStringLiteral(
+            "Set up a signing certificate first (command palette → Content Credentials…)"));
+    } else {
+        m_credentials->setToolTip(QStringLiteral(
+            "Embed a signed C2PA record of the original and of the edits Lumen made — none "
+            "of them generative AI. Viewable at contentcredentials.org/verify."));
+    }
+    auto *credentialsCol = new QVBoxLayout;
+    credentialsCol->setContentsMargins(0, 0, 0, 0);
+    credentialsCol->addWidget(m_credentials);
+    auto *recipeRow = new QHBoxLayout;
+    recipeRow->setContentsMargins(20, 0, 0, 0);
+    recipeRow->addWidget(m_recipe);
+    credentialsCol->addLayout(recipeRow);
+
     auto *form = new QFormLayout;
     form->addRow(QStringLiteral("Format"), m_format);
     m_qualityName = new QLabel(QStringLiteral("Quality"), this);
@@ -87,6 +119,7 @@ ExportDialog::ExportDialog(QWidget *parent)
     form->addRow(m_bitsName, m_bits);
     form->addRow(QStringLiteral("Size"), resizeRow);
     form->addRow(QStringLiteral("Colour"), m_colorSpace);
+    form->addRow(QStringLiteral("Provenance"), credentialsCol);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
                                          this);
@@ -100,6 +133,7 @@ ExportDialog::ExportDialog(QWidget *parent)
 
     connect(m_format, &QComboBox::currentIndexChanged, this, &ExportDialog::syncRows);
     connect(m_resize, &QCheckBox::toggled, this, &ExportDialog::syncRows);
+    connect(m_credentials, &QCheckBox::toggled, this, &ExportDialog::syncRows);
     connect(m_quality, &QSlider::valueChanged, this, [this](int v) {
         m_qualityValue->setText(QString::number(v));
     });
@@ -117,6 +151,7 @@ void ExportDialog::syncRows()
     m_bitsName->setEnabled(!lossy);
     m_bits->setEnabled(!lossy);
     m_longEdge->setEnabled(m_resize->isChecked());
+    m_recipe->setEnabled(m_credentials->isEnabled() && m_credentials->isChecked());
 }
 
 void ExportDialog::setSettings(const ExportSettings &s)
@@ -140,6 +175,8 @@ void ExportDialog::setSettings(const ExportSettings &s)
         if (idx >= 0)
             m_colorSpace->setCurrentIndex(idx);
     }
+    m_credentials->setChecked(s.contentCredentials);
+    m_recipe->setChecked(s.includeRecipe);
     syncRows();
 }
 
@@ -155,6 +192,8 @@ ExportSettings ExportDialog::settings() const
     s.limitLongEdge = m_resize->isChecked();
     s.longEdge = m_longEdge->value();
     s.colorSpace = static_cast<Image::ColorSpace>(m_colorSpace->currentData().toInt());
+    s.contentCredentials = m_credentials->isChecked();
+    s.includeRecipe = m_recipe->isChecked();
     return s;
 }
 
@@ -184,4 +223,14 @@ Image::ColorSpace ExportDialog::colorSpace() const
     if (!m_colorSpace->isEnabled())
         return Image::ColorSpace::SRGB;
     return static_cast<Image::ColorSpace>(m_colorSpace->currentData().toInt());
+}
+
+bool ExportDialog::contentCredentials() const
+{
+    return m_credentials->isEnabled() && m_credentials->isChecked();
+}
+
+bool ExportDialog::includeRecipe() const
+{
+    return contentCredentials() && m_recipe->isChecked();
 }

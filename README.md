@@ -39,6 +39,29 @@ graph and traceable back to the untouched original. Even the healing brush works
 by borrowing texture from elsewhere in your own photo. What you export is your
 photograph, developed — not a model's guess at it.
 
+### Content Credentials
+
+Lumen can embed signed **[C2PA Content Credentials](https://contentcredentials.org)**
+in exported images. Each credential records the original photo (and any
+credentials it already carried, such as those from a C2PA camera), plus the
+edits Lumen made, as standard C2PA actions: colour adjustments, crop, healing,
+and so on. None of these actions is flagged as AI-generated content. You can
+also embed the full edit recipe. Anyone can inspect the result at
+[Content Credentials Verify](https://verify.contentauthenticity.org/) or
+offline with `c2patool`.
+
+Credentials are signed with **your own certificate**, set up through
+<kbd>/</kbd> → *Content Credentials…*. Lumen never generates or ships a key. A
+certificate from a CA on the C2PA trust list shows verifiers your name. To make
+your own, run `tools/make-signing-cert.sh`. Any other certificate still gives
+tamper-evident credentials, but the signer shows as unrecognised. Be clear about
+what this proves: it is your signed statement of what was done in Lumen, not a
+cryptographic proof. If the original's own credentials declare AI content, the
+chain shows that, and Lumen warns you.
+
+**→ [Content Credentials guide](docs/content-credentials.md)**: getting a
+certificate, setting it up, and verifying the credentials in an image.
+
 ## Features
 
 ### Tone & colour
@@ -127,6 +150,8 @@ Common shortcuts:
   and export; **LibRaw** for RAW decoding.
 - **Colour** — a floating-point sRGB working space with highlight headroom;
   optional **Little CMS (lcms2)** drives wide-gamut export.
+- **Provenance** — optional **[c2pa-rs](https://github.com/contentauth/c2pa-rs)**
+  (the C2PA SDK's C library) signs Content Credentials into exports.
 - **Architecture** — a UI-free `lumen_core` library (image pipeline, edit graph,
   layers, serialization) sitting beneath the Qt front-end, so the imaging code is
   independently unit-tested.
@@ -168,6 +193,7 @@ That's the whole thing. Useful `install.sh` flags:
 ./install.sh --prefix ~/.local   # install somewhere other than /usr/local
 ./install.sh --no-deps           # dependencies already present; just build + install
 ./install.sh --qt-dir /path/to/Qt/6.7.2/gcc_64   # use a specific Qt
+./install.sh --no-c2pa           # skip libc2pa (no Content Credentials)
 ```
 
 On Linux it uses `apt`, `dnf`, or `pacman` for the imaging libraries plus the
@@ -175,7 +201,9 @@ OpenGL/xcb libraries Qt links against; on macOS it uses Homebrew. When the
 system Qt is older than 6.7 (common on Linux), it fetches Qt 6.7+ into `.qt/`
 via [aqtinstall](https://github.com/miurahr/aqtinstall) automatically — that
 fallback needs `python3` and `pip`, or you can point at an existing Qt with
-`--qt-dir`. Prefer to wire everything up by hand? The manual steps are below.
+`--qt-dir`. No distro packages the C2PA library, so the script downloads a
+pinned, checksum-verified prebuilt `libc2pa_c` into `.c2pa/`, and installs it
+next to Lumen. Prefer to wire everything up by hand? The manual steps are below.
 
 ### Requirements
 
@@ -184,8 +212,11 @@ fallback needs `python3` and `pip`, or you can point at an existing Qt with
   `QRhiWidget`)
 - **libvips** with the C++ bindings (`vips-cpp`)
 - **LibRaw** (`libraw`)
-- Optional: **Lensfun** (automatic lens correction) and **lcms2** (wide-gamut
-  export colour management) — features degrade gracefully when absent.
+- Optional: **Lensfun** (automatic lens correction), **lcms2** (wide-gamut
+  export colour management) and **libc2pa** (Content Credentials; pass
+  `-DC2PA_ROOT=<dir>` for an unpacked
+  [c2pa-rs release](https://github.com/contentauth/c2pa-rs/releases)). Features
+  degrade gracefully when they're absent.
 
 ### Manual build — Linux
 

@@ -7,10 +7,12 @@
 #   ./install.sh --no-deps       # skip dependency install (deps already present)
 #   ./install.sh --no-install    # configure + build only, don't install
 #   ./install.sh --qt-dir /path/to/Qt/6.7.2/gcc_64
+#   ./install.sh --no-c2pa       # build without Content Credentials (libc2pa)
 #
 # It installs the imaging libraries + toolchain (apt or Homebrew), makes sure a
 # Qt 6.7+ is available (using it if the system has one, otherwise fetching it
-# with aqtinstall), then configures, builds, and installs.
+# with aqtinstall), fetches a pinned, checksum-verified libc2pa for Content
+# Credentials, then configures, builds, and installs.
 
 set -euo pipefail
 
@@ -23,6 +25,7 @@ INSTALL_DEPS=1
 DO_INSTALL=1
 QT_DIR="${QT_DIR:-}"
 QT_VERSION="6.7.2"
+WITH_C2PA=1
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -34,8 +37,9 @@ while [[ $# -gt 0 ]]; do
         --qt-dir=*)    QT_DIR="${1#*=}"; shift ;;
         --no-deps)     INSTALL_DEPS=0; shift ;;
         --no-install)  DO_INSTALL=0; shift ;;
+        --no-c2pa)     WITH_C2PA=0; shift ;;
         -h|--help)
-            sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -192,13 +196,81 @@ else
     log "Using Qt at $QT_DIR (--qt-dir)"
 fi
 
-# --- 3. Configure, build, install -----------------------------------------
+# --- 3. libc2pa (Content Credentials) -------------------------------------
+# The C2PA SDK's C library isn't packaged by distros or Homebrew, so fetch the
+# prebuilt release from github.com/contentauth/c2pa-rs — pinned to one version
+# and verified against these SHA-256 sums — into .c2pa/. It's optional: on any
+# problem, warn and build without Content Credentials.
+
+C2PA_VERSION="0.91.9"
+c2pa_asset_and_sum() {
+    case "$OS/$(uname -m)" in
+        Linux/x86_64)
+            echo "x86_64-unknown-linux-gnu 7e1d8ef8305a54064d35abb2ebba312b441761ea0b2a5c15f54ab2d5fd1be013" ;;
+        Linux/aarch64|Linux/arm64)
+            echo "aarch64-unknown-linux-gnu 3599b2399aeb4e4639bb6350578b2a8e0c21fdc860af8c672ed30e13d9e65d13" ;;
+        Darwin/*)
+            echo "universal-apple-darwin f11727130599983e7331a152f60dcbdd3c76db9d8f23ea8647ef464e3f4a2685" ;;
+        *) return 1 ;;
+    esac
+}
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+    else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+fetch_c2pa() {
+    local triple sum
+    read -r triple sum < <(c2pa_asset_and_sum) \
+        || { warn "No prebuilt libc2pa for $OS/$(uname -m) — building without Content Credentials" >&2; return 1; }
+    local dest="$ROOT/.c2pa/$C2PA_VERSION"
+    if [[ ! -f "$dest/include/c2pa.h" ]]; then
+        for tool in curl unzip; do
+            command -v "$tool" >/dev/null 2>&1 \
+                || { warn "'$tool' not found — building without Content Credentials" >&2; return 1; }
+        done
+        local name="c2pa-v${C2PA_VERSION}-${triple}.zip"
+        local url="https://github.com/contentauth/c2pa-rs/releases/download/c2pa-v${C2PA_VERSION}/${name}"
+        local tmp; tmp="$(mktemp -d)"
+        log "Fetching libc2pa $C2PA_VERSION (one-time, into .c2pa/)" >&2
+        if ! curl -fsSL "$url" -o "$tmp/$name"; then
+            warn "Download of $url failed — building without Content Credentials" >&2
+            rm -rf "$tmp"; return 1
+        fi
+        if [[ "$(sha256_of "$tmp/$name")" != "$sum" ]]; then
+            warn "Checksum mismatch for $name — refusing to use it; building without Content Credentials" >&2
+            rm -rf "$tmp"; return 1
+        fi
+        rm -rf "$dest" && mkdir -p "$dest"
+        unzip -q "$tmp/$name" -d "$dest"
+        # Keep just the header and the shared library (the archive also carries
+        # a Rust .rlib, a dep file and, on macOS, zipped debug symbols).
+        rm -f "$dest"/lib/*.rlib "$dest"/lib/*.d "$dest"/lib/*.dSYM.zip
+        rm -rf "$tmp"
+    fi
+    echo "$dest"
+}
+
+C2PA_ROOT=""
+if [[ "$WITH_C2PA" -eq 1 ]]; then
+    if C2PA_ROOT="$(fetch_c2pa)"; then
+        log "Using libc2pa at $C2PA_ROOT"
+    else
+        C2PA_ROOT=""
+    fi
+else
+    log "Skipping libc2pa (--no-c2pa): exports will carry no Content Credentials"
+fi
+
+# --- 4. Configure, build, install -----------------------------------------
 
 log "Configuring ($BUILD_TYPE) → $BUILD_DIR"
 cmake -S . -B "$BUILD_DIR" -G Ninja \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
     -DCMAKE_PREFIX_PATH="$QT_DIR" \
-    -DCMAKE_INSTALL_PREFIX="$PREFIX"
+    -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+    -DC2PA_ROOT="$C2PA_ROOT"
 
 log "Building"
 cmake --build "$BUILD_DIR" --parallel

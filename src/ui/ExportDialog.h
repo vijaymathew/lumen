@@ -23,10 +23,12 @@ struct ExportSettings {
     bool limitLongEdge = false;                // is the resize limit switched on?
     int longEdge = 2048;                       // px, remembered while the limit is off
     Image::ColorSpace colorSpace = Image::ColorSpace::SRGB;
+    bool contentCredentials = false;           // embed signed C2PA Content Credentials
+    bool includeRecipe = false;                // ...with the full edit recipe
 };
 
-// ExportDialog collects the export format, quality, output size and colour space
-// before the file is written. The file path is chosen afterwards with a save
+// ExportDialog collects the export format, quality, output size, colour space
+// and whether to attach Content Credentials before the file is written. The file path is chosen afterwards with a save
 // dialog.
 class ExportDialog : public QDialog {
     Q_OBJECT
@@ -45,6 +47,10 @@ public:
     int bits() const;                   // 8 or 16 (16 only for lossless PNG/TIFF)
     int longEdge() const;               // max long-edge px, or 0 for full size
     Image::ColorSpace colorSpace() const;
+    // Attach C2PA Content Credentials (only when this build can sign and a
+    // signing certificate is configured), and whether to include the recipe.
+    bool contentCredentials() const;
+    bool includeRecipe() const;
 
 private:
     void syncRows();
@@ -58,4 +64,6 @@ private:
     QCheckBox *m_resize = nullptr;
     QSpinBox *m_longEdge = nullptr;
     QComboBox *m_colorSpace = nullptr;
+    QCheckBox *m_credentials = nullptr;
+    QCheckBox *m_recipe = nullptr;
 };
