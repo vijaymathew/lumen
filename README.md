@@ -47,15 +47,20 @@ credentials it already carried, such as those from a C2PA camera), plus the
 edits Lumen made, as standard C2PA actions: colour adjustments, crop, healing,
 and so on. None of these actions is flagged as AI-generated content. You can
 also embed the full edit recipe. Anyone can inspect the result at
-[contentcredentials.org/verify](https://contentcredentials.org/verify).
+[Content Credentials Verify](https://verify.contentauthenticity.org/) or
+offline with `c2patool`.
 
 Credentials are signed with **your own certificate**, set up through
 <kbd>/</kbd> → *Content Credentials…*. Lumen never generates or ships a key. A
-certificate from a CA on the C2PA trust list shows verifiers your name. Any
-other certificate still gives tamper-evident credentials, but the signer shows
-as unrecognised. Be clear about what this proves: it is your signed statement of
-what was done in Lumen, not a cryptographic proof. If the original's own
-credentials declare AI content, the chain shows that, and Lumen warns you.
+certificate from a CA on the C2PA trust list shows verifiers your name. To make
+your own, run `tools/make-signing-cert.sh`. Any other certificate still gives
+tamper-evident credentials, but the signer shows as unrecognised. Be clear about
+what this proves: it is your signed statement of what was done in Lumen, not a
+cryptographic proof. If the original's own credentials declare AI content, the
+chain shows that, and Lumen warns you.
+
+**→ [Content Credentials guide](docs/content-credentials.md)**: getting a
+certificate, setting it up, and verifying the credentials in an image.
 
 ## Features
 

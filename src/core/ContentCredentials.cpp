@@ -768,12 +768,13 @@ bool testSigner(const SignerConfig &signer, QString *summary, QString *error)
     if (summary) {
         const QJsonObject sig = manifest.value(QStringLiteral("signature_info")).toObject();
         const QString cn = sig.value(QStringLiteral("common_name")).toString();
-        const QString issuer = sig.value(QStringLiteral("issuer")).toString();
+        // c2pa reports the signing certificate's organisation (O) as "issuer";
+        // it is not the CA that issued the certificate.
+        const QString org = sig.value(QStringLiteral("issuer")).toString();
         *summary = QStringLiteral("Signs as \"%1\"%2.")
-                       .arg(cn.isEmpty() ? issuer : cn,
-                            issuer.isEmpty() || issuer == cn
-                                ? QString()
-                                : QStringLiteral(", issued by %1").arg(issuer));
+                       .arg(cn.isEmpty() ? org : cn,
+                            org.isEmpty() || org == cn ? QString()
+                                                       : QStringLiteral(" (%1)").arg(org));
         if (untrusted
             || report.value(QStringLiteral("validation_state")).toString()
                    != QLatin1String("Trusted"))
