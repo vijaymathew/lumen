@@ -14,7 +14,9 @@ jobs:
       matrix:
         # macOS is a v1 target (docs/DESIGN.md §7), so it is exercised from
         # milestone 1 — an untested macOS build rots fast.
-        os: [ubuntu-24.04, macos-14]
+        # Pinned rather than macos-latest so a runner-image change is a
+        # deliberate edit here (macos-14 has been retired).
+        os: [ubuntu-24.04, macos-15]
 
     steps:
       - uses: actions/checkout@v4
